@@ -21,6 +21,11 @@ package org.apache.hive.common.util;
 import org.junit.Assert;
 import org.junit.Test;
 
+import java.io.File;
+import java.io.IOException;
+
+import org.apache.hadoop.hive.common.FileUtils;
+
 /**
  * TestShutdownHookManager.
  *
@@ -29,38 +34,10 @@ import org.junit.Test;
 public class TestShutdownHookManager {
 
   @Test
-  public void shutdownHookManager() {
-    Assert.assertEquals(0, ShutdownHookManager.getShutdownHooksInOrder().size());
-    Runnable hook1 = new Runnable() {
-      @Override
-      public void run() {
-      }
-    };
-    Runnable hook2 = new Runnable() {
-      @Override
-      public void run() {
-      }
-    };
-
-    ShutdownHookManager.addShutdownHook(hook1, 0);
-    Assert.assertTrue(ShutdownHookManager.hasShutdownHook(hook1));
-    Assert.assertEquals(1, ShutdownHookManager.getShutdownHooksInOrder().size());
-    Assert.assertEquals(hook1, ShutdownHookManager.getShutdownHooksInOrder().get(0));
-    ShutdownHookManager.removeShutdownHook(hook1);
-    Assert.assertFalse(ShutdownHookManager.hasShutdownHook(hook1));
-
-    ShutdownHookManager.addShutdownHook(hook1, 0);
-    Assert.assertTrue(ShutdownHookManager.hasShutdownHook(hook1));
-    Assert.assertEquals(1, ShutdownHookManager.getShutdownHooksInOrder().size());
-    Assert.assertTrue(ShutdownHookManager.hasShutdownHook(hook1));
-    Assert.assertEquals(1, ShutdownHookManager.getShutdownHooksInOrder().size());
-
-    ShutdownHookManager.addShutdownHook(hook2, 1);
-    Assert.assertTrue(ShutdownHookManager.hasShutdownHook(hook1));
-    Assert.assertTrue(ShutdownHookManager.hasShutdownHook(hook2));
-    Assert.assertEquals(2, ShutdownHookManager.getShutdownHooksInOrder().size());
-    Assert.assertEquals(hook2, ShutdownHookManager.getShutdownHooksInOrder().get(0));
-    Assert.assertEquals(hook1, ShutdownHookManager.getShutdownHooksInOrder().get(1));
-
+  public void deleteOnExit() throws IOException {
+    File file = FileUtils.createTempFile(null, "tmp", null);
+    Assert.assertTrue(ShutdownHookManager.isRegisteredToDeleteOnExit(file));
+    FileUtils.deleteTmpFile(file);
+    Assert.assertFalse(ShutdownHookManager.isRegisteredToDeleteOnExit(file));
   }
 }

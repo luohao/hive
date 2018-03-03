@@ -21,25 +21,34 @@ package org.apache.hadoop.hive.ql.plan;
 
 import java.util.Map;
 
+import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hive.ql.exec.PTFUtils;
 import org.apache.hadoop.hive.ql.plan.Explain.Level;
+import org.apache.hadoop.hive.ql.stats.StatsCollectionContext;
 
 public class AbstractOperatorDesc implements OperatorDesc {
 
   protected boolean vectorMode = false;
+
+  // Extra parameters only for vectorization.
+  protected VectorDesc vectorDesc;
+
   protected Statistics statistics;
   protected transient OpTraits opTraits;
   protected transient Map<String, String> opProps;
   protected long memNeeded = 0;
-
-  static {
-    PTFUtils.makeTransient(AbstractOperatorDesc.class, "opProps");
-  }
+  protected long memAvailable = 0;
+  protected String runtimeStatsTmpDir;
 
   @Override
-  @Explain(skipHeader = true, displayName = "Statistics", explainLevels = { Level.USER, Level.DEFAULT, Level.EXTENDED })
+  @Explain(skipHeader = true, displayName = "Statistics")
   public Statistics getStatistics() {
     return statistics;
+  }
+
+  @Explain(skipHeader = true, displayName = "Statistics", explainLevels = { Level.USER })
+  public String getUserLevelStatistics() {
+    return statistics.toUserLevelExplainString();
   }
 
   @Override
@@ -58,6 +67,14 @@ public class AbstractOperatorDesc implements OperatorDesc {
 
   public void setVectorMode(boolean vm) {
     this.vectorMode = vm;
+  }
+
+  public void setVectorDesc(VectorDesc vectorDesc) {
+    this.vectorDesc = vectorDesc;
+  }
+
+  public VectorDesc getVectorDesc() {
+    return vectorDesc;
   }
 
   @Override
@@ -88,4 +105,23 @@ public class AbstractOperatorDesc implements OperatorDesc {
   public void setMemoryNeeded(long memNeeded) {
     this.memNeeded = memNeeded;
   }
+
+  @Override
+  public long getMaxMemoryAvailable() {
+    return memAvailable;
+  }
+
+  @Override
+  public void setMaxMemoryAvailable(final long memoryAvailble) {
+    this.memAvailable = memoryAvailble;
+  }
+
+  public String getRuntimeStatsTmpDir() {
+    return runtimeStatsTmpDir;
+  }
+
+  public void setRuntimeStatsTmpDir(String runtimeStatsTmpDir) {
+    this.runtimeStatsTmpDir = runtimeStatsTmpDir;
+  }
+
 }

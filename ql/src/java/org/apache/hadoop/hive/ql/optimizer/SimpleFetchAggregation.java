@@ -51,7 +51,7 @@ import org.apache.hadoop.hive.ql.plan.PlanUtils;
 import org.apache.hadoop.hive.ql.plan.TableDesc;
 
 // execute final aggregation stage for simple fetch query on fetch task
-public class SimpleFetchAggregation implements Transform {
+public class SimpleFetchAggregation extends Transform {
 
   @Override
   public ParseContext transform(ParseContext pctx) throws SemanticException {
@@ -121,7 +121,8 @@ public class SimpleFetchAggregation implements Transform {
 
       // Create a file sink operator for this file name
       FileSinkDesc desc = new FileSinkDesc(fileName, tsDesc, false);
-      FileSinkOperator newFS = (FileSinkOperator) OperatorFactory.get(desc, parent.getSchema());
+      FileSinkOperator newFS = (FileSinkOperator) OperatorFactory.get(
+          parent.getCompilationOpContext(), desc, parent.getSchema());
 
       newFS.setParentOperators(new ArrayList<Operator<? extends OperatorDesc>>());
       newFS.getParentOperators().add(parent);

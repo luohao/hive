@@ -18,10 +18,9 @@
 package org.apache.hadoop.hive.ql.exec;
 
 import java.io.Serializable;
-import java.util.Collection;
-import java.util.concurrent.Future;
 
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hive.ql.CompilationOpContext;
 import org.apache.hadoop.hive.ql.metadata.HiveException;
 import org.apache.hadoop.hive.ql.plan.HashTableDummyDesc;
 import org.apache.hadoop.hive.ql.plan.TableDesc;
@@ -32,9 +31,18 @@ import org.apache.hadoop.hive.serde2.SerDeUtils;
 public class HashTableDummyOperator extends Operator<HashTableDummyDesc> implements Serializable {
   private static final long serialVersionUID = 1L;
 
+  /** Kryo ctor. */
+  protected HashTableDummyOperator() {
+    super();
+  }
+
+  public HashTableDummyOperator(CompilationOpContext ctx) {
+    super(ctx);
+  }
+
   @Override
-  protected Collection<Future<?>> initializeOp(Configuration hconf) throws HiveException {
-    Collection<Future<?>> result = super.initializeOp(hconf);
+  protected void initializeOp(Configuration hconf) throws HiveException {
+    super.initializeOp(hconf);
     TableDesc tbl = this.getConf().getTbl();
     try {
       Deserializer serde = tbl.getDeserializerClass().newInstance();
@@ -44,7 +52,6 @@ public class HashTableDummyOperator extends Operator<HashTableDummyDesc> impleme
       LOG.error("Generating output obj inspector from dummy object error", e);
       e.printStackTrace();
     }
-    return result;
   }
 
   @Override
@@ -58,7 +65,7 @@ public class HashTableDummyOperator extends Operator<HashTableDummyDesc> impleme
 
   @Override
   public String getName() {
-    return getOperatorName();
+    return HashTableDummyOperator.getOperatorName();
   }
 
   static public String getOperatorName() {
@@ -70,4 +77,14 @@ public class HashTableDummyOperator extends Operator<HashTableDummyDesc> impleme
     return OperatorType.HASHTABLEDUMMY;
   }
 
+  @Override
+  public boolean equals(Object obj) {
+    return super.equals(obj) || (obj instanceof HashTableDummyOperator)
+        && (((HashTableDummyOperator)obj).operatorId == operatorId);
+  }
+  
+  @Override
+  public int hashCode() {
+    return operatorId.hashCode();
+  }
 }

@@ -38,14 +38,19 @@ import java.util.HashMap;
 import java.util.Locale;
 import java.util.Properties;
 import java.util.StringTokenizer;
+import java.util.regex.Pattern;
 
 import com.google.common.collect.Interner;
 import com.google.common.collect.Interners;
+
+import org.apache.commons.lang.StringUtils;
+import org.apache.commons.lang3.text.translate.CharSequenceTranslator;
+import org.apache.commons.lang3.text.translate.EntityArrays;
+import org.apache.commons.lang3.text.translate.LookupTranslator;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hive.common.classification.InterfaceAudience;
 import org.apache.hadoop.hive.common.classification.InterfaceStability;
 import org.apache.hadoop.io.Text;
-import org.apache.hadoop.util.StringUtils;
 
 /**
  * HiveStringUtils
@@ -63,6 +68,23 @@ public class HiveStringUtils {
   public static final int SHUTDOWN_HOOK_PRIORITY = 0;
 
   private static final DecimalFormat decimalFormat;
+
+  private static final CharSequenceTranslator ESCAPE_JAVA =
+      new LookupTranslator(
+        new String[][] {
+          {"\"", "\\\""},
+          {"\\", "\\\\"},
+      }).with(
+        new LookupTranslator(EntityArrays.JAVA_CTRL_CHARS_ESCAPE()));
+
+  private static final CharSequenceTranslator ESCAPE_HIVE_COMMAND =
+      new LookupTranslator(
+        new String[][] {
+          {"'", "\\'"},
+          {";", "\\;"},
+          {"\\", "\\\\"},
+      }).with(
+        new LookupTranslator(EntityArrays.JAVA_CTRL_CHARS_ESCAPE()));
 
   /**
    * Maintain a String pool to reduce memory.
@@ -113,6 +135,11 @@ public class HiveStringUtils {
   public static Map<String, String> intern(Map<String, String> map) {
     if(map == null) {
       return null;
+    }
+
+    if (map.isEmpty()) {
+      // nothing to intern
+      return map;
     }
     Map<String, String> newMap = new HashMap<String, String>(map.size());
     for(Map.Entry<String, String> entry : map.entrySet()) {
@@ -422,6 +449,7 @@ public class HiveStringUtils {
 
   final public static String[] emptyStringArray = {};
   final public static char COMMA = ',';
+  final public static char EQUALS = '=';
   final public static String COMMA_STR = ",";
   final public static char ESCAPE_CHAR = '\\';
 
@@ -521,6 +549,37 @@ public class HiveStringUtils {
   }
 
   /**
+   * In a given string of comma-separated key=value pairs insert a new value of a given key
+   *
+   * @param key The key whose value needs to be replaced
+   * @param newValue The new value of the key
+   * @param strKvPairs Comma separated key=value pairs Eg: "k1=v1, k2=v2, k3=v3"
+   * @return Comma separated string of key=value pairs with the new value for key keyName
+   */
+  public static String insertValue(String key, String newValue,
+      String strKvPairs) {
+    String[] keyValuePairs = HiveStringUtils.split(strKvPairs);
+    StringBuilder sb = new StringBuilder();
+    for (int i = 0; i < keyValuePairs.length; i++) {
+      String[] pair = HiveStringUtils.split(keyValuePairs[i], ESCAPE_CHAR, EQUALS);
+      if (pair.length != 2) {
+        throw new RuntimeException("Error parsing the keyvalue pair " + keyValuePairs[i]);
+      }
+      sb.append(pair[0]);
+      sb.append(EQUALS);
+      if (pair[0].equals(key)) {
+        sb.append(newValue);
+      } else {
+        sb.append(pair[1]);
+      }
+      if (i < (keyValuePairs.length - 1)) {
+        sb.append(COMMA);
+      }
+    }
+    return sb.toString();
+  }
+
+  /**
    * Finds the first occurrence of the separator character ignoring the escaped
    * separators starting from the index. Note the substring between the index
    * and the position of the separator is passed.
@@ -598,6 +657,29 @@ public class HiveStringUtils {
       result.append(curChar);
     }
     return result.toString();
+  }
+
+  /**
+   * Escape non-unicode characters. StringEscapeUtil.escapeJava() will escape
+   * unicode characters as well but in some cases it's not desired.
+   *
+   * @param str Original string
+   * @return Escaped string
+   */
+  public static String escapeJava(String str) {
+    return ESCAPE_JAVA.translate(str);
+  }
+
+  /**
+   * Escape non-unicode characters, and ', and ;
+   * Like StringEscapeUtil.escapeJava() will escape
+   * unicode characters as well but in some cases it's not desired.
+   *
+   * @param str Original string
+   * @return Escaped string
+   */
+  public static String escapeHiveCommand(String str) {
+    return ESCAPE_HIVE_COMMAND.translate(str);
   }
 
   /**
@@ -685,7 +767,7 @@ public class HiveStringUtils {
    * @param LOG the target log object
    */
   public static void startupShutdownMessage(Class<?> clazz, String[] args,
-                                     final org.apache.commons.logging.Log LOG) {
+                                     final org.slf4j.Logger LOG) {
     final String hostname = getHostname();
     final String classname = clazz.getSimpleName();
     LOG.info(
@@ -878,6 +960,24 @@ public class HiveStringUtils {
   }
 
   /**
+   * Concatenates strings, using a separator. Empty/blank string or null will be
+   * ignored.
+   *
+   * @param strings Strings to join.
+   * @param separator Separator to join with.
+   */
+  public static String joinIgnoringEmpty(String[] strings, char separator) {
+    ArrayList<String> list = new ArrayList<String>();
+    for(String str : strings) {
+      if (StringUtils.isNotBlank(str)) {
+        list.add(str);
+      }
+    }
+
+    return StringUtils.join(list, separator);
+  }
+
+  /**
    * Convert SOME_STUFF to SomeStuff
    *
    * @param s input string
@@ -888,7 +988,7 @@ public class HiveStringUtils {
     String[] words = split(s.toLowerCase(Locale.US), ESCAPE_CHAR, '_');
 
     for (String word : words) {
-      sb.append(org.apache.commons.lang.StringUtils.capitalize(word));
+      sb.append(StringUtils.capitalize(word));
     }
 
     return sb.toString();
@@ -957,5 +1057,20 @@ public class HiveStringUtils {
       }
     }
     return false;
+  }
+
+  public static String getPartitionValWithInvalidCharacter(List<String> partVals,
+      Pattern partitionValidationPattern) {
+    if (partitionValidationPattern == null) {
+      return null;
+    }
+  
+    for (String partVal : partVals) {
+      if (!partitionValidationPattern.matcher(partVal).matches()) {
+        return partVal;
+      }
+    }
+  
+    return null;
   }
 }

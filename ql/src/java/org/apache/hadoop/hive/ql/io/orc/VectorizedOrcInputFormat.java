@@ -19,7 +19,6 @@
 package org.apache.hadoop.hive.ql.io.orc;
 
 import java.io.IOException;
-import java.util.ArrayList;
 import java.util.List;
 
 import org.apache.hadoop.conf.Configuration;
@@ -27,14 +26,15 @@ import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hive.conf.HiveConf;
-import org.apache.hadoop.hive.ql.exec.vector.ColumnVector;
-import org.apache.hadoop.hive.ql.exec.vector.DoubleColumnVector;
-import org.apache.hadoop.hive.ql.exec.vector.LongColumnVector;
+import org.apache.hadoop.hive.conf.HiveConf.ConfVars;
+import org.apache.hadoop.hive.ql.ErrorMsg;
+import org.apache.hadoop.hive.ql.exec.Utilities;
 import org.apache.hadoop.hive.ql.exec.vector.VectorizedInputFormatInterface;
 import org.apache.hadoop.hive.ql.exec.vector.VectorizedRowBatch;
 import org.apache.hadoop.hive.ql.exec.vector.VectorizedRowBatchCtx;
+import org.apache.hadoop.hive.ql.io.AcidUtils;
 import org.apache.hadoop.hive.ql.io.InputFormatChecker;
-import org.apache.hadoop.hive.ql.metadata.HiveException;
+import org.apache.hadoop.hive.ql.io.SelfDescribingInputFormatInterface;
 import org.apache.hadoop.io.NullWritable;
 import org.apache.hadoop.mapred.FileInputFormat;
 import org.apache.hadoop.mapred.FileSplit;
@@ -42,12 +42,16 @@ import org.apache.hadoop.mapred.InputSplit;
 import org.apache.hadoop.mapred.JobConf;
 import org.apache.hadoop.mapred.RecordReader;
 import org.apache.hadoop.mapred.Reporter;
+import org.apache.orc.OrcProto;
+import org.apache.orc.OrcUtils;
+import org.apache.orc.TypeDescription;
 
 /**
  * A MapReduce/Hive input format for ORC files.
  */
 public class VectorizedOrcInputFormat extends FileInputFormat<NullWritable, VectorizedRowBatch>
-    implements InputFormatChecker, VectorizedInputFormatInterface {
+    implements InputFormatChecker, VectorizedInputFormatInterface,
+    SelfDescribingInputFormatInterface {
 
   static class VectorizedOrcRecordReader
       implements RecordReader<NullWritable, VectorizedRowBatch> {
@@ -56,33 +60,60 @@ public class VectorizedOrcInputFormat extends FileInputFormat<NullWritable, Vect
     private final long length;
     private float progress = 0.0f;
     private VectorizedRowBatchCtx rbCtx;
+    private final Object[] partitionValues;
     private boolean addPartitionCols = true;
 
     VectorizedOrcRecordReader(Reader file, Configuration conf,
         FileSplit fileSplit) throws IOException {
-      List<OrcProto.Type> types = file.getTypes();
-      Reader.Options options = new Reader.Options();
+
+      boolean isAcidRead = HiveConf.getBoolVar(conf, ConfVars.HIVE_TRANSACTIONAL_TABLE_SCAN);
+      if (isAcidRead) {
+        OrcInputFormat.raiseAcidTablesMustBeReadWithAcidReaderException(conf);
+      }
+
+      rbCtx = Utilities.getVectorizedRowBatchCtx(conf);
+      /**
+       * Do we have schema on read in the configuration variables?
+       */
+      int dataColumns = rbCtx.getDataColumnCount();
+      TypeDescription schema =
+          OrcInputFormat.getDesiredRowTypeDescr(conf, false, dataColumns);
+      if (schema == null) {
+        schema = file.getSchema();
+        // Even if the user isn't doing schema evolution, cut the schema
+        // to the desired size.
+        if (schema.getCategory() == TypeDescription.Category.STRUCT &&
+            schema.getChildren().size() > dataColumns) {
+          schema = schema.clone();
+          List<TypeDescription> children = schema.getChildren();
+          for(int c = children.size() - 1; c >= dataColumns; --c) {
+            children.remove(c);
+          }
+        }
+      }
+      List<OrcProto.Type> types = OrcUtils.getOrcTypes(schema);
+      Reader.Options options = new Reader.Options().schema(schema);
+
       this.offset = fileSplit.getStart();
       this.length = fileSplit.getLength();
       options.range(offset, length);
-      options.include(OrcInputFormat.genIncludedColumns(types, conf, true));
+      options.include(OrcInputFormat.genIncludedColumns(schema, conf));
       OrcInputFormat.setSearchArgument(options, types, conf, true);
 
       this.reader = file.rowsOptions(options);
-      try {
-        rbCtx = new VectorizedRowBatchCtx();
-        rbCtx.init(conf, fileSplit);
-      } catch (Exception e) {
-        throw new RuntimeException(e);
+
+      int partitionColumnCount = rbCtx.getPartitionColumnCount();
+      if (partitionColumnCount > 0) {
+        partitionValues = new Object[partitionColumnCount];
+        rbCtx.getPartitionValues(rbCtx, conf, fileSplit, partitionValues);
+      } else {
+        partitionValues = null;
       }
     }
 
     @Override
     public boolean next(NullWritable key, VectorizedRowBatch value) throws IOException {
 
-      if (!reader.hasNext()) {
-        return false;
-      }
       try {
         // Check and update partition cols if necessary. Ideally, this should be done
         // in CreateValue as the partition is constant per split. But since Hive uses
@@ -90,10 +121,14 @@ public class VectorizedOrcInputFormat extends FileInputFormat<NullWritable, Vect
         // as this does not call CreateValue for each new RecordReader it creates, this check is
         // required in next()
         if (addPartitionCols) {
-          rbCtx.addPartitionColsToBatch(value);
+          if (partitionValues != null) {
+            rbCtx.addPartitionColsToBatch(value, partitionValues);
+          }
           addPartitionCols = false;
         }
-        reader.nextBatch(value);
+        if (!reader.nextBatch(value)) {
+          return false;
+        }
       } catch (Exception e) {
         throw new RuntimeException(e);
       }
@@ -108,11 +143,7 @@ public class VectorizedOrcInputFormat extends FileInputFormat<NullWritable, Vect
 
     @Override
     public VectorizedRowBatch createValue() {
-      try {
-        return rbCtx.createVectorizedRowBatch();
-      } catch (HiveException e) {
-        throw new RuntimeException("Error creating a batch", e);
-      }
+      return rbCtx.createVectorizedRowBatch();
     }
 
     @Override
@@ -149,8 +180,9 @@ public class VectorizedOrcInputFormat extends FileInputFormat<NullWritable, Vect
     if(fSplit instanceof OrcSplit){
       OrcSplit orcSplit = (OrcSplit) fSplit;
       if (orcSplit.hasFooter()) {
-        opts.fileMetaInfo(orcSplit.getFileMetaInfo());
+        opts.orcTail(orcSplit.getOrcTail());
       }
+      opts.maxLength(orcSplit.getFileLength());
     }
     Reader reader = OrcFile.createReader(path, opts);
     return new VectorizedOrcRecordReader(reader, conf, fSplit);
@@ -158,7 +190,7 @@ public class VectorizedOrcInputFormat extends FileInputFormat<NullWritable, Vect
 
   @Override
   public boolean validateInput(FileSystem fs, HiveConf conf,
-      ArrayList<FileStatus> files
+      List<FileStatus> files
       ) throws IOException {
     if (files.size() <= 0) {
       return false;

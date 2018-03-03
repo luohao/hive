@@ -1,10 +1,8 @@
-PREHOOK: query: -- SORT_QUERY_RESULTS
-create table e1 (key string, keyD double)
+PREHOOK: query: create table e1 (key string, keyD double)
 PREHOOK: type: CREATETABLE
 PREHOOK: Output: database:default
 PREHOOK: Output: default@e1
-POSTHOOK: query: -- SORT_QUERY_RESULTS
-create table e1 (key string, keyD double)
+POSTHOOK: query: create table e1 (key string, keyD double)
 POSTHOOK: type: CREATETABLE
 POSTHOOK: Output: database:default
 POSTHOOK: Output: default@e1
@@ -1750,7 +1748,7 @@ STAGE DEPENDENCIES:
   Stage-5 depends on stages: Stage-0
   Stage-1 depends on stages: Stage-4
   Stage-6 depends on stages: Stage-1
-  Stage-2 depends on stages: Stage-4
+  Stage-2 depends on stages: Stage-3
   Stage-7 depends on stages: Stage-2
 
 STAGE PLANS:

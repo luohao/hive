@@ -43,44 +43,6 @@ PREHOOK: type: QUERY
 POSTHOOK: query: explain extended
 select ds, count(1) from srcpartbucket tablesample (bucket 1 out of 4 on key) where ds is not null group by ds ORDER BY ds ASC
 POSTHOOK: type: QUERY
-ABSTRACT SYNTAX TREE:
-  
-TOK_QUERY
-   TOK_FROM
-      TOK_TABREF
-         TOK_TABNAME
-            srcpartbucket
-         TOK_TABLEBUCKETSAMPLE
-            1
-            4
-            TOK_TABLE_OR_COL
-               key
-   TOK_INSERT
-      TOK_DESTINATION
-         TOK_DIR
-            TOK_TMP_FILE
-      TOK_SELECT
-         TOK_SELEXPR
-            TOK_TABLE_OR_COL
-               ds
-         TOK_SELEXPR
-            TOK_FUNCTION
-               count
-               1
-      TOK_WHERE
-         TOK_FUNCTION
-            TOK_ISNOTNULL
-            TOK_TABLE_OR_COL
-               ds
-      TOK_GROUPBY
-         TOK_TABLE_OR_COL
-            ds
-      TOK_ORDERBY
-         TOK_TABSORTCOLNAMEASC
-            TOK_TABLE_OR_COL
-               ds
-
-
 STAGE DEPENDENCIES:
   Stage-1 is a root stage
   Stage-2 depends on stages: Stage-1
@@ -111,6 +73,7 @@ STAGE PLANS:
                   Statistics: Num rows: 20 Data size: 120 Basic stats: COMPLETE Column stats: NONE
                   Reduce Output Operator
                     key expressions: _col0 (type: string)
+                    null sort order: a
                     sort order: +
                     Map-reduce partition columns: _col0 (type: string)
                     Statistics: Num rows: 20 Data size: 120 Basic stats: COMPLETE Column stats: NONE
@@ -129,7 +92,7 @@ STAGE PLANS:
               ds 2008-04-08
               hr 11
             properties:
-              COLUMN_STATS_ACCURATE true
+              COLUMN_STATS_ACCURATE {"BASIC_STATS":"true"}
               bucket_count 4
               bucket_field_name key
               columns key,value
@@ -177,7 +140,7 @@ STAGE PLANS:
               ds 2008-04-08
               hr 12
             properties:
-              COLUMN_STATS_ACCURATE true
+              COLUMN_STATS_ACCURATE {"BASIC_STATS":"true"}
               bucket_count 4
               bucket_field_name key
               columns key,value
@@ -225,7 +188,7 @@ STAGE PLANS:
               ds 2008-04-09
               hr 11
             properties:
-              COLUMN_STATS_ACCURATE true
+              COLUMN_STATS_ACCURATE {"BASIC_STATS":"true"}
               bucket_count 4
               bucket_field_name key
               columns key,value
@@ -273,7 +236,7 @@ STAGE PLANS:
               ds 2008-04-09
               hr 12
             properties:
-              COLUMN_STATS_ACCURATE true
+              COLUMN_STATS_ACCURATE {"BASIC_STATS":"true"}
               bucket_count 4
               bucket_field_name key
               columns key,value
@@ -350,6 +313,7 @@ STAGE PLANS:
             GatherStats: false
             Reduce Output Operator
               key expressions: _col0 (type: string)
+              null sort order: a
               sort order: +
               Statistics: Num rows: 10 Data size: 60 Basic stats: COMPLETE Column stats: NONE
               tag: -1
@@ -360,7 +324,7 @@ STAGE PLANS:
       Path -> Partition:
 #### A masked pattern was here ####
           Partition
-            base file name: -mr-10003
+            base file name: -mr-10004
             input format: org.apache.hadoop.mapred.SequenceFileInputFormat
             output format: org.apache.hadoop.hive.ql.io.HiveSequenceFileOutputFormat
             properties:
@@ -394,13 +358,14 @@ STAGE PLANS:
             Statistics: Num rows: 10 Data size: 60 Basic stats: COMPLETE Column stats: NONE
 #### A masked pattern was here ####
             table:
-                input format: org.apache.hadoop.mapred.TextInputFormat
-                output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
+                input format: org.apache.hadoop.mapred.SequenceFileInputFormat
+                output format: org.apache.hadoop.hive.ql.io.HiveSequenceFileOutputFormat
                 properties:
                   columns _col0,_col1
                   columns.types string:bigint
                   escape.delim \
                   hive.serialization.extend.additional.nesting.levels true
+                  serialization.escape.crlf true
                   serialization.format 1
                   serialization.lib org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe
                 serde: org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe

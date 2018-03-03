@@ -24,8 +24,8 @@ import org.apache.commons.cli.OptionBuilder;
 import org.apache.commons.cli.Options;
 import org.apache.commons.cli.ParseException;
 import org.apache.commons.cli.Parser;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.hive.common.LogUtils;
 import org.apache.hadoop.util.StringUtils;
 
@@ -37,7 +37,7 @@ import java.util.Random;
  */
 public class StreamingIntegrationTester {
 
-  static final private Log LOG = LogFactory.getLog(StreamingIntegrationTester.class.getName());
+  static final private Logger LOG = LoggerFactory.getLogger(StreamingIntegrationTester.class.getName());
 
   public static void main(String[] args) {
 
@@ -166,12 +166,12 @@ public class StreamingIntegrationTester {
     String db = cmdline.getOptionValue('d');
     String table = cmdline.getOptionValue('t');
     String uri = cmdline.getOptionValue('m');
-    int txnsPerBatch = Integer.valueOf(cmdline.getOptionValue('n', "100"));
-    int writers = Integer.valueOf(cmdline.getOptionValue('w', "2"));
-    int batches = Integer.valueOf(cmdline.getOptionValue('i', "10"));
-    int recordsPerTxn = Integer.valueOf(cmdline.getOptionValue('r', "100"));
-    int frequency = Integer.valueOf(cmdline.getOptionValue('f', "1"));
-    int ap = Integer.valueOf(cmdline.getOptionValue('a', "5"));
+    int txnsPerBatch = Integer.parseInt(cmdline.getOptionValue('n', "100"));
+    int writers = Integer.parseInt(cmdline.getOptionValue('w', "2"));
+    int batches = Integer.parseInt(cmdline.getOptionValue('i', "10"));
+    int recordsPerTxn = Integer.parseInt(cmdline.getOptionValue('r', "100"));
+    int frequency = Integer.parseInt(cmdline.getOptionValue('f', "1"));
+    int ap = Integer.parseInt(cmdline.getOptionValue('a', "5"));
     float abortPct = ((float)ap) / 100.0f;
     String[] partVals = cmdline.getOptionValues('p');
     String[] cols = cmdline.getOptionValues('c');
@@ -276,7 +276,7 @@ public class StreamingIntegrationTester {
     public void run() {
       StreamingConnection conn = null;
       try {
-        conn = endPoint.newConnection(true);
+        conn = endPoint.newConnection(true, "UT_" + Thread.currentThread().getName());
         RecordWriter writer = new DelimitedInputWriter(cols, ",", endPoint);
 
         for (int i = 0; i < batches; i++) {

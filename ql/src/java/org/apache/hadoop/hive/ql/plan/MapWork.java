@@ -18,29 +18,44 @@
 
 package org.apache.hadoop.hive.ql.plan;
 
+import org.apache.hadoop.hive.common.StringInternUtils;
+import org.apache.hadoop.hive.ql.exec.TableScanOperator;
+import org.apache.hadoop.hive.ql.exec.Utilities;
+
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.BitSet;
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
+import java.util.Properties;
 import java.util.Set;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hive.conf.HiveConf;
+import org.apache.hadoop.hive.conf.HiveConf.ConfVars;
 import org.apache.hadoop.hive.ql.exec.FileSinkOperator;
 import org.apache.hadoop.hive.ql.exec.Operator;
 import org.apache.hadoop.hive.ql.exec.OperatorUtils;
+import org.apache.hadoop.hive.ql.exec.vector.VectorizedRowBatch;
+import org.apache.hadoop.hive.ql.io.AcidUtils;
+import org.apache.hadoop.hive.ql.io.HiveInputFormat;
 import org.apache.hadoop.hive.ql.optimizer.physical.BucketingSortingCtx.BucketCol;
 import org.apache.hadoop.hive.ql.optimizer.physical.BucketingSortingCtx.SortCol;
+import org.apache.hadoop.hive.ql.optimizer.physical.VectorizerReason;
 import org.apache.hadoop.hive.ql.parse.SplitSample;
 import org.apache.hadoop.hive.ql.plan.Explain.Level;
+import org.apache.hadoop.hive.ql.plan.Explain.Vectorization;
+import org.apache.hadoop.hive.serde.serdeConstants;
+import org.apache.hadoop.hive.serde2.typeinfo.TypeInfo;
+import org.apache.hadoop.hive.serde2.typeinfo.TypeInfoUtils;
 import org.apache.hadoop.mapred.JobConf;
 
 import com.google.common.collect.Interner;
@@ -58,16 +73,14 @@ import com.google.common.collect.Interner;
  * This class is also used in the explain command any property with the
  * appropriate annotation will be displayed in the explain output.
  */
-@SuppressWarnings({"serial", "deprecation"})
+@SuppressWarnings({"serial"})
 public class MapWork extends BaseWork {
-
-  private static final Log LOG = LogFactory.getLog(MapWork.class);
 
   // use LinkedHashMap to make sure the iteration order is
   // deterministic, to ease testing
-  private LinkedHashMap<String, ArrayList<String>> pathToAliases = new LinkedHashMap<String, ArrayList<String>>();
+  private LinkedHashMap<Path, ArrayList<String>> pathToAliases = new LinkedHashMap<>();
 
-  private LinkedHashMap<String, PartitionDesc> pathToPartitionInfo = new LinkedHashMap<String, PartitionDesc>();
+  private LinkedHashMap<Path, PartitionDesc> pathToPartitionInfo = new LinkedHashMap<>();
 
   private LinkedHashMap<String, Operator<? extends OperatorDesc>> aliasToWork = new LinkedHashMap<String, Operator<? extends OperatorDesc>>();
 
@@ -115,8 +128,6 @@ public class MapWork extends BaseWork {
 
   private boolean useBucketizedHiveInputFormat;
 
-  private boolean useOneNullRowInputFormat;
-
   private boolean dummyTableScan = false;
 
   // used for dynamic partitioning
@@ -124,10 +135,27 @@ public class MapWork extends BaseWork {
       new LinkedHashMap<String, List<TableDesc>>();
   private Map<String, List<String>> eventSourceColumnNameMap =
       new LinkedHashMap<String, List<String>>();
+  private Map<String, List<String>> eventSourceColumnTypeMap =
+      new LinkedHashMap<String, List<String>>();
   private Map<String, List<ExprNodeDesc>> eventSourcePartKeyExprMap =
       new LinkedHashMap<String, List<ExprNodeDesc>>();
 
   private boolean doSplitsGrouping = true;
+
+  private VectorizedRowBatch vectorizedRowBatch;
+
+  private VectorizerReason notEnabledInputFileFormatReason;
+
+  private Set<String> vectorizationInputFileFormatClassNameSet;
+  private List<String> vectorizationEnabledConditionsMet;
+  private List<String> vectorizationEnabledConditionsNotMet;
+
+  // bitsets can't be correctly serialized by Kryo's default serializer
+  // BitSet::wordsInUse is transient, so force dumping into a lower form
+  private byte[] includedBuckets;
+
+  /** Whether LLAP IO will be used for inputs. */
+  private String llapIoDesc;
 
   public MapWork() {}
 
@@ -136,15 +164,36 @@ public class MapWork extends BaseWork {
   }
 
   @Explain(displayName = "Path -> Alias", explainLevels = { Level.EXTENDED })
-  public LinkedHashMap<String, ArrayList<String>> getPathToAliases() {
+  public LinkedHashMap<Path, ArrayList<String>> getPathToAliases() {
+    //
     return pathToAliases;
   }
 
-  public void setPathToAliases(
-      final LinkedHashMap<String, ArrayList<String>> pathToAliases) {
+  public void setPathToAliases(final LinkedHashMap<Path, ArrayList<String>> pathToAliases) {
+    for (Path p : pathToAliases.keySet()) {
+      StringInternUtils.internUriStringsInPath(p);
+    }
     this.pathToAliases = pathToAliases;
   }
 
+  public void addPathToAlias(Path path, ArrayList<String> aliases){
+    pathToAliases.put(path, aliases);
+  }
+  
+  public void addPathToAlias(Path path, String newAlias){
+    ArrayList<String> aliases = pathToAliases.get(path);
+    if (aliases == null) {
+      aliases = new ArrayList<>();
+      pathToAliases.put(path, aliases);
+    }
+    aliases.add(newAlias.intern());
+  }
+
+  
+  public void removePathToAlias(Path path){
+    pathToAliases.remove(path);
+  }
+  
   /**
    * This is used to display and verify output of "Path -> Alias" in test framework.
    *
@@ -160,11 +209,11 @@ public class MapWork extends BaseWork {
   public Map<String, ArrayList<String>> getTruncatedPathToAliases() {
     Map<String, ArrayList<String>> trunPathToAliases = new LinkedHashMap<String,
         ArrayList<String>>();
-    Iterator<Entry<String, ArrayList<String>>> itr = this.pathToAliases.entrySet().iterator();
+    Iterator<Entry<Path, ArrayList<String>>> itr = this.pathToAliases.entrySet().iterator();
     while (itr.hasNext()) {
-      final Entry<String, ArrayList<String>> entry = itr.next();
-      String origiKey = entry.getKey();
-      String newKey = PlanUtils.removePrefixFromWarehouseConfig(origiKey);
+      final Entry<Path, ArrayList<String>> entry = itr.next();
+      Path origiKey = entry.getKey();
+      String newKey = PlanUtils.removePrefixFromWarehouseConfig(origiKey.toString());
       ArrayList<String> value = entry.getValue();
       trunPathToAliases.put(newKey, value);
     }
@@ -172,15 +221,25 @@ public class MapWork extends BaseWork {
   }
 
   @Explain(displayName = "Path -> Partition", explainLevels = { Level.EXTENDED })
-  public LinkedHashMap<String, PartitionDesc> getPathToPartitionInfo() {
+  public LinkedHashMap<Path, PartitionDesc> getPathToPartitionInfo() {
     return pathToPartitionInfo;
   }
 
-  public void setPathToPartitionInfo(
-      final LinkedHashMap<String, PartitionDesc> pathToPartitionInfo) {
+  public void setPathToPartitionInfo(final LinkedHashMap<Path, PartitionDesc> pathToPartitionInfo) {
     this.pathToPartitionInfo = pathToPartitionInfo;
   }
 
+  public void addPathToPartitionInfo(Path path, PartitionDesc partitionInfo) {
+    if (pathToPartitionInfo == null) {
+      pathToPartitionInfo=new LinkedHashMap<>();
+    }
+    pathToPartitionInfo.put(path, partitionInfo);
+  }
+
+  public void removePathToPartitionInfo(Path path) {
+    pathToPartitionInfo.remove(path);
+  }
+  
   /**
    * Derive additional attributes to be rendered by EXPLAIN.
    * TODO: this method is relied upon by custom input formats to set jobconf properties.
@@ -188,16 +247,86 @@ public class MapWork extends BaseWork {
    */
   public void deriveExplainAttributes() {
     if (pathToPartitionInfo != null) {
-      for (Map.Entry<String, PartitionDesc> entry : pathToPartitionInfo
-          .entrySet()) {
+      for (Map.Entry<Path, PartitionDesc> entry : pathToPartitionInfo.entrySet()) {
         entry.getValue().deriveBaseFileName(entry.getKey());
       }
     }
-
     MapredLocalWork mapLocalWork = getMapRedLocalWork();
     if (mapLocalWork != null) {
       mapLocalWork.deriveExplainAttributes();
     }
+  }
+
+  public void deriveLlap(Configuration conf, boolean isExecDriver) {
+    boolean hasLlap = false, hasNonLlap = false, hasAcid = false;
+    // Assume the IO is enabled on the daemon by default. We cannot reasonably check it here.
+    boolean isLlapOn = HiveConf.getBoolVar(conf, ConfVars.LLAP_IO_ENABLED, llapMode);
+    boolean canWrapAny = false, doCheckIfs = false;
+    if (isLlapOn) {
+      // We can wrap inputs if the execution is vectorized, or if we use a wrapper.
+      canWrapAny = Utilities.getUseVectorizedInputFileFormat(conf, this);
+      // ExecDriver has no plan path, so we cannot derive VRB stuff for the wrapper.
+      if (!canWrapAny && !isExecDriver) {
+        canWrapAny = HiveConf.getBoolVar(conf, ConfVars.LLAP_IO_NONVECTOR_WRAPPER_ENABLED);
+        doCheckIfs = true;
+      }
+    }
+    boolean hasPathToPartInfo = (pathToPartitionInfo != null && !pathToPartitionInfo.isEmpty());
+    if (canWrapAny && hasPathToPartInfo) {
+      assert isLlapOn;
+      for (PartitionDesc part : pathToPartitionInfo.values()) {
+        boolean isUsingLlapIo = HiveInputFormat.canWrapForLlap(
+            part.getInputFileFormatClass(), doCheckIfs);
+        if (isUsingLlapIo) {
+          if (part.getTableDesc() != null &&
+              AcidUtils.isTablePropertyTransactional(part.getTableDesc().getProperties())) {
+            hasAcid = true;
+          } else {
+            hasLlap = true;
+          }
+        } else {
+          hasNonLlap = true;
+        }
+      }
+    }
+
+    // check if the column types that are read are supported by LLAP IO
+    if (hasLlap) {
+      // TODO: no need for now hasLlap = checkVectorizerSupportedTypes();
+    }
+
+    llapIoDesc = deriveLlapIoDescString(
+        isLlapOn, canWrapAny, hasPathToPartInfo, hasLlap, hasNonLlap, hasAcid);
+  }
+
+  private boolean checkVectorizerSupportedTypes(boolean hasLlap) {
+    for (Map.Entry<String, Operator<? extends OperatorDesc>> entry : aliasToWork.entrySet()) {
+      final String alias = entry.getKey();
+      Operator<? extends OperatorDesc> op = entry.getValue();
+      PartitionDesc partitionDesc = aliasToPartnInfo.get(alias);
+      if (op instanceof TableScanOperator && partitionDesc != null &&
+          partitionDesc.getTableDesc() != null) {
+        final TableScanOperator tsOp = (TableScanOperator) op;
+        final List<String> readColumnNames = tsOp.getNeededColumns();
+        final Properties props = partitionDesc.getTableDesc().getProperties();
+        final List<TypeInfo> typeInfos = TypeInfoUtils.getTypeInfosFromTypeString(
+            props.getProperty(serdeConstants.LIST_COLUMN_TYPES));
+        final List<String> allColumnTypes = TypeInfoUtils.getTypeStringsFromTypeInfo(typeInfos);
+        final List<String> allColumnNames = Utilities.getColumnNames(props);
+        hasLlap = Utilities.checkVectorizerSupportedTypes(readColumnNames, allColumnNames,
+            allColumnTypes);
+      }
+    }
+    return hasLlap;
+  }
+
+  private static String deriveLlapIoDescString(boolean isLlapOn, boolean canWrapAny,
+      boolean hasPathToPartInfo, boolean hasLlap, boolean hasNonLlap, boolean hasAcid) {
+    if (!isLlapOn) return null; // LLAP IO is off, don't output.
+    if (!canWrapAny) return "no inputs"; // Cannot use with input formats.
+    if (!hasPathToPartInfo) return "unknown"; // No information to judge.
+    if (hasAcid) return "may be used (ACID table)";
+    return (hasLlap ? (hasNonLlap ? "some inputs" : "all inputs") : "no inputs");
   }
 
   public void internTable(Interner<TableDesc> interner) {
@@ -246,6 +375,11 @@ public class MapWork extends BaseWork {
     return nameToSplitSample;
   }
 
+  @Explain(displayName = "LLAP IO", vectorization = Vectorization.SUMMARY_PATH)
+  public String getLlapIoDesc() {
+    return llapIoDesc;
+  }
+
   public void setNameToSplitSample(HashMap<String, SplitSample> nameToSplitSample) {
     this.nameToSplitSample = nameToSplitSample;
   }
@@ -259,12 +393,13 @@ public class MapWork extends BaseWork {
   }
 
   @SuppressWarnings("nls")
-  public void addMapWork(String path, String alias, Operator<?> work,
+  public void addMapWork(Path path, String alias, Operator<?> work,
       PartitionDesc pd) {
+    StringInternUtils.internUriStringsInPath(path);
     ArrayList<String> curAliases = pathToAliases.get(path);
     if (curAliases == null) {
       assert (pathToPartitionInfo.get(path) == null);
-      curAliases = new ArrayList<String>();
+      curAliases = new ArrayList<>();
       pathToAliases.put(path, curAliases);
       pathToPartitionInfo.put(path, pd);
     } else {
@@ -295,8 +430,9 @@ public class MapWork extends BaseWork {
 
   public void resolveDynamicPartitionStoredAsSubDirsMerge(HiveConf conf, Path path,
       TableDesc tblDesc, ArrayList<String> aliases, PartitionDesc partDesc) {
-    pathToAliases.put(path.toString(), aliases);
-    pathToPartitionInfo.put(path.toString(), partDesc);
+    StringInternUtils.internUriStringsInPath(path);
+    pathToAliases.put(path, aliases);
+    pathToPartitionInfo.put(path, partDesc);
   }
 
   /**
@@ -313,9 +449,23 @@ public class MapWork extends BaseWork {
     }
   }
 
-  @Explain(displayName = "Execution mode")
-  public String getVectorModeOn() {
-    return vectorMode ? "vectorized" : null;
+  @Explain(displayName = "Execution mode", explainLevels = { Level.USER, Level.DEFAULT, Level.EXTENDED },
+      vectorization = Vectorization.SUMMARY_PATH)
+  public String getExecutionMode() {
+    if (vectorMode) {
+      if (llapMode) {
+        if (uberMode) {
+          return "vectorized, uber";
+        } else {
+          return "vectorized, llap";
+        }
+      } else {
+        return "vectorized";
+      }
+    } else if (llapMode) {
+      return uberMode? "uber" : "llap";
+    }
+    return null;
   }
 
   @Override
@@ -330,8 +480,9 @@ public class MapWork extends BaseWork {
   }
 
   @Override
-  @Explain(displayName = "Map Operator Tree", explainLevels = { Level.USER, Level.DEFAULT, Level.EXTENDED })
-  public Set<Operator<?>> getAllRootOperators() {
+  @Explain(displayName = "Map Operator Tree", explainLevels = { Level.USER, Level.DEFAULT, Level.EXTENDED },
+      vectorization = Vectorization.OPERATOR_PATH)
+  public Set<Operator<? extends OperatorDesc>> getAllRootOperators() {
     Set<Operator<?>> opSet = new LinkedHashSet<Operator<?>>();
 
     for (Operator<?> op : getAliasToWork().values()) {
@@ -340,10 +491,17 @@ public class MapWork extends BaseWork {
     return opSet;
   }
 
-  public void mergeAliasedInput(String alias, String pathDir, PartitionDesc partitionInfo) {
+  @Override
+  public Operator<? extends OperatorDesc> getAnyRootOperator() {
+    return aliasToWork.isEmpty() ? null : aliasToWork.values().iterator().next();
+  }
+
+  public void mergeAliasedInput(String alias, Path pathDir, PartitionDesc partitionInfo) {
+    StringInternUtils.internUriStringsInPath(pathDir);
+    alias = alias.intern();
     ArrayList<String> aliases = pathToAliases.get(pathDir);
     if (aliases == null) {
-      aliases = new ArrayList<String>(Arrays.asList(alias));
+      aliases = new ArrayList<>(Arrays.asList(alias));
       pathToAliases.put(pathDir, aliases);
       pathToPartitionInfo.put(pathDir, partitionInfo);
     } else {
@@ -403,14 +561,6 @@ public class MapWork extends BaseWork {
     this.useBucketizedHiveInputFormat = useBucketizedHiveInputFormat;
   }
 
-  public void setUseOneNullRowInputFormat(boolean useOneNullRowInputFormat) {
-    this.useOneNullRowInputFormat = useOneNullRowInputFormat;
-  }
-
-  public boolean isUseOneNullRowInputFormat() {
-    return useOneNullRowInputFormat;
-  }
-
   public void setMapperCannotSpanPartns(boolean mapperCannotSpanPartns) {
     this.mapperCannotSpanPartns = mapperCannotSpanPartns;
   }
@@ -431,9 +581,12 @@ public class MapWork extends BaseWork {
     return new ArrayList<Operator<?>>(aliasToWork.values());
   }
 
-  public ArrayList<String> getPaths() {
-    return new ArrayList<String>(pathToAliases.keySet());
+  public ArrayList<Path> getPaths() {
+    ArrayList<Path> ret=new ArrayList<>();
+    ret.addAll(pathToAliases.keySet());
+    return ret;
   }
+
 
   public ArrayList<PartitionDesc> getPartitionDescs() {
     return new ArrayList<PartitionDesc>(aliasToPartnInfo.values());
@@ -503,17 +656,6 @@ public class MapWork extends BaseWork {
     }
   }
 
-  public void logPathToAliases() {
-    if (LOG.isDebugEnabled()) {
-      LOG.debug("LOGGING PATH TO ALIASES");
-      for (Map.Entry<String, ArrayList<String>> entry: pathToAliases.entrySet()) {
-        for (String a: entry.getValue()) {
-          LOG.debug("Path: " + entry.getKey() + ", Alias: " + a);
-        }
-      }
-    }
-  }
-
   public void setDummyTableScan(boolean dummyTableScan) {
     this.dummyTableScan = dummyTableScan;
   }
@@ -536,6 +678,10 @@ public class MapWork extends BaseWork {
 
   public Map<String, List<String>> getEventSourceColumnNameMap() {
     return eventSourceColumnNameMap;
+  }
+
+  public Map<String, List<String>> getEventSourceColumnTypeMap() {
+    return eventSourceColumnTypeMap;
   }
 
   public Map<String, List<ExprNodeDesc>> getEventSourcePartKeyExprMap() {
@@ -576,5 +722,104 @@ public class MapWork extends BaseWork {
 
   public void setMapAliases(List<String> mapAliases) {
     this.mapAliases = mapAliases;
+  }
+
+  public BitSet getIncludedBuckets() {
+    return includedBuckets != null ? BitSet.valueOf(includedBuckets) : null;
+  }
+
+  public void setIncludedBuckets(BitSet includedBuckets) {
+    // see comment next to the field
+    this.includedBuckets = includedBuckets.toByteArray();
+  }
+
+  public void setVectorizedRowBatch(VectorizedRowBatch vectorizedRowBatch) {
+    this.vectorizedRowBatch = vectorizedRowBatch;
+  }
+
+  public VectorizedRowBatch getVectorizedRowBatch() {
+    return vectorizedRowBatch;
+  }
+
+  /*
+   * Whether the HiveConf.ConfVars.HIVE_VECTORIZATION_USE_VECTORIZED_INPUT_FILE_FORMAT variable
+   * (hive.vectorized.use.vectorized.input.format) was true when the Vectorizer class evaluated
+   * vectorizing this node.
+   *
+   * When Vectorized Input File Format looks at this flag, it can determine whether it should
+   * operate vectorized or not.  In some modes, the node can be vectorized but use row
+   * serialization.
+   */
+  public void setUseVectorizedInputFileFormat(boolean useVectorizedInputFileFormat) {
+    this.useVectorizedInputFileFormat = useVectorizedInputFileFormat;
+  }
+
+  public boolean getUseVectorizedInputFileFormat() {
+    return useVectorizedInputFileFormat;
+  }
+
+  public void setNotEnabledInputFileFormatReason(VectorizerReason notEnabledInputFileFormatReason) {
+    this.notEnabledInputFileFormatReason = notEnabledInputFileFormatReason;
+  }
+
+  public VectorizerReason getNotEnabledInputFileFormatReason() {
+    return notEnabledInputFileFormatReason;
+  }
+
+  public void setVectorizationInputFileFormatClassNameSet(Set<String> vectorizationInputFileFormatClassNameSet) {
+    this.vectorizationInputFileFormatClassNameSet = vectorizationInputFileFormatClassNameSet;
+  }
+
+  public Set<String> getVectorizationInputFileFormatClassNameSet() {
+    return vectorizationInputFileFormatClassNameSet;
+  }
+
+  public void setVectorizationEnabledConditionsMet(ArrayList<String> vectorizationEnabledConditionsMet) {
+    this.vectorizationEnabledConditionsMet = VectorizationCondition.addBooleans(vectorizationEnabledConditionsMet, true);
+  }
+
+  public List<String> getVectorizationEnabledConditionsMet() {
+    return vectorizationEnabledConditionsMet;
+  }
+
+  public void setVectorizationEnabledConditionsNotMet(List<String> vectorizationEnabledConditionsNotMet) {
+    this.vectorizationEnabledConditionsNotMet = VectorizationCondition.addBooleans(vectorizationEnabledConditionsNotMet, false);
+  }
+
+  public List<String> getVectorizationEnabledConditionsNotMet() {
+    return vectorizationEnabledConditionsNotMet;
+  }
+
+  public class MapExplainVectorization extends BaseExplainVectorization {
+
+    private final MapWork mapWork;
+
+    public MapExplainVectorization(MapWork mapWork) {
+      super(mapWork);
+      this.mapWork = mapWork;
+    }
+
+    @Explain(vectorization = Vectorization.SUMMARY, displayName = "inputFileFormats", explainLevels = { Level.DEFAULT, Level.EXTENDED })
+    public Set<String> inputFileFormats() {
+      return mapWork.getVectorizationInputFileFormatClassNameSet();
+    }
+
+    @Explain(vectorization = Vectorization.SUMMARY, displayName = "enabledConditionsMet", explainLevels = { Level.DEFAULT, Level.EXTENDED })
+    public List<String> enabledConditionsMet() {
+      return mapWork.getVectorizationEnabledConditionsMet();
+    }
+
+    @Explain(vectorization = Vectorization.SUMMARY, displayName = "enabledConditionsNotMet", explainLevels = { Level.DEFAULT, Level.EXTENDED })
+    public List<String> enabledConditionsNotMet() {
+      return mapWork.getVectorizationEnabledConditionsNotMet();
+    }
+  }
+
+  @Explain(vectorization = Vectorization.SUMMARY, displayName = "Map Vectorization", explainLevels = { Level.DEFAULT, Level.EXTENDED })
+  public MapExplainVectorization getMapExplainVectorization() {
+    if (!getVectorizationExamined()) {
+      return null;
+    }
+    return new MapExplainVectorization(this);
   }
 }

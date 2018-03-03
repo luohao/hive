@@ -19,10 +19,14 @@
 package org.apache.hadoop.hive.ql.exec.vector.expressions;
 
 import java.util.Arrays;
+
+import org.apache.hadoop.hive.ql.exec.vector.BytesColumnVector;
 import org.apache.hadoop.hive.ql.exec.vector.DecimalColumnVector;
+import org.apache.hadoop.hive.ql.exec.vector.IntervalDayTimeColumnVector;
 import org.apache.hadoop.hive.ql.exec.vector.LongColumnVector;
 import org.apache.hadoop.hive.ql.exec.vector.DoubleColumnVector;
 import org.apache.hadoop.hive.ql.exec.vector.ColumnVector;
+import org.apache.hadoop.hive.ql.exec.vector.TimestampColumnVector;
 
 /**
  * Utility functions to handle null propagation.
@@ -54,6 +58,81 @@ public class NullUtil {
     }
   }
 
+  /**
+   * Set the data value for all NULL entries to the designated NULL_VALUE.
+   */
+  public static void setNullDataEntriesBytes(
+      BytesColumnVector v, boolean selectedInUse, int[] sel, int n) {
+    if (v.noNulls) {
+      return;
+    } else if (v.isRepeating && v.isNull[0]) {
+      v.vector[0] = null;
+    } else if (selectedInUse) {
+      for (int j = 0; j != n; j++) {
+        int i = sel[j];
+        if(v.isNull[i]) {
+          v.vector[i] = null;
+        }
+      }
+    } else {
+      for (int i = 0; i != n; i++) {
+        if(v.isNull[i]) {
+          v.vector[i] = null;
+        }
+      }
+    }
+  }
+
+  /**
+   * Set the data value for all NULL entries to the designated NULL_VALUE.
+   */
+  public static void setNullDataEntriesTimestamp(
+      TimestampColumnVector v, boolean selectedInUse, int[] sel, int n) {
+    if (v.noNulls) {
+      return;
+    } else if (v.isRepeating && v.isNull[0]) {
+      v.setNullValue(0);
+    } else if (selectedInUse) {
+      for (int j = 0; j != n; j++) {
+        int i = sel[j];
+        if(v.isNull[i]) {
+          v.setNullValue(i);
+        }
+      }
+    } else {
+      for (int i = 0; i != n; i++) {
+        if(v.isNull[i]) {
+          v.setNullValue(i);
+        }
+      }
+    }
+  }
+
+  /**
+   * Set the data value for all NULL entries to the designated NULL_VALUE.
+   */
+  public static void setNullDataEntriesIntervalDayTime(
+      IntervalDayTimeColumnVector v, boolean selectedInUse, int[] sel, int n) {
+    if (v.noNulls) {
+      return;
+    } else if (v.isRepeating && v.isNull[0]) {
+      v.setNullValue(0);
+    } else if (selectedInUse) {
+      for (int j = 0; j != n; j++) {
+        int i = sel[j];
+        if(v.isNull[i]) {
+          v.setNullValue(i);
+        }
+      }
+    } else {
+      for (int i = 0; i != n; i++) {
+        if(v.isNull[i]) {
+          v.setNullValue(i);
+        }
+      }
+    }
+  }
+
   // for use by Column-Scalar and Scalar-Column arithmetic for null propagation
   public static void setNullOutputEntriesColScalar(
       ColumnVector v, boolean selectedInUse, int[] sel, int n) {
@@ -62,8 +141,11 @@ public class NullUtil {
       // No need to set null data entries because the input NaN values
       // will automatically propagate to the output.
       return;
+    } else if (v instanceof LongColumnVector) {
+      setNullDataEntriesLong((LongColumnVector) v, selectedInUse, sel, n);
+    } else if (v instanceof TimestampColumnVector){
+      setNullDataEntriesTimestamp((TimestampColumnVector) v, selectedInUse, sel, n);
     }
-    setNullDataEntriesLong((LongColumnVector) v, selectedInUse, sel, n);
   }
 
   /**
@@ -98,20 +180,21 @@ public class NullUtil {
   public static void setNullAndDivBy0DataEntriesDouble(
       DoubleColumnVector v, boolean selectedInUse, int[] sel, int n, LongColumnVector denoms) {
     assert v.isRepeating || !denoms.isRepeating;
+    final boolean realNulls = !v.noNulls;
     v.noNulls = false;
     long[] vector = denoms.vector;
-    if (v.isRepeating && (v.isNull[0] = (v.isNull[0] || vector[0] == 0))) {
+    if (v.isRepeating && (v.isNull[0] = ((realNulls && v.isNull[0]) || vector[0] == 0))) {
       v.vector[0] = DoubleColumnVector.NULL_VALUE;
     } else if (selectedInUse) {
       for (int j = 0; j != n; j++) {
         int i = sel[j];
-        if (v.isNull[i] = (v.isNull[i] || vector[i] == 0)) {
+        if (v.isNull[i] = ((realNulls && v.isNull[i]) || vector[i] == 0)) {
           v.vector[i] = DoubleColumnVector.NULL_VALUE;
         }
       }
     } else {
       for (int i = 0; i != n; i++) {
-        if (v.isNull[i] = (v.isNull[i] || vector[i] == 0)) {
+        if (v.isNull[i] = ((realNulls && v.isNull[i]) || vector[i] == 0)) {
           v.vector[i] = DoubleColumnVector.NULL_VALUE;
         }
       }
@@ -125,20 +208,21 @@ public class NullUtil {
   public static void setNullAndDivBy0DataEntriesDouble(
       DoubleColumnVector v, boolean selectedInUse, int[] sel, int n, DoubleColumnVector denoms) {
     assert v.isRepeating || !denoms.isRepeating;
+    final boolean realNulls = !v.noNulls;
     v.noNulls = false;
     double[] vector = denoms.vector;
-    if (v.isRepeating && (v.isNull[0] = (v.isNull[0] || vector[0] == 0))) {
+    if (v.isRepeating && (v.isNull[0] = ((realNulls && v.isNull[0]) || vector[0] == 0))) {
       v.vector[0] = DoubleColumnVector.NULL_VALUE;
     } else if (selectedInUse) {
       for (int j = 0; j != n; j++) {
         int i = sel[j];
-        if (v.isNull[i] = (v.isNull[i] || vector[i] == 0)) {
+        if (v.isNull[i] = ((realNulls && v.isNull[i]) || vector[i] == 0)) {
           v.vector[i] = DoubleColumnVector.NULL_VALUE;
         }
       }
     } else {
       for (int i = 0; i != n; i++) {
-        if (v.isNull[i] = (v.isNull[i] || vector[i] == 0)) {
+        if (v.isNull[i] = ((realNulls && v.isNull[i]) || vector[i] == 0)) {
           v.vector[i] = DoubleColumnVector.NULL_VALUE;
         }
       }
@@ -207,6 +291,13 @@ public class NullUtil {
       int n, boolean selectedInUse) {
 
     outputColVector.noNulls = inputColVector1.noNulls && inputColVector2.noNulls;
+
+    if (outputColVector.noNulls) {
+      // the inputs might not always have isNull initialized for
+      // inputColVector1.isNull[i] || inputColVector2.isNull[i] to be valid
+      Arrays.fill(outputColVector.isNull, false);
+      return;
+    }
 
     if (inputColVector1.noNulls && !inputColVector2.noNulls) {
       if (inputColVector2.isRepeating) {

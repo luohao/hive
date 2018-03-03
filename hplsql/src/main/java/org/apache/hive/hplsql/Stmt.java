@@ -25,9 +25,8 @@ import java.util.Stack;
 import java.util.UUID;
 
 import org.antlr.v4.runtime.ParserRuleContext;
+import org.antlr.v4.runtime.Token;
 import org.apache.hive.hplsql.Var.Type;
-import org.apache.hive.hplsql.HplsqlParser.Create_table_columns_itemContext;
-import org.apache.hive.hplsql.HplsqlParser.Create_table_columnsContext;
 
 /**
  * HPL/SQL statements execution
@@ -130,30 +129,17 @@ public class Stmt {
   public Integer createTable(HplsqlParser.Create_table_stmtContext ctx) { 
     trace(ctx, "CREATE TABLE");
     StringBuilder sql = new StringBuilder();
-    sql.append(exec.getText(ctx, ctx.T_CREATE().getSymbol(), ctx.T_TABLE().getSymbol()));
-    sql.append(" " + evalPop(ctx.table_name()) + " (");
-    int cnt = ctx.create_table_columns().create_table_columns_item().size();
-    int cols = 0;
-    for (int i = 0; i < cnt; i++) {
-      Create_table_columns_itemContext col = ctx.create_table_columns().create_table_columns_item(i);
-      if (col.create_table_column_cons() != null) {
-        continue;
+    exec.append(sql, ctx.T_CREATE(), ctx.T_TABLE());
+    exec.append(sql, evalPop(ctx.table_name()).toString(), ctx.T_TABLE().getSymbol(), ctx.table_name().getStart());
+    Token last = ctx.table_name().getStop();
+    if (ctx.create_table_preoptions() != null) {
+      String preopt = evalPop(ctx.create_table_preoptions()).toString();
+      if (preopt != null) {
+        sql.append(" " + preopt);
       }
-      if (cols > 0) {
-        sql.append(",\n");
-      }
-      sql.append(evalPop(col.column_name()));
-      sql.append(" ");
-      sql.append(exec.evalPop(col.dtype(), col.dtype_len()));
-      cols++;
+      last = ctx.create_table_preoptions().stop;
     }
-    sql.append("\n)");
-    if (ctx.create_table_options() != null) {
-      String opt = evalPop(ctx.create_table_options()).toString();
-      if (opt != null) {
-        sql.append(" " + opt);
-      }
-    }
+    sql.append(createTableDefinition(ctx.create_table_definition(), last));
     trace(ctx, sql.toString());
     Query query = exec.executeSql(ctx, sql.toString(), exec.conf.defaultConnection);
     if (query.error()) {
@@ -166,11 +152,51 @@ public class Stmt {
   }  
 
   /**
+   * Get CREATE TABLE definition (columns or query)
+   */
+  String createTableDefinition(HplsqlParser.Create_table_definitionContext ctx, Token last) { 
+    StringBuilder sql = new StringBuilder();
+    HplsqlParser.Create_table_columnsContext colCtx = ctx.create_table_columns();
+    if (colCtx != null) {
+      int cnt = colCtx.create_table_columns_item().size();
+      for (int i = 0; i < cnt; i++) {
+        HplsqlParser.Create_table_columns_itemContext col = colCtx.create_table_columns_item(i);
+        if (col.create_table_column_cons() != null) {
+          last = col.getStop();
+          continue;
+        }
+        exec.append(sql, evalPop(col.column_name()).toString(), last, col.column_name().getStop());
+        exec.append(sql, exec.evalPop(col.dtype(), col.dtype_len()), col.column_name().getStop(), col.dtype().getStart());
+        last = col.getStop();
+      }
+      exec.append(sql, ctx.T_CLOSE_P().getText(), last, ctx.T_CLOSE_P().getSymbol());
+    }
+    // CREATE TABLE AS SELECT statement
+    else {
+      exec.append(sql, evalPop(ctx.select_stmt()).toString(), last, ctx.select_stmt().getStart());
+      if (ctx.T_CLOSE_P() != null) {
+        exec.append(sql, ctx.T_CLOSE_P().getText(), ctx.select_stmt().stop, ctx.T_CLOSE_P().getSymbol());
+      }
+    }
+    HplsqlParser.Create_table_optionsContext options = ctx.create_table_options();
+    if (options != null) {
+      String opt = evalPop(options).toString();
+      if (opt != null) {
+        sql.append(" " + opt);
+      }
+    }
+    return sql.toString(); 
+  }  
+
+  /**
    * CREATE TABLE options for Hive
    */
   public Integer createTableHiveOptions(HplsqlParser.Create_table_options_hive_itemContext ctx) {
     if (ctx.create_table_hive_row_format() != null) {
       createTableHiveRowFormat(ctx.create_table_hive_row_format());
+    }
+    else if (ctx.T_STORED() != null) {
+      evalString(exec.getText(ctx));
     }
     return 0; 
   }
@@ -191,53 +217,106 @@ public class Stmt {
     evalString(sql);
     return 0; 
   }
+  
+  /**
+   * CREATE TABLE options for MySQL
+   */
+  public Integer createTableMysqlOptions(HplsqlParser.Create_table_options_mysql_itemContext ctx) {
+    if (ctx.T_COMMENT() != null) {
+      evalString(ctx.T_COMMENT().getText() + " " + evalPop(ctx.expr()).toSqlString());
+    }
+    return 0; 
+  }
     
   /**
    * DECLARE TEMPORARY TABLE statement 
    */
   public Integer declareTemporaryTable(HplsqlParser.Declare_temporary_table_itemContext ctx) { 
-    String name = ctx.ident().getText();
-    if (trace) {
-      trace(ctx, "DECLARE TEMPORARY TABLE " + name);
+    trace(ctx, "DECLARE TEMPORARY TABLE");
+    return createTemporaryTable(ctx.ident(), ctx.create_table_definition(), ctx.create_table_preoptions());
+  }
+  
+  /**
+   * CREATE DATABASE | SCHEMA statement
+   */
+  public Integer createDatabase(HplsqlParser.Create_database_stmtContext ctx) {
+    trace(ctx, "CREATE DATABASE");
+    StringBuilder sql = new StringBuilder();
+    sql.append(ctx.T_CREATE().getText() + " ");
+    if (ctx.T_DATABASE() != null) {
+      sql.append(ctx.T_DATABASE().getText() + " "); 
     }
-    return createTemporaryTable(ctx, ctx.create_table_columns(), name);
+    else {
+      sql.append(ctx.T_SCHEMA().getText() + " "); 
+    }
+    if (ctx.T_IF() != null) {
+      sql.append(exec.getText(ctx, ctx.T_IF().getSymbol(), ctx.T_EXISTS().getSymbol()) + " "); 
+    }    
+    sql.append(evalPop(ctx.expr()).toString());
+    int cnt = ctx.create_database_option().size();
+    for (int i = 0; i < cnt; i++) {
+      HplsqlParser.Create_database_optionContext option = ctx.create_database_option(i);
+      if (option.T_COMMENT() != null) {
+        sql.append(" " + option.T_COMMENT().getText() + " " + evalPop(option.expr()).toSqlString()); 
+      }
+      else if (option.T_LOCATION() != null) {
+        sql.append(" " + option.T_LOCATION().getText() + " " + evalPop(option.expr()).toSqlString()); 
+      }
+    }
+    trace(ctx, sql.toString());
+    Query query = exec.executeSql(ctx, sql.toString(), exec.conf.defaultConnection);
+    if (query.error()) {
+      exec.signal(query);
+      return 1;
+    }
+    exec.setSqlSuccess();
+    exec.closeQuery(query, exec.conf.defaultConnection);
+    return 0;
   }
   
   /**
    * CREATE LOCAL TEMPORARY | VOLATILE TABLE statement 
    */
   public Integer createLocalTemporaryTable(HplsqlParser.Create_local_temp_table_stmtContext ctx) { 
-    String name = ctx.ident().getText();
-    if (trace) {
-      trace(ctx, "CREATE LOCAL TEMPORARY TABLE " + name);
-    }
-    return createTemporaryTable(ctx, ctx.create_table_columns(), name);
+    trace(ctx, "CREATE LOCAL TEMPORARY TABLE");
+    return createTemporaryTable(ctx.ident(), ctx.create_table_definition(), ctx.create_table_preoptions());
    }
   
   /**
    * Create a temporary table statement 
    */
-  public Integer createTemporaryTable(ParserRuleContext ctx, Create_table_columnsContext colCtx, String name) { 
+  public Integer createTemporaryTable(HplsqlParser.IdentContext identCtx, HplsqlParser.Create_table_definitionContext defCtx,
+                                      HplsqlParser.Create_table_preoptionsContext optCtx) { 
+    StringBuilder sql = new StringBuilder();
+    String name = identCtx.getText();
     String managedName = null;
-    String sql = null;
-    String columns = exec.getFormattedText(colCtx);
+    Token last = identCtx.getStop();
+    if (optCtx != null) {
+      last = optCtx.stop;
+    }
     if (conf.tempTables == Conf.TempTables.NATIVE) {
-      sql = "CREATE TEMPORARY TABLE " + name + "\n(" + columns + "\n)";
-    } else if (conf.tempTables == Conf.TempTables.MANAGED) {
+      sql.append("CREATE TEMPORARY TABLE " + name);
+      sql.append(createTableDefinition(defCtx, last));
+    } 
+    else if (conf.tempTables == Conf.TempTables.MANAGED) {
       managedName = name + "_" + UUID.randomUUID().toString().replace("-","");
       if (!conf.tempTablesSchema.isEmpty()) {
         managedName = conf.tempTablesSchema + "." + managedName;
       }      
-      sql = "CREATE TABLE " + managedName + "\n(" + columns + "\n)";
+      sql.append("CREATE TABLE " + managedName);
+      sql.append(createTableDefinition(defCtx, last));
       if (!conf.tempTablesLocation.isEmpty()) {
-        sql += "\nLOCATION '" + conf.tempTablesLocation + "/" + managedName + "'";
+        sql.append("\nLOCATION '" + conf.tempTablesLocation + "/" + managedName + "'");
       }
       if (trace) {
-        trace(ctx, "Managed table name: " + managedName);
+        trace(null, "Managed table name: " + managedName);
       }
     }  
+    if (trace) {
+      trace(null, sql.toString()); 
+    }
     if (sql != null) {
-      Query query = exec.executeSql(ctx, sql, exec.conf.defaultConnection);
+      Query query = exec.executeSql(null, sql.toString(), exec.conf.defaultConnection);
       if (query.error()) {
         exec.signal(query);
         return 1;
@@ -252,6 +331,45 @@ public class Stmt {
   }
   
   /**
+   * DESCRIBE statement
+   */
+  public Integer describe(HplsqlParser.Describe_stmtContext ctx) {
+    trace(ctx, "DESCRIBE");
+    String sql = "DESCRIBE " + evalPop(ctx.table_name()).toString();   
+    trace(ctx, sql);
+    Query query = exec.executeSql(ctx, sql, exec.conf.defaultConnection);
+    if (query.error()) {
+      exec.signal(query);
+      return 1;
+    }
+    try {
+      ResultSet rs = query.getResultSet();
+      ResultSetMetaData rm = null;
+      if (rs != null) {
+        rm = rs.getMetaData();
+        int cols = rm.getColumnCount();
+        while (rs.next()) {
+          for (int i = 1; i <= cols; i++) {
+            if (i > 1) {
+              System.out.print("\t");
+            }
+            System.out.print(rs.getString(i));
+          }
+          System.out.println("");
+        }
+      }
+    }    
+    catch (SQLException e) {
+      exec.signal(query);
+      exec.closeQuery(query, exec.conf.defaultConnection);
+      return 1;
+    }
+    exec.setSqlSuccess();
+    exec.closeQuery(query, exec.conf.defaultConnection);
+    return 0;
+  }
+  
+  /**
    * DROP statement
    */
   public Integer drop(HplsqlParser.Drop_stmtContext ctx) { 
@@ -260,9 +378,16 @@ public class Stmt {
     if (ctx.T_TABLE() != null) {
       sql = "DROP TABLE ";
       if (ctx.T_EXISTS() != null) {
-        sql += "IF NOT EXISTS ";
+        sql += "IF EXISTS ";
       }
       sql += evalPop(ctx.table_name()).toString();
+    }
+    else if (ctx.T_DATABASE() != null || ctx.T_SCHEMA() != null) {
+      sql = "DROP DATABASE ";
+      if (ctx.T_EXISTS() != null) {
+        sql += "IF EXISTS ";
+      }
+      sql += evalPop(ctx.expr()).toString();
     }
     if (sql != null) {
       trace(ctx, sql);
@@ -274,6 +399,23 @@ public class Stmt {
       exec.setSqlSuccess();
       exec.closeQuery(query, exec.conf.defaultConnection);
     }
+    return 0; 
+  }
+  
+  /**
+   * TRUNCATE statement
+   */
+  public Integer truncate(HplsqlParser.Truncate_stmtContext ctx) { 
+    trace(ctx, "TRUNCATE");
+    String sql = "TRUNCATE TABLE " + evalPop(ctx.table_name()).toString();    
+    trace(ctx, sql);
+    Query query = exec.executeSql(ctx, sql, exec.conf.defaultConnection);
+    if (query.error()) {
+      exec.signal(query);
+      return 1;
+    }
+    exec.setSqlSuccess();
+    exec.closeQuery(query, exec.conf.defaultConnection);
     return 0; 
   }
   
@@ -381,11 +523,15 @@ public class Stmt {
           for(int i=1; i <= cols; i++) {
             Var var = exec.findVariable(ctx.L_ID(i).getText());
             if(var != null) {
-              var.setValue(rs, rsm, i);
-              if(trace) {
-                trace(ctx, "COLUMN: " + rsm.getColumnName(i) + ", " + rsm.getColumnTypeName(i));
-                trace(ctx, "SET " + var.getName() + " = " + var.toString());
-              }            
+              if (var.type != Var.Type.ROW) {
+                var.setValue(rs, rsm, i);
+              }
+              else {
+                var.setValues(rs, rsm);
+              }
+              if (trace) {
+                trace(ctx, var, rs, rsm, i);
+              }
             } 
             else if(trace) {
               trace(ctx, "Variable not found: " + ctx.L_ID(i).getText());
@@ -431,9 +577,15 @@ public class Stmt {
    * INCLUDE statement
    */
   public Integer include(HplsqlParser.Include_stmtContext ctx) {
-    String file = ctx.file_name().getText();
+    String file;
+    if (ctx.file_name() != null) {
+      file = ctx.file_name().getText();
+    }
+    else {
+      file = evalPop(ctx.expr()).toString();
+    }    
     trace(ctx, "INCLUDE " + file);
-    exec.includeFile(file);
+    exec.includeFile(file, true);
     return 0; 
   }
   
@@ -479,6 +631,19 @@ public class Stmt {
     else if(ctx.T_ELSE() != null) {
       trace(ctx, "ELSE executed");
       visit(ctx.single_block_stmt(1));
+    }
+    return 0; 
+  }
+  
+  /**
+   * IF statement (BTEQ syntax)
+   */
+  public Integer ifBteq(HplsqlParser.If_bteq_stmtContext ctx) {
+    trace(ctx, "IF");
+    visit(ctx.bool_expr());
+    if (exec.stackPop().isTrue()) {
+      trace(ctx, "IF TRUE executed");
+      visit(ctx.single_block_stmt());
     }
     return 0; 
   }
@@ -553,11 +718,21 @@ public class Stmt {
    */
   public Integer insertSelect(HplsqlParser.Insert_stmtContext ctx) { 
     trace(ctx, "INSERT SELECT");
-    String table = evalPop(ctx.table_name()).toString();
-    String select = evalPop(ctx.select_stmt()).toString();
-    String sql = "INSERT INTO TABLE " + table + " " + select;    
-    trace(ctx, sql);
-    Query query = exec.executeSql(ctx, sql, exec.conf.defaultConnection);
+    StringBuilder sql = new StringBuilder();
+    sql.append(ctx.T_INSERT().getText() + " ");
+    if (ctx.T_OVERWRITE() != null) {
+      sql.append(ctx.T_OVERWRITE().getText() + " " + ctx.T_TABLE().getText() + " ");
+    }
+    else {
+      sql.append(ctx.T_INTO().getText() + " ");
+      if (ctx.T_TABLE() != null) {
+        sql.append(ctx.T_TABLE().getText() + " ");
+      }
+    }
+    sql.append(evalPop(ctx.table_name()).toString() + " ");
+    sql.append(evalPop(ctx.select_stmt()).toString());
+    trace(ctx, sql.toString());
+    Query query = exec.executeSql(ctx, sql.toString(), exec.conf.defaultConnection);
     if (query.error()) {
       exec.signal(query);
       return 1;
@@ -611,7 +786,9 @@ public class Stmt {
         } 
       }
       else if (type == Conn.Type.HIVE && conf.insertValues == Conf.InsertValues.SELECT) {
-        sql.append(" FROM " + conf.dualTable); 
+        if (conf.dualTable != null) {
+          sql.append(" FROM " + conf.dualTable);
+        }
         if (i + 1 < rows) {
           sql.append("\nUNION ALL\n");
         }
@@ -626,7 +803,31 @@ public class Stmt {
       return 1;
     }
     exec.setSqlSuccess();
-    exec.closeQuery(query, exec.conf.defaultConnection);
+    exec.closeQuery(query, conn);
+    return 0; 
+  }
+  
+  /**
+   * INSERT DIRECTORY statement
+   */
+  public Integer insertDirectory(HplsqlParser.Insert_directory_stmtContext ctx) { 
+    trace(ctx, "INSERT DIRECTORY");
+    StringBuilder sql = new StringBuilder();
+    sql.append(ctx.T_INSERT().getText() + " " + ctx.T_OVERWRITE().getText() + " ");
+    if (ctx.T_LOCAL() != null) {
+      sql.append(ctx.T_LOCAL().getText() + " ");
+    }
+    sql.append(ctx.T_DIRECTORY().getText() + " " + evalPop(ctx.expr_file()).toSqlString() + " ");
+    sql.append(evalPop(ctx.expr_select()).toString());
+    String conn = exec.getStatementConnection();
+    trace(ctx, sql.toString());
+    Query query = exec.executeSql(ctx, sql.toString(), conn);
+    if (query.error()) {
+      exec.signal(query);
+      return 1;
+    }
+    exec.setSqlSuccess();
+    exec.closeQuery(query, conn);
     return 0; 
   }
   
@@ -738,19 +939,16 @@ public class Stmt {
       if (rs != null) {
         ResultSetMetaData rm = rs.getMetaData();
         int cols = rm.getColumnCount();
-        Var[] vars = new Var[cols];
-        for (int i = 0; i < cols; i++) {
-          vars[i] = new Var();
-          vars[i].setName(cursor + "." + rm.getColumnName(i + 1));
-          vars[i].setType(rm.getColumnType(i + 1));          
-          exec.addVariable(vars[i]);
-          if (trace) {
-            trace(ctx, "Column: " + vars[i].getName() + " " + rm.getColumnTypeName(i + 1));
-          }
-        }                
+        Row row = new Row();
+        for (int i = 1; i <= cols; i++) {
+          row.addColumn(rm.getColumnName(i), rm.getColumnTypeName(i));
+        }
+        Var var = new Var(cursor, row);
+        exec.addVariable(var);
         while (rs.next()) {
-          for (int i = 0; i < cols; i++) {
-            vars[i].setValue(rs, rm, i + 1);
+          var.setValues(rs, rm);
+          if (trace) {
+            trace(ctx, var, rs, rm, 0);
           }
           visit(ctx.block());
           exec.incRowCount();
@@ -778,24 +976,39 @@ public class Stmt {
     int end = evalPop(ctx.expr(1)).intValue();
     int step = evalPop(ctx.expr(2), 1L).intValue();
     exec.enterScope(Scope.Type.LOOP);
-    Var index = new Var(ctx.L_ID().getText(), new Long(start));       
+    Var index = setIndex(start, end, ctx);
     exec.addVariable(index);     
-    if (ctx.T_REVERSE() == null) {
       for (int i = start; i <= end; i += step) {
         visit(ctx.block());
-        index.increment(new Long(step));
-      } 
-    } else {
-      for (int i = start; i >= end; i -= step) {
-        visit(ctx.block());
-        index.decrement(new Long(step));
-      }    
-    }
+        updateIndex(step, index, ctx);
+      }
     exec.leaveScope();
     trace(ctx, "FOR RANGE - LEFT");
     return 0; 
-  }  
-  
+  }
+
+  /**
+   * To set the Value index for FOR Statement
+   */
+  private Var setIndex(int start, int end, HplsqlParser.For_range_stmtContext ctx) {
+
+    if (ctx.T_REVERSE() == null)
+      return new Var(ctx.L_ID().getText(), new Long(start));
+    else
+      return new Var(ctx.L_ID().getText(), new Long(end));
+  }
+
+  /**
+   * To update the value of index for FOR Statement
+   */
+  private void updateIndex(int step, Var index, HplsqlParser.For_range_stmtContext ctx) {
+
+    if (ctx.T_REVERSE() == null)
+      index.increment(new Long(step));
+    else
+      index.decrement(new Long(step));
+  }
+
   /**
    * EXEC, EXECUTE and EXECUTE IMMEDIATE statement to execute dynamic SQL or stored procedure
    */
@@ -817,21 +1030,24 @@ public class Stmt {
     ResultSet rs = query.getResultSet();
     if (rs != null) {
       try {
-        ResultSetMetaData rsm = rs.getMetaData();
-        // Assign to variables
-        if(ctx.T_INTO() != null) {
+        ResultSetMetaData rm = rs.getMetaData();
+        if (ctx.T_INTO() != null) {
           int cols = ctx.L_ID().size();
-          if(rs.next()) {
-            for(int i=0; i < cols; i++) {
+          if (rs.next()) {
+            for (int i = 0; i < cols; i++) {
               Var var = exec.findVariable(ctx.L_ID(i).getText());
-              if(var != null) {
-                var.setValue(rs, rsm, i+1);
-                if(trace) {
-                  trace(ctx, "COLUMN: " + rsm.getColumnName(i+1) + ", " + rsm.getColumnTypeName(i+1));
-                  trace(ctx, "SET " + var.getName() + " = " + var.toString());
+              if (var != null) {
+                if (var.type != Var.Type.ROW) {
+                  var.setValue(rs, rm, i + 1);
+                }
+                else {
+                  var.setValues(rs, rm);
+                }
+                if (trace) {
+                  trace(ctx, var, rs, rm, i + 1);
                 }
               } 
-              else if(trace) {
+              else if (trace) {
                 trace(ctx, "Variable not found: " + ctx.L_ID(i).getText());
               }
             }
@@ -840,7 +1056,7 @@ public class Stmt {
         }
         // Print the results
         else {
-          int cols = rsm.getColumnCount();
+          int cols = rm.getColumnCount();
           while(rs.next()) {
             for(int i = 1; i <= cols; i++) {
               if(i > 1) {
@@ -864,8 +1080,11 @@ public class Stmt {
    * EXEC to execute a stored procedure
    */
   public Boolean execProc(HplsqlParser.Exec_stmtContext ctx) { 
-    if (exec.function.execProc(ctx.expr_func_params(), evalPop(ctx.expr()).toString())) {
-      return true;
+    String name = evalPop(ctx.expr()).toString();
+    if (exec.function.isProc(name)) {
+      if (exec.function.execProc(name, ctx.expr_func_params(), ctx)) {
+        return true;
+      }
     }
     return false;
   }
@@ -942,13 +1161,17 @@ public class Stmt {
     trace(ctx, "DELETE");
     String table = evalPop(ctx.table_name()).toString();
     StringBuilder sql = new StringBuilder();
-    sql.append("DELETE FROM ");
-    sql.append(table);
-    if (ctx.where_clause() != null) {
-      boolean oldBuildSql = exec.buildSql; 
-      exec.buildSql = true;
-      sql.append(" " + evalPop(ctx.where_clause()).toString());
-      exec.buildSql = oldBuildSql;
+    if (ctx.T_ALL() == null) {
+      sql.append("DELETE FROM " + table);
+      if (ctx.where_clause() != null) {
+        boolean oldBuildSql = exec.buildSql; 
+        exec.buildSql = true;
+        sql.append(" " + evalPop(ctx.where_clause()).toString());
+        exec.buildSql = oldBuildSql;
+      }
+    }
+    else {
+      sql.append("TRUNCATE TABLE " + table);
     }
     trace(ctx, sql.toString());
     Query query = exec.executeSql(ctx, sql.toString(), exec.conf.defaultConnection);
@@ -984,10 +1207,22 @@ public class Stmt {
   public Integer print(HplsqlParser.Print_stmtContext ctx) { 
     trace(ctx, "PRINT");
     if (ctx.expr() != null) {
-      visit(ctx.expr());
-      System.out.println(stack.pop().toString());
+      System.out.println(evalPop(ctx.expr()).toString());
     }
 	  return 0; 
+  }
+  
+  /**
+   * QUIT Statement 
+   */
+  public Integer quit(HplsqlParser.Quit_stmtContext ctx) { 
+    trace(ctx, "QUIT");
+    String rc = null;
+    if (ctx.expr() != null) {
+      rc = evalPop(ctx.expr()).toString();
+    }
+    exec.signal(Signal.Type.LEAVE_PROGRAM, rc); 
+    return 0; 
   }
   
   /** 
@@ -1117,5 +1352,9 @@ public class Stmt {
    */
   void trace(ParserRuleContext ctx, String message) {
 	  exec.trace(ctx, message);
+  }
+  
+  void trace(ParserRuleContext ctx, Var var, ResultSet rs, ResultSetMetaData rm, int idx) throws SQLException {
+    exec.trace(ctx, var, rs, rm, idx);
   }
 }

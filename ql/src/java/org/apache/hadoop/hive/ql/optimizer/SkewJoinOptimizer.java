@@ -28,8 +28,6 @@ import java.util.Map.Entry;
 import java.util.Set;
 import java.util.Stack;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.hive.ql.exec.JoinOperator;
 import org.apache.hadoop.hive.ql.exec.Operator;
 import org.apache.hadoop.hive.ql.exec.OperatorFactory;
@@ -49,12 +47,12 @@ import org.apache.hadoop.hive.ql.lib.Rule;
 import org.apache.hadoop.hive.ql.lib.RuleRegExp;
 import org.apache.hadoop.hive.ql.metadata.Table;
 import org.apache.hadoop.hive.ql.parse.ParseContext;
-import org.apache.hadoop.hive.ql.parse.QBJoinTree;
 import org.apache.hadoop.hive.ql.parse.SemanticException;
 import org.apache.hadoop.hive.ql.plan.ExprNodeColumnDesc;
 import org.apache.hadoop.hive.ql.plan.ExprNodeConstantDesc;
 import org.apache.hadoop.hive.ql.plan.ExprNodeDesc;
 import org.apache.hadoop.hive.ql.plan.ExprNodeDesc.ExprNodeDescEqualityWrapper;
+import org.apache.hadoop.hive.ql.plan.ExprNodeDescUtils;
 import org.apache.hadoop.hive.ql.plan.ExprNodeGenericFuncDesc;
 import org.apache.hadoop.hive.ql.plan.FilterDesc;
 import org.apache.hadoop.hive.ql.plan.OperatorDesc;
@@ -70,14 +68,16 @@ import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspectorConverters;
 import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspectorConverters.Converter;
 import org.apache.hadoop.hive.serde2.typeinfo.TypeInfoFactory;
 import org.apache.hadoop.hive.serde2.typeinfo.TypeInfoUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * SkewJoinOptimizer.
  *
  */
-public class SkewJoinOptimizer implements Transform {
+public class SkewJoinOptimizer extends Transform {
 
-  private static final Log LOG = LogFactory.getLog(SkewJoinOptimizer.class.getName());
+  private static final Logger LOG = LoggerFactory.getLogger(SkewJoinOptimizer.class.getName());
 
   public static class SkewJoinProc implements NodeProcessor {
     private ParseContext parseContext;
@@ -190,7 +190,7 @@ public class SkewJoinOptimizer implements Transform {
 
       // Update the topOps appropriately
       Map<String, Operator<? extends OperatorDesc>> topOps = getTopOps(joinOpClone);
-      Map<String, Operator<? extends OperatorDesc>> origTopOps = parseContext.getTopOps();
+      Map<String, TableScanOperator> origTopOps = parseContext.getTopOps();
 
       for (Entry<String, Operator<? extends OperatorDesc>> topOp : topOps.entrySet()) {
         TableScanOperator tso = (TableScanOperator) topOp.getValue();
@@ -219,7 +219,7 @@ public class SkewJoinOptimizer implements Transform {
       oplist.add(currOp);
       oplist.add(currOpClone);
       Operator<? extends OperatorDesc> unionOp =
-        OperatorFactory.getAndMakeChild(
+        OperatorFactory.getAndMakeChild(currOp.getCompilationOpContext(),
           new UnionDesc(), new RowSchema(currOp.getSchema().getSignature()), oplist);
 
       // Introduce a select after the union
@@ -228,8 +228,7 @@ public class SkewJoinOptimizer implements Transform {
       unionList.add(unionOp);
 
       Operator<? extends OperatorDesc> selectUnionOp =
-        OperatorFactory.getAndMakeChild(
-          new SelectDesc(true),
+        OperatorFactory.getAndMakeChild(currOp.getCompilationOpContext(), new SelectDesc(true),
           new RowSchema(unionOp.getSchema().getSignature()), unionList);
 
       // add the finalOp after the union
@@ -283,10 +282,11 @@ public class SkewJoinOptimizer implements Transform {
      * @param op The join operator being optimized
      * @param tableScanOpsForJoin table scan operators which are parents of the join operator
      * @return map<join keys intersection skewedkeys, list of skewed values>.
+     * @throws SemanticException
      */
     private Map<List<ExprNodeDesc>, List<List<String>>>
       getSkewedValues(
-        Operator<? extends OperatorDesc> op, List<TableScanOperator> tableScanOpsForJoin) {
+        Operator<? extends OperatorDesc> op, List<TableScanOperator> tableScanOpsForJoin) throws SemanticException {
 
       Map <List<ExprNodeDesc>, List<List<String>>> skewDataReturn =
         new HashMap<List<ExprNodeDesc>, List<List<String>>>();
@@ -299,6 +299,7 @@ public class SkewJoinOptimizer implements Transform {
         ReduceSinkDesc rsDesc = ((ReduceSinkOperator) reduceSinkOp).getConf();
 
         if (rsDesc.getKeyCols() != null) {
+          TableScanOperator tableScanOp = null;
           Table table = null;
           // Find the skew information corresponding to the table
           List<String> skewedColumns = null;
@@ -321,7 +322,9 @@ public class SkewJoinOptimizer implements Transform {
             if (keyColDesc instanceof ExprNodeColumnDesc) {
               keyCol = (ExprNodeColumnDesc) keyColDesc;
               if (table == null) {
-                table = getTable(parseContext, reduceSinkOp, tableScanOpsForJoin);
+                tableScanOp = getTableScanOperator(parseContext, reduceSinkOp, tableScanOpsForJoin);
+                table =
+                  tableScanOp == null ? null : tableScanOp.getConf().getTableMetadata();
                 skewedColumns =
                   table == null ? null : table.getSkewedColNames();
                 // No skew on the table to take care of
@@ -332,10 +335,13 @@ public class SkewJoinOptimizer implements Transform {
                 skewedValueList =
                   table == null ? null : table.getSkewedColValues();
               }
-              int pos = skewedColumns.indexOf(keyCol.getColumn());
+              ExprNodeDesc keyColOrigin = ExprNodeDescUtils.backtrack(keyCol,
+                      reduceSinkOp, tableScanOp);
+              int pos = keyColOrigin == null || !(keyColOrigin instanceof ExprNodeColumnDesc) ?
+                      -1 : skewedColumns.indexOf(((ExprNodeColumnDesc)keyColOrigin).getColumn());
               if ((pos >= 0) && (!positionSkewedKeys.contains(pos))) {
                 positionSkewedKeys.add(pos);
-                ExprNodeColumnDesc keyColClone = (ExprNodeColumnDesc) keyCol.clone();
+                ExprNodeColumnDesc keyColClone = (ExprNodeColumnDesc) keyColOrigin.clone();
                 keyColClone.setTabAlias(null);
                 joinKeysSkewedCols.add(new ExprNodeDescEqualityWrapper(keyColClone));
               }
@@ -386,9 +392,9 @@ public class SkewJoinOptimizer implements Transform {
     }
 
     /**
-     * Get the table alias from the candidate table scans.
+     * Get the table scan.
      */
-    private Table getTable(
+    private TableScanOperator getTableScanOperator(
       ParseContext parseContext,
       Operator<? extends OperatorDesc> op,
       List<TableScanOperator> tableScanOpsForJoin) {
@@ -396,10 +402,10 @@ public class SkewJoinOptimizer implements Transform {
         if (op instanceof TableScanOperator) {
           TableScanOperator tsOp = (TableScanOperator)op;
           if (tableScanOpsForJoin.contains(tsOp)) {
-            return tsOp.getConf().getTableMetadata();
+            return tsOp;
           }
         }
-        if ((op.getParentOperators() == null) || (op.getParentOperators().isEmpty()) || 
+        if ((op.getParentOperators() == null) || (op.getParentOperators().isEmpty()) ||
             (op.getParentOperators().size() > 1)) {
           return null;
         }
@@ -468,8 +474,7 @@ public class SkewJoinOptimizer implements Transform {
 
       Operator<FilterDesc> filter = OperatorFactory.getAndMakeChild(
         new FilterDesc(filterExpr, false),
-        new RowSchema(tableScanOp.getSchema().getSignature()),
-        tableScanOp);
+        new RowSchema(tableScanOp.getSchema().getSignature()), tableScanOp);
       OperatorFactory.makeChild(filter, currChild);
     }
 

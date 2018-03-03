@@ -4,6 +4,7 @@ POSTHOOK: query: SHOW FUNCTIONS
 POSTHOOK: type: SHOWFUNCTIONS
 !
 !=
+$sum0
 %
 &
 *
@@ -22,6 +23,8 @@ POSTHOOK: type: SHOWFUNCTIONS
 abs
 acos
 add_months
+aes_decrypt
+aes_encrypt
 and
 array
 array_contains
@@ -33,11 +36,16 @@ avg
 base64
 between
 bin
+bloom_filter
 bround
+cardinality_violation
 case
 cbrt
 ceil
 ceiling
+char_length
+character_length
+chr
 coalesce
 collect_list
 collect_set
@@ -64,6 +72,7 @@ date_sub
 datediff
 day
 dayofmonth
+dayofweek
 decode
 default.qtest_get_java_boolean
 degrees
@@ -78,27 +87,40 @@ ewah_bitmap_empty
 ewah_bitmap_or
 exp
 explode
+extract_union
 factorial
 field
 find_in_set
 first_value
 floor
+floor_day
+floor_hour
+floor_minute
+floor_month
+floor_quarter
+floor_second
+floor_week
+floor_year
 format_number
 from_unixtime
 from_utc_timestamp
 get_json_object
+get_splits
 greatest
+grouping
 hash
 hex
 histogram_numeric
 hour
 if
 in
+in_bloom_filter
 in_file
 index
 initcap
 inline
 instr
+internal_interval
 isnotnull
 isnull
 java_method
@@ -117,17 +139,25 @@ locate
 log
 log10
 log2
+logged_in_user
 lower
 lpad
 ltrim
 map
 map_keys
 map_values
+mask
+mask_first_n
+mask_hash
+mask_last_n
+mask_show_first_n
+mask_show_last_n
 matchpath
 max
 md5
 min
 minute
+mod
 month
 months_between
 named_struct
@@ -140,7 +170,9 @@ noopwithmap
 noopwithmapstreaming
 not
 ntile
+nullif
 nvl
+octet_length
 or
 parse_url
 parse_url_tuple
@@ -163,7 +195,18 @@ reflect2
 regexp
 regexp_extract
 regexp_replace
+regr_avgx
+regr_avgy
+regr_count
+regr_intercept
+regr_r2
+regr_slope
+regr_sxx
+regr_sxy
+regr_syy
 repeat
+replace
+replicate_rows
 reverse
 rlike
 round
@@ -182,9 +225,11 @@ sign
 sin
 size
 sort_array
+sort_array_by
 soundex
 space
 split
+sq_count_check
 sqrt
 stack
 std
@@ -209,9 +254,11 @@ unbase64
 unhex
 unix_timestamp
 upper
+uuid
 var_pop
 var_samp
 variance
+version
 weekofyear
 when
 windowingtablefunction
@@ -231,10 +278,14 @@ PREHOOK: query: SHOW FUNCTIONS '^c.*'
 PREHOOK: type: SHOWFUNCTIONS
 POSTHOOK: query: SHOW FUNCTIONS '^c.*'
 POSTHOOK: type: SHOWFUNCTIONS
+cardinality_violation
 case
 cbrt
 ceil
 ceiling
+char_length
+character_length
+chr
 coalesce
 collect_list
 collect_set
@@ -269,6 +320,7 @@ e
 encode
 explode
 first_value
+floor_minute
 from_unixtime
 in_file
 inline
@@ -285,6 +337,8 @@ percentile
 posexplode
 positive
 regexp_replace
+regr_slope
+replace
 reverse
 rlike
 size
@@ -301,6 +355,7 @@ POSTHOOK: type: SHOWFUNCTIONS
 log
 log10
 log2
+logged_in_user
 PREHOOK: query: SHOW FUNCTIONS '.*date.*'
 PREHOOK: type: SHOWFUNCTIONS
 POSTHOOK: query: SHOW FUNCTIONS '.*date.*'
@@ -333,11 +388,18 @@ POSTHOOK: type: SHOWFUNCTIONS
 map
 map_keys
 map_values
+mask
+mask_first_n
+mask_hash
+mask_last_n
+mask_show_first_n
+mask_show_last_n
 matchpath
 max
 md5
 min
 minute
+mod
 month
 months_between
 xpath
@@ -375,6 +437,7 @@ POSTHOOK: type: SHOWFUNCTIONS
 log
 log10
 log2
+logged_in_user
 PREHOOK: query: SHOW FUNCTIONS LIKE "log*"
 PREHOOK: type: SHOWFUNCTIONS
 POSTHOOK: query: SHOW FUNCTIONS LIKE "log*"
@@ -382,6 +445,7 @@ POSTHOOK: type: SHOWFUNCTIONS
 log
 log10
 log2
+logged_in_user
 PREHOOK: query: SHOW FUNCTIONS LIKE `log*`
 PREHOOK: type: SHOWFUNCTIONS
 POSTHOOK: query: SHOW FUNCTIONS LIKE `log*`
@@ -389,3 +453,4 @@ POSTHOOK: type: SHOWFUNCTIONS
 log
 log10
 log2
+logged_in_user

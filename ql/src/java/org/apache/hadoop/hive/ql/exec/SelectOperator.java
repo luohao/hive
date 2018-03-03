@@ -19,12 +19,11 @@
 package org.apache.hadoop.hive.ql.exec;
 
 import java.io.Serializable;
-import java.util.Collection;
 import java.util.List;
-import java.util.concurrent.Future;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hive.conf.HiveConf;
+import org.apache.hadoop.hive.ql.CompilationOpContext;
 import org.apache.hadoop.hive.ql.metadata.HiveException;
 import org.apache.hadoop.hive.ql.plan.ExprNodeColumnDesc;
 import org.apache.hadoop.hive.ql.plan.ExprNodeDesc;
@@ -43,19 +42,28 @@ public class SelectOperator extends Operator<SelectDesc> implements Serializable
 
   private transient boolean isSelectStarNoCompute = false;
 
+  /** Kryo ctor. */
+  protected SelectOperator() {
+    super();
+  }
+
+  public SelectOperator(CompilationOpContext ctx) {
+    super(ctx);
+  }
+
   @Override
-  protected Collection<Future<?>> initializeOp(Configuration hconf) throws HiveException {
-    Collection<Future<?>> result = super.initializeOp(hconf);
+  protected void initializeOp(Configuration hconf) throws HiveException {
+    super.initializeOp(hconf);
     // Just forward the row as is
     if (conf.isSelStarNoCompute()) {
       isSelectStarNoCompute = true;
-      return result;
+      return;
     }
     List<ExprNodeDesc> colList = conf.getColList();
     eval = new ExprNodeEvaluator[colList.size()];
     for (int i = 0; i < colList.size(); i++) {
       assert (colList.get(i) != null);
-      eval[i] = ExprNodeEvaluatorFactory.get(colList.get(i));
+      eval[i] = ExprNodeEvaluatorFactory.get(colList.get(i), hconf);
     }
     if (HiveConf.getBoolVar(hconf, HiveConf.ConfVars.HIVEEXPREVALUATIONCACHE)) {
       eval = ExprNodeEvaluatorFactory.toCachedEvals(eval);
@@ -66,7 +74,6 @@ public class SelectOperator extends Operator<SelectDesc> implements Serializable
     }
     outputObjInspector = initEvaluatorsAndReturnStruct(eval, conf.getOutputColumnNames(),
         inputObjInspectors[0]);
-    return result;
   }
 
   @Override
@@ -93,7 +100,7 @@ public class SelectOperator extends Operator<SelectDesc> implements Serializable
    */
   @Override
   public String getName() {
-    return getOperatorName();
+    return SelectOperator.getOperatorName();
   }
 
   static public String getOperatorName() {
@@ -194,5 +201,4 @@ public class SelectOperator extends Operator<SelectDesc> implements Serializable
 
     return true;
   }
-
 }

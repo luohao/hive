@@ -19,26 +19,51 @@ package org.apache.hadoop.hive.metastore;
 
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
+import org.apache.hadoop.hive.common.metrics.common.MetricsConstant;
+import org.apache.hadoop.hive.common.metrics.common.MetricsFactory;
+import org.apache.hadoop.hive.common.metrics.metrics2.CodahaleMetrics;
+import org.apache.hadoop.hive.common.metrics.metrics2.MetricsReporting;
+import org.apache.hadoop.hive.common.metrics.MetricsTestUtils;
 import org.apache.hadoop.hive.conf.HiveConf;
+import org.apache.hadoop.hive.metastore.api.CurrentNotificationEventId;
 import org.apache.hadoop.hive.metastore.api.Database;
 import org.apache.hadoop.hive.metastore.api.FieldSchema;
+import org.apache.hadoop.hive.metastore.api.FileMetadataExprType;
+import org.apache.hadoop.hive.metastore.api.Function;
+import org.apache.hadoop.hive.metastore.api.Index;
 import org.apache.hadoop.hive.metastore.api.InvalidInputException;
 import org.apache.hadoop.hive.metastore.api.InvalidObjectException;
 import org.apache.hadoop.hive.metastore.api.MetaException;
+import org.apache.hadoop.hive.metastore.api.NotificationEvent;
+import org.apache.hadoop.hive.metastore.api.NotificationEventRequest;
+import org.apache.hadoop.hive.metastore.api.NotificationEventResponse;
 import org.apache.hadoop.hive.metastore.api.NoSuchObjectException;
 import org.apache.hadoop.hive.metastore.api.Partition;
 import org.apache.hadoop.hive.metastore.api.PrincipalType;
 import org.apache.hadoop.hive.metastore.api.Role;
+import org.apache.hadoop.hive.metastore.api.SQLForeignKey;
+import org.apache.hadoop.hive.metastore.api.SQLPrimaryKey;
 import org.apache.hadoop.hive.metastore.api.SerDeInfo;
 import org.apache.hadoop.hive.metastore.api.StorageDescriptor;
 import org.apache.hadoop.hive.metastore.api.Table;
+import org.apache.hadoop.hive.metastore.messaging.EventMessage;
+import org.apache.hadoop.hive.ql.io.sarg.SearchArgument;
+import org.apache.hadoop.hive.serde.serdeConstants;
 import org.apache.hadoop.hive.serde2.typeinfo.PrimitiveTypeInfo;
 import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Test;
+
+import org.mockito.Mockito;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import javax.jdo.Query;
 
 public class TestObjectStore {
   private ObjectStore objectStore = null;
@@ -52,6 +77,7 @@ public class TestObjectStore {
   private static final String USER1 = "testobjectstoreuser1";
   private static final String ROLE1 = "testobjectstorerole1";
   private static final String ROLE2 = "testobjectstorerole2";
+  private static final Logger LOG = LoggerFactory.getLogger(TestObjectStore.class.getName());
 
   public static class MockPartitionExpressionProxy implements PartitionExpressionProxy {
     @Override
@@ -66,29 +92,85 @@ public class TestObjectStore {
         throws MetaException {
       return false;
     }
+
+    @Override
+    public FileMetadataExprType getMetadataType(String inputFormat) {
+      return null;
+    }
+
+    @Override
+    public SearchArgument createSarg(byte[] expr) {
+      return null;
+    }
+
+    @Override
+    public FileFormatProxy getFileFormatProxy(FileMetadataExprType type) {
+      return null;
+    }
   }
 
   @Before
-  public void setUp() {
+  public void setUp() throws Exception {
     HiveConf conf = new HiveConf();
     conf.setVar(HiveConf.ConfVars.METASTORE_EXPRESSION_PROXY_CLASS, MockPartitionExpressionProxy.class.getName());
 
     objectStore = new ObjectStore();
     objectStore.setConf(conf);
-
-    Deadline.registerIfNot(100000);
-    try {
-      objectStore.dropDatabase(DB1);
-    } catch (Exception e) {
-    }
-    try {
-      objectStore.dropDatabase(DB2);
-    } catch (Exception e) {
-    }
+    dropAllStoreObjects(objectStore);
   }
 
   @After
   public void tearDown() {
+  }
+
+  /**
+   * Test notification operations
+   */
+  @Test
+  public void testNotificationOps() throws InterruptedException {
+    final int NO_EVENT_ID = 0;
+    final int FIRST_EVENT_ID = 1;
+    final int SECOND_EVENT_ID = 2;
+
+    NotificationEvent event =
+        new NotificationEvent(0, 0, EventMessage.EventType.CREATE_DATABASE.toString(), "");
+    NotificationEventResponse eventResponse;
+    CurrentNotificationEventId eventId;
+
+    // Verify that there is no notifications available yet
+    eventId = objectStore.getCurrentNotificationEventId();
+    Assert.assertEquals(NO_EVENT_ID, eventId.getEventId());
+
+    // Verify that addNotificationEvent() updates the NotificationEvent with the new event ID
+    objectStore.addNotificationEvent(event);
+    Assert.assertEquals(FIRST_EVENT_ID, event.getEventId());
+    objectStore.addNotificationEvent(event);
+    Assert.assertEquals(SECOND_EVENT_ID, event.getEventId());
+
+    // Verify that objectStore fetches the latest notification event ID
+    eventId = objectStore.getCurrentNotificationEventId();
+    Assert.assertEquals(SECOND_EVENT_ID, eventId.getEventId());
+
+    // Verify that getNextNotification() returns all events
+    eventResponse = objectStore.getNextNotification(new NotificationEventRequest());
+    Assert.assertEquals(2, eventResponse.getEventsSize());
+    Assert.assertEquals(FIRST_EVENT_ID, eventResponse.getEvents().get(0).getEventId());
+    Assert.assertEquals(SECOND_EVENT_ID, eventResponse.getEvents().get(1).getEventId());
+
+    // Verify that getNextNotification(last) returns events after a specified event
+    eventResponse = objectStore.getNextNotification(new NotificationEventRequest(FIRST_EVENT_ID));
+    Assert.assertEquals(1, eventResponse.getEventsSize());
+    Assert.assertEquals(SECOND_EVENT_ID, eventResponse.getEvents().get(0).getEventId());
+
+    // Verify that getNextNotification(last) returns zero events if there are no more notifications available
+    eventResponse = objectStore.getNextNotification(new NotificationEventRequest(SECOND_EVENT_ID));
+    Assert.assertEquals(0, eventResponse.getEventsSize());
+
+    // Verify that cleanNotificationEvents() cleans up all old notifications
+    Thread.sleep(1);
+    objectStore.cleanNotificationEvents(1);
+    eventResponse = objectStore.getNextNotification(new NotificationEventRequest());
+    Assert.assertEquals(0, eventResponse.getEventsSize());
   }
 
   /**
@@ -102,6 +184,7 @@ public class TestObjectStore {
     objectStore.createDatabase(db2);
 
     List<String> databases = objectStore.getAllDatabases();
+    LOG.info("databases: " + databases);
     Assert.assertEquals(2, databases.size());
     Assert.assertEquals(DB1, databases.get(0));
     Assert.assertEquals(DB2, databases.get(1));
@@ -124,14 +207,14 @@ public class TestObjectStore {
     StorageDescriptor sd = new StorageDescriptor(null, "location", null, null, false, 0, new SerDeInfo("SerDeName", "serializationLib", null), null, null, null);
     HashMap<String,String> params = new HashMap<String,String>();
     params.put("EXTERNAL", "false");
-    Table tbl1 = new Table(TABLE1, DB1, "owner", 1, 2, 3, sd, null, params, "viewOriginalText", "viewExpandedText", "MANAGED_TABLE");
+    Table tbl1 = new Table(TABLE1, DB1, "owner", 1, 2, 3, sd, null, params, null, null, "MANAGED_TABLE");
     objectStore.createTable(tbl1);
 
     List<String> tables = objectStore.getAllTables(DB1);
     Assert.assertEquals(1, tables.size());
     Assert.assertEquals(TABLE1, tables.get(0));
 
-    Table newTbl1 = new Table("new" + TABLE1, DB1, "owner", 1, 2, 3, sd, null, params, "viewOriginalText", "viewExpandedText", "MANAGED_TABLE");
+    Table newTbl1 = new Table("new" + TABLE1, DB1, "owner", 1, 2, 3, sd, null, params, null, null, "MANAGED_TABLE");
     objectStore.alterTable(DB1, TABLE1, newTbl1);
     tables = objectStore.getTables(DB1, "new*");
     Assert.assertEquals(1, tables.size());
@@ -154,9 +237,9 @@ public class TestObjectStore {
     StorageDescriptor sd = new StorageDescriptor(null, "location", null, null, false, 0, new SerDeInfo("SerDeName", "serializationLib", null), null, null, null);
     HashMap<String,String> tableParams = new HashMap<String,String>();
     tableParams.put("EXTERNAL", "false");
-    FieldSchema partitionKey1 = new FieldSchema("Country", "String", "");
-    FieldSchema partitionKey2 = new FieldSchema("State", "String", "");
-    Table tbl1 = new Table(TABLE1, DB1, "owner", 1, 2, 3, sd, Arrays.asList(partitionKey1, partitionKey2), tableParams, "viewOriginalText", "viewExpandedText", "MANAGED_TABLE");
+    FieldSchema partitionKey1 = new FieldSchema("Country", serdeConstants.STRING_TYPE_NAME, "");
+    FieldSchema partitionKey2 = new FieldSchema("State", serdeConstants.STRING_TYPE_NAME, "");
+    Table tbl1 = new Table(TABLE1, DB1, "owner", 1, 2, 3, sd, Arrays.asList(partitionKey1, partitionKey2), tableParams, null, null, "MANAGED_TABLE");
     objectStore.createTable(tbl1);
     HashMap<String, String> partitionParams = new HashMap<String, String>();
     partitionParams.put("PARTITION_LEVEL_PRIVILEGE", "true");
@@ -172,6 +255,12 @@ public class TestObjectStore {
     Assert.assertEquals(2, partitions.size());
     Assert.assertEquals(111, partitions.get(0).getCreateTime());
     Assert.assertEquals(222, partitions.get(1).getCreateTime());
+
+    int numPartitions  = objectStore.getNumPartitionsByFilter(DB1, TABLE1, "");
+    Assert.assertEquals(partitions.size(), numPartitions);
+
+    numPartitions  = objectStore.getNumPartitionsByFilter(DB1, TABLE1, "country = \"US\"");
+    Assert.assertEquals(2, numPartitions);
 
     objectStore.dropPartition(DB1, TABLE1, value1);
     partitions = objectStore.getPartitions(DB1, TABLE1, 10);
@@ -226,5 +315,113 @@ public class TestObjectStore {
     objectStore.grantRole(role1, USER1, PrincipalType.USER, OWNER, PrincipalType.ROLE, true);
     objectStore.revokeRole(role1, USER1, PrincipalType.USER, false);
     objectStore.removeRole(ROLE1);
+  }
+
+  @Test
+  public void testDirectSqlErrorMetrics() throws Exception {
+    HiveConf conf = new HiveConf();
+    conf.setBoolVar(HiveConf.ConfVars.HIVE_SERVER2_METRICS_ENABLED, true);
+    conf.setVar(HiveConf.ConfVars.HIVE_METRICS_REPORTER, MetricsReporting.JSON_FILE.name()
+        + "," + MetricsReporting.JMX.name());
+
+    MetricsFactory.init(conf);
+    CodahaleMetrics metrics = (CodahaleMetrics) MetricsFactory.getInstance();
+
+    objectStore.new GetDbHelper("foo", null, true, true) {
+      @Override
+      protected Database getSqlResult(ObjectStore.GetHelper<Database> ctx) throws MetaException {
+        return null;
+      }
+
+      @Override
+      protected Database getJdoResult(ObjectStore.GetHelper<Database> ctx) throws MetaException,
+          NoSuchObjectException {
+        return null;
+      }
+    }.run(false);
+
+    String json = metrics.dumpJson();
+    MetricsTestUtils.verifyMetricsJson(json, MetricsTestUtils.COUNTER,
+        MetricsConstant.DIRECTSQL_ERRORS, "");
+
+    objectStore.new GetDbHelper("foo", null, true, true) {
+      @Override
+      protected Database getSqlResult(ObjectStore.GetHelper<Database> ctx) throws MetaException {
+        throw new RuntimeException();
+      }
+
+      @Override
+      protected Database getJdoResult(ObjectStore.GetHelper<Database> ctx) throws MetaException,
+          NoSuchObjectException {
+        return null;
+      }
+    }.run(false);
+
+    json = metrics.dumpJson();
+    MetricsTestUtils.verifyMetricsJson(json, MetricsTestUtils.COUNTER,
+        MetricsConstant.DIRECTSQL_ERRORS, 1);
+  }
+
+  public static void dropAllStoreObjects(RawStore store) throws MetaException, InvalidObjectException, InvalidInputException {
+    try {
+      Deadline.registerIfNot(100000);
+      List<Function> funcs = store.getAllFunctions();
+      for (Function func : funcs) {
+        store.dropFunction(func.getDbName(), func.getFunctionName());
+      }
+      List<String> dbs = store.getAllDatabases();
+      for (int i = 0; i < dbs.size(); i++) {
+        String db = dbs.get(i);
+        List<String> tbls = store.getAllTables(db);
+        for (String tbl : tbls) {
+          List<Index> indexes = store.getIndexes(db, tbl, 100);
+          for (Index index : indexes) {
+            store.dropIndex(db, tbl, index.getIndexName());
+          }
+        }
+        for (String tbl : tbls) {
+          Deadline.startTimer("getPartition");
+          List<Partition> parts = store.getPartitions(db, tbl, 100);
+          for (Partition part : parts) {
+            store.dropPartition(db, tbl, part.getValues());
+          }
+          // Find any constraints and drop them
+          Set<String> constraints = new HashSet<>();
+          List<SQLPrimaryKey> pk = store.getPrimaryKeys(db, tbl);
+          if (pk != null) {
+            for (SQLPrimaryKey pkcol : pk) {
+              constraints.add(pkcol.getPk_name());
+            }
+          }
+          List<SQLForeignKey> fks = store.getForeignKeys(null, null, db, tbl);
+          if (fks != null) {
+            for (SQLForeignKey fkcol : fks) {
+              constraints.add(fkcol.getFk_name());
+            }
+          }
+          for (String constraint : constraints) {
+            store.dropConstraint(db, tbl, constraint);
+          }
+          store.dropTable(db, tbl);
+        }
+        store.dropDatabase(db);
+      }
+      List<String> roles = store.listRoleNames();
+      for (String role : roles) {
+        store.removeRole(role);
+      }
+    } catch (NoSuchObjectException e) {
+    }
+  }
+
+  @Test
+  public void testQueryCloseOnError() throws Exception {
+    ObjectStore spy = Mockito.spy(objectStore);
+    spy.getAllDatabases();
+    spy.getAllFunctions();
+    spy.getAllTables(DB1);
+    spy.getPartitionCount();
+    Mockito.verify(spy, Mockito.times(3))
+        .rollbackAndCleanup(Mockito.anyBoolean(), Mockito.<Query>anyObject());
   }
 }

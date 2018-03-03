@@ -35,6 +35,7 @@ import org.apache.hadoop.hive.ql.exec.vector.ColumnVector;
 import org.apache.hadoop.hive.ql.exec.vector.DecimalColumnVector;
 import org.apache.hadoop.hive.ql.exec.vector.DoubleColumnVector;
 import org.apache.hadoop.hive.ql.exec.vector.LongColumnVector;
+import org.apache.hadoop.hive.ql.exec.vector.TimestampColumnVector;
 import org.apache.hadoop.hive.ql.exec.vector.VectorizedRowBatch;
 import org.apache.hadoop.hive.serde2.io.ByteWritable;
 import org.apache.hadoop.hive.serde2.io.DateWritable;
@@ -47,7 +48,6 @@ import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspectorFactory;
 import org.apache.hadoop.io.BooleanWritable;
 import org.apache.hadoop.io.IntWritable;
 import org.apache.hadoop.io.LongWritable;
-import org.apache.hadoop.io.NullWritable;
 import org.apache.hadoop.io.Text;
 import org.junit.Before;
 import org.junit.Test;
@@ -151,12 +151,11 @@ public class TestVectorizedORCReader {
         OrcFile.readerOptions(conf));
     RecordReaderImpl vrr = (RecordReaderImpl) vreader.rows();
     RecordReaderImpl rr = (RecordReaderImpl) reader.rows();
-    VectorizedRowBatch batch = null;
+    VectorizedRowBatch batch = reader.getSchema().createRowBatch();
     OrcStruct row = null;
 
     // Check Vectorized ORC reader against ORC row reader
-    while (vrr.hasNext()) {
-      batch = vrr.nextBatch(batch);
+    while (vrr.nextBatch(batch)) {
       for (int i = 0; i < batch.size; i++) {
         row = (OrcStruct) rr.next(row);
         for (int j = 0; j < batch.cols.length; j++) {
@@ -177,13 +176,8 @@ public class TestVectorizedORCReader {
           } else if (a instanceof TimestampWritable) {
             // Timestamps are stored as long, so convert and compare
             TimestampWritable t = ((TimestampWritable) a);
-            // Timestamp.getTime() is overriden and is 
-            // long time = super.getTime();
-            // return (time + (nanos / 1000000));
-            Long timeInNanoSec = (t.getTimestamp().getTime() * 1000000)
-                + (t.getTimestamp().getNanos() % 1000000);
-            long b = ((LongColumnVector) cv).vector[rowId];
-            Assert.assertEquals(timeInNanoSec.toString(), Long.toString(b));
+            TimestampColumnVector tcv = ((TimestampColumnVector) cv);
+            Assert.assertEquals(t.getTimestamp(), tcv.asScratchTimestamp(rowId));
 
           } else if (a instanceof DateWritable) {
             // Dates are stored as long, so convert and compare
@@ -244,6 +238,6 @@ public class TestVectorizedORCReader {
       Assert.assertEquals(false, batch.cols[8].noNulls);
       Assert.assertEquals(false, batch.cols[9].noNulls);
     }
-    Assert.assertEquals(false, rr.hasNext());
+    Assert.assertEquals(false, rr.nextBatch(batch));
   }
 }

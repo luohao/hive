@@ -1,9 +1,9 @@
+set hive.mapred.mode=nonstrict;
+
 drop table invites;
 drop table invites2;
 create table invites (foo int, bar string) partitioned by (ds string);
 create table invites2 (foo int, bar string) partitioned by (ds string);
-
-set hive.mapred.mode=strict;
 
 -- test join views: see HIVE-1989
 

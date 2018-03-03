@@ -95,15 +95,11 @@ POSTHOOK: Input: default@src
 POSTHOOK: Output: default@table_desc4
 POSTHOOK: Lineage: table_desc4.key SIMPLE [(src)src.FieldSchema(name:key, type:string, comment:default), ]
 POSTHOOK: Lineage: table_desc4.value2 EXPRESSION [(src)src.FieldSchema(name:value, type:string, comment:default), ]
-PREHOOK: query: -- columns are sorted by one key in first table, two keys in second table but in same sort order for key. Hence SMB join should pass
-
-explain
+PREHOOK: query: explain
 select /*+ mapjoin(b) */ count(*) from table_desc1 a join table_desc2 b
 on a.key=b.key where a.key < 10
 PREHOOK: type: QUERY
-POSTHOOK: query: -- columns are sorted by one key in first table, two keys in second table but in same sort order for key. Hence SMB join should pass
-
-explain
+POSTHOOK: query: explain
 select /*+ mapjoin(b) */ count(*) from table_desc1 a join table_desc2 b
 on a.key=b.key where a.key < 10
 POSTHOOK: type: QUERY
@@ -142,8 +138,8 @@ STAGE PLANS:
           File Output Operator
             compressed: false
             table:
-                input format: org.apache.hadoop.mapred.TextInputFormat
-                output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
+                input format: org.apache.hadoop.mapred.SequenceFileInputFormat
+                output format: org.apache.hadoop.hive.ql.io.HiveSequenceFileOutputFormat
                 serde: org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe
 
   Stage: Stage-0
@@ -165,15 +161,11 @@ POSTHOOK: Input: default@table_desc1
 POSTHOOK: Input: default@table_desc2
 #### A masked pattern was here ####
 22
-PREHOOK: query: -- columns are sorted by 3 keys(a, b, c) in first table, two keys(a, c) in second table with same sort order. Hence SMB join should not pass
-
-explain
+PREHOOK: query: explain
 select /*+ mapjoin(b) */ count(*) from table_desc3 a join table_desc4 b
 on a.key=b.key and a.value2=b.value2 where a.key < 10
 PREHOOK: type: QUERY
-POSTHOOK: query: -- columns are sorted by 3 keys(a, b, c) in first table, two keys(a, c) in second table with same sort order. Hence SMB join should not pass
-
-explain
+POSTHOOK: query: explain
 select /*+ mapjoin(b) */ count(*) from table_desc3 a join table_desc4 b
 on a.key=b.key and a.value2=b.value2 where a.key < 10
 POSTHOOK: type: QUERY
@@ -195,8 +187,8 @@ STAGE PLANS:
             alias: b
             Statistics: Num rows: 500 Data size: 6312 Basic stats: COMPLETE Column stats: NONE
             Filter Operator
-              predicate: ((key is not null and value2 is not null) and (key < 10)) (type: boolean)
-              Statistics: Num rows: 41 Data size: 517 Basic stats: COMPLETE Column stats: NONE
+              predicate: (value2 is not null and (key < 10)) (type: boolean)
+              Statistics: Num rows: 166 Data size: 2095 Basic stats: COMPLETE Column stats: NONE
               HashTable Sink Operator
                 keys:
                   0 key (type: string), value2 (type: string)
@@ -209,15 +201,15 @@ STAGE PLANS:
             alias: a
             Statistics: Num rows: 500 Data size: 10218 Basic stats: COMPLETE Column stats: NONE
             Filter Operator
-              predicate: ((key is not null and value2 is not null) and (key < 10)) (type: boolean)
-              Statistics: Num rows: 41 Data size: 837 Basic stats: COMPLETE Column stats: NONE
+              predicate: (value2 is not null and (key < 10)) (type: boolean)
+              Statistics: Num rows: 166 Data size: 3392 Basic stats: COMPLETE Column stats: NONE
               Map Join Operator
                 condition map:
                      Inner Join 0 to 1
                 keys:
                   0 key (type: string), value2 (type: string)
                   1 key (type: string), value2 (type: string)
-                Statistics: Num rows: 45 Data size: 920 Basic stats: COMPLETE Column stats: NONE
+                Statistics: Num rows: 182 Data size: 3731 Basic stats: COMPLETE Column stats: NONE
                 Group By Operator
                   aggregations: count()
                   mode: hash
@@ -239,8 +231,8 @@ STAGE PLANS:
             compressed: false
             Statistics: Num rows: 1 Data size: 8 Basic stats: COMPLETE Column stats: NONE
             table:
-                input format: org.apache.hadoop.mapred.TextInputFormat
-                output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
+                input format: org.apache.hadoop.mapred.SequenceFileInputFormat
+                output format: org.apache.hadoop.hive.ql.io.HiveSequenceFileOutputFormat
                 serde: org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe
 
   Stage: Stage-0

@@ -20,13 +20,12 @@ package org.apache.hadoop.hive.ql.exec;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.util.Collection;
 import java.util.Collections;
-import java.util.concurrent.Future;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.conf.HiveConf.ConfVars;
+import org.apache.hadoop.hive.ql.CompilationOpContext;
 import org.apache.hadoop.hive.ql.exec.tez.TezContext;
 import org.apache.hadoop.hive.ql.metadata.HiveException;
 import org.apache.hadoop.hive.ql.plan.AppMasterEventDesc;
@@ -51,15 +50,23 @@ public class AppMasterEventOperator extends Operator<AppMasterEventDesc> {
   protected transient boolean hasReachedMaxSize = false;
   protected transient long MAX_SIZE;
 
+  /** Kryo ctor. */
+  protected AppMasterEventOperator() {
+    super();
+  }
+
+  public AppMasterEventOperator(CompilationOpContext ctx) {
+    super(ctx);
+  }
+
   @Override
-  public Collection<Future<?>> initializeOp(Configuration hconf) throws HiveException {
-    Collection<Future<?>> result = super.initializeOp(hconf);
+  public void initializeOp(Configuration hconf) throws HiveException {
+    super.initializeOp(hconf);
 
     MAX_SIZE = HiveConf.getLongVar(hconf, ConfVars.TEZ_DYNAMIC_PARTITION_PRUNING_MAX_EVENT_SIZE);
     serializer =
         (Serializer) ReflectionUtils.newInstance(conf.getTable().getDeserializerClass(), null);
     initDataBuffer(false);
-    return result;
   }
 
   protected void initDataBuffer(boolean skipPruning) throws HiveException {
@@ -142,7 +149,7 @@ public class AppMasterEventOperator extends Operator<AppMasterEventDesc> {
    */
   @Override
   public String getName() {
-    return getOperatorName();
+    return AppMasterEventOperator.getOperatorName();
   }
 
   static public String getOperatorName() {

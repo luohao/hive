@@ -34,6 +34,7 @@ import org.apache.hadoop.hive.ql.exec.Task;
 import org.apache.hadoop.hive.ql.exec.TaskFactory;
 import org.apache.hadoop.hive.ql.exec.mr.MapRedTask;
 import org.apache.hadoop.hive.ql.io.orc.OrcInputFormat;
+import org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat;
 import org.apache.hadoop.hive.ql.io.rcfile.stats.PartialScanWork;
 import org.apache.hadoop.hive.ql.lib.Node;
 import org.apache.hadoop.hive.ql.lib.NodeProcessor;
@@ -64,6 +65,7 @@ public class GenMRTableScan1 implements NodeProcessor {
    * @param opProcCtx
    *          context
    */
+  @Override
   public Object process(Node nd, Stack<Node> stack, NodeProcessorCtx opProcCtx,
       Object... nodeOutputs) throws SemanticException {
     TableScanOperator op = (TableScanOperator) nd;
@@ -76,9 +78,8 @@ public class GenMRTableScan1 implements NodeProcessor {
     // create a dummy MapReduce task
     MapredWork currWork = GenMapRedUtils.getMapRedWork(parseCtx);
     MapRedTask currTask = (MapRedTask) TaskFactory.get(currWork, parseCtx.getConf());
-    Operator<? extends OperatorDesc> currTopOp = op;
     ctx.setCurrTask(currTask);
-    ctx.setCurrTopOp(currTopOp);
+    ctx.setCurrTopOp(op);
 
     for (String alias : parseCtx.getTopOps().keySet()) {
       Operator<? extends OperatorDesc> currOp = parseCtx.getTopOps().get(alias);
@@ -90,8 +91,9 @@ public class GenMRTableScan1 implements NodeProcessor {
         if (parseCtx.getQueryProperties().isAnalyzeCommand()) {
           boolean partialScan = parseCtx.getQueryProperties().isPartialScanAnalyzeCommand();
           boolean noScan = parseCtx.getQueryProperties().isNoScanAnalyzeCommand();
-          if (inputFormat.equals(OrcInputFormat.class)) {
-            // For ORC, all the following statements are the same
+          if (OrcInputFormat.class.isAssignableFrom(inputFormat) ||
+                  MapredParquetInputFormat.class.isAssignableFrom(inputFormat)) {
+            // For ORC and Parquet, all the following statements are the same
             // ANALYZE TABLE T [PARTITION (...)] COMPUTE STATISTICS
             // ANALYZE TABLE T [PARTITION (...)] COMPUTE STATISTICS partialscan;
             // ANALYZE TABLE T [PARTITION (...)] COMPUTE STATISTICS noscan;
@@ -121,6 +123,7 @@ public class GenMRTableScan1 implements NodeProcessor {
 
             StatsWork statsWork = new StatsWork(op.getConf().getTableMetadata().getTableSpec());
             statsWork.setAggKey(op.getConf().getStatsAggPrefix());
+            statsWork.setStatsTmpDir(op.getConf().getTmpStatsDir());
             statsWork.setSourceTask(currTask);
             statsWork.setStatsReliable(parseCtx.getConf().getBoolVar(
                 HiveConf.ConfVars.HIVE_STATS_RELIABLE));
@@ -158,9 +161,9 @@ public class GenMRTableScan1 implements NodeProcessor {
               Table source = op.getConf().getTableMetadata();
               List<String> partCols = GenMapRedUtils.getPartitionColumns(op);
               PrunedPartitionList partList = new PrunedPartitionList(source, confirmedPartns, partCols, false);
-              GenMapRedUtils.setTaskPlan(currAliasId, currTopOp, currTask, false, ctx, partList);
+              GenMapRedUtils.setTaskPlan(currAliasId, op, currTask, false, ctx, partList);
             } else { // non-partitioned table
-              GenMapRedUtils.setTaskPlan(currAliasId, currTopOp, currTask, false, ctx);
+              GenMapRedUtils.setTaskPlan(currAliasId, op, currTask, false, ctx);
             }
           }
         }
@@ -195,6 +198,7 @@ public class GenMRTableScan1 implements NodeProcessor {
     PartialScanWork scanWork = new PartialScanWork(inputPaths);
     scanWork.setMapperCannotSpanPartns(true);
     scanWork.setAggKey(aggregationKey);
+    scanWork.setStatsTmpDir(op.getConf().getTmpStatsDir(), parseCtx.getConf());
 
     // stats work
     statsWork.setPartialScanAnalyzeCommand(true);
@@ -202,7 +206,7 @@ public class GenMRTableScan1 implements NodeProcessor {
     // partial scan task
     DriverContext driverCxt = new DriverContext();
     Task<PartialScanWork> psTask = TaskFactory.get(scanWork, parseCtx.getConf());
-    psTask.initialize(parseCtx.getConf(), null, driverCxt);
+    psTask.initialize(parseCtx.getQueryState(), null, driverCxt, op.getCompilationOpContext());
     psTask.setWork(scanWork);
 
     // task dependency

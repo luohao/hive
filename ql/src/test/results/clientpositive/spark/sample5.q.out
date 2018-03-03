@@ -6,45 +6,16 @@ POSTHOOK: query: CREATE TABLE dest1(key INT, value STRING) STORED AS TEXTFILE
 POSTHOOK: type: CREATETABLE
 POSTHOOK: Output: database:default
 POSTHOOK: Output: default@dest1
-PREHOOK: query: -- SORT_QUERY_RESULTS
+PREHOOK: query: EXPLAIN EXTENDED
+INSERT OVERWRITE TABLE dest1 SELECT s.* 
 
--- no input pruning, sample filter
-EXPLAIN EXTENDED
-INSERT OVERWRITE TABLE dest1 SELECT s.* -- here's another test
 FROM srcbucket TABLESAMPLE (BUCKET 1 OUT OF 5 on key) s
 PREHOOK: type: QUERY
-POSTHOOK: query: -- SORT_QUERY_RESULTS
+POSTHOOK: query: EXPLAIN EXTENDED
+INSERT OVERWRITE TABLE dest1 SELECT s.* 
 
--- no input pruning, sample filter
-EXPLAIN EXTENDED
-INSERT OVERWRITE TABLE dest1 SELECT s.* -- here's another test
 FROM srcbucket TABLESAMPLE (BUCKET 1 OUT OF 5 on key) s
 POSTHOOK: type: QUERY
-ABSTRACT SYNTAX TREE:
-  
-TOK_QUERY
-   TOK_FROM
-      TOK_TABREF
-         TOK_TABNAME
-            srcbucket
-         TOK_TABLEBUCKETSAMPLE
-            1
-            5
-            TOK_TABLE_OR_COL
-               key
-         s
-   TOK_INSERT
-      TOK_DESTINATION
-         TOK_TAB
-            TOK_TABNAME
-               dest1
-      TOK_SELECT
-         TOK_SELEXPR
-            TOK_ALLCOLREF
-               TOK_TABNAME
-                  s
-
-
 STAGE DEPENDENCIES:
   Stage-1 is a root stage
   Stage-0 depends on stages: Stage-1
@@ -80,15 +51,21 @@ STAGE PLANS:
                             input format: org.apache.hadoop.mapred.TextInputFormat
                             output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
                             properties:
+                              COLUMN_STATS_ACCURATE {"BASIC_STATS":"true"}
                               bucket_count -1
+                              column.name.delimiter ,
                               columns key,value
                               columns.comments 
                               columns.types int:string
 #### A masked pattern was here ####
                               name default.dest1
+                              numFiles 0
+                              numRows 0
+                              rawDataSize 0
                               serialization.ddl struct dest1 { i32 key, string value}
                               serialization.format 1
                               serialization.lib org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe
+                              totalSize 0
 #### A masked pattern was here ####
                             serde: org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe
                             name: default.dest1
@@ -104,9 +81,10 @@ STAGE PLANS:
                   input format: org.apache.hadoop.mapred.TextInputFormat
                   output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
                   properties:
-                    COLUMN_STATS_ACCURATE true
+                    COLUMN_STATS_ACCURATE {"BASIC_STATS":"true","COLUMN_STATS":{"key":"true","value":"true"}}
                     bucket_count 2
                     bucket_field_name key
+                    column.name.delimiter ,
                     columns key,value
                     columns.comments 
                     columns.types int:string
@@ -125,9 +103,10 @@ STAGE PLANS:
                     input format: org.apache.hadoop.mapred.TextInputFormat
                     output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
                     properties:
-                      COLUMN_STATS_ACCURATE true
+                      COLUMN_STATS_ACCURATE {"BASIC_STATS":"true","COLUMN_STATS":{"key":"true","value":"true"}}
                       bucket_count 2
                       bucket_field_name key
+                      column.name.delimiter ,
                       columns key,value
                       columns.comments 
                       columns.types int:string
@@ -156,15 +135,21 @@ STAGE PLANS:
               input format: org.apache.hadoop.mapred.TextInputFormat
               output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
               properties:
+                COLUMN_STATS_ACCURATE {"BASIC_STATS":"true"}
                 bucket_count -1
+                column.name.delimiter ,
                 columns key,value
                 columns.comments 
                 columns.types int:string
 #### A masked pattern was here ####
                 name default.dest1
+                numFiles 0
+                numRows 0
+                rawDataSize 0
                 serialization.ddl struct dest1 { i32 key, string value}
                 serialization.format 1
                 serialization.lib org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe
+                totalSize 0
 #### A masked pattern was here ####
               serde: org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe
               name: default.dest1
@@ -173,12 +158,14 @@ STAGE PLANS:
     Stats-Aggr Operator
 #### A masked pattern was here ####
 
-PREHOOK: query: INSERT OVERWRITE TABLE dest1 SELECT s.* -- here's another test
+PREHOOK: query: INSERT OVERWRITE TABLE dest1 SELECT s.* 
+
 FROM srcbucket TABLESAMPLE (BUCKET 1 OUT OF 5 on key) s
 PREHOOK: type: QUERY
 PREHOOK: Input: default@srcbucket
 PREHOOK: Output: default@dest1
-POSTHOOK: query: INSERT OVERWRITE TABLE dest1 SELECT s.* -- here's another test
+POSTHOOK: query: INSERT OVERWRITE TABLE dest1 SELECT s.* 
+
 FROM srcbucket TABLESAMPLE (BUCKET 1 OUT OF 5 on key) s
 POSTHOOK: type: QUERY
 POSTHOOK: Input: default@srcbucket

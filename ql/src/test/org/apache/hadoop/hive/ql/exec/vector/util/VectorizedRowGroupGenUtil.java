@@ -18,13 +18,15 @@
 
 package org.apache.hadoop.hive.ql.exec.vector.util;
 
+import java.sql.Timestamp;
 import java.util.Random;
 
-import org.apache.hadoop.hive.common.type.Decimal128;
 import org.apache.hadoop.hive.common.type.HiveDecimal;
+import org.apache.hadoop.hive.common.type.RandomTypeUtil;
 import org.apache.hadoop.hive.ql.exec.vector.DecimalColumnVector;
 import org.apache.hadoop.hive.ql.exec.vector.DoubleColumnVector;
 import org.apache.hadoop.hive.ql.exec.vector.LongColumnVector;
+import org.apache.hadoop.hive.ql.exec.vector.TimestampColumnVector;
 import org.apache.hadoop.hive.ql.exec.vector.VectorizedRowBatch;
 import org.apache.hadoop.hive.serde2.io.HiveDecimalWritable;
 import org.apache.hadoop.hive.serde2.typeinfo.DecimalTypeInfo;
@@ -77,6 +79,37 @@ public class VectorizedRowGroupGenUtil {
     return lcv;
   }
 
+  public static TimestampColumnVector generateTimestampColumnVector(
+      boolean nulls, boolean repeating, int size, Random rand, Timestamp[] timestampValues) {
+    TimestampColumnVector tcv = new TimestampColumnVector(size);
+
+    tcv.noNulls = !nulls;
+    tcv.isRepeating = repeating;
+
+    Timestamp repeatingTimestamp = RandomTypeUtil.getRandTimestamp(rand);
+
+    int nullFrequency = generateNullFrequency(rand);
+
+    for(int i = 0; i < size; i++) {
+      if(nulls && (repeating || i % nullFrequency == 0)) {
+        tcv.isNull[i] = true;
+        tcv.setNullValue(i);
+        timestampValues[i] = null;
+      }else {
+        tcv.isNull[i] = false;
+        if (!repeating) {
+          Timestamp randomTimestamp = RandomTypeUtil.getRandTimestamp(rand);
+          tcv.set(i,  randomTimestamp);
+          timestampValues[i] = randomTimestamp;
+        } else {
+          tcv.set(i, repeatingTimestamp);
+          timestampValues[i] = repeatingTimestamp;
+        }
+      }
+    }
+    return tcv;
+  }
+
   public static DoubleColumnVector generateDoubleColumnVector(boolean nulls,
       boolean repeating, int size, Random rand) {
     DoubleColumnVector dcv = new DoubleColumnVector(size);
@@ -118,7 +151,7 @@ public class VectorizedRowGroupGenUtil {
 
     HiveDecimalWritable repeatingValue = new HiveDecimalWritable();
     do{
-      repeatingValue.set(HiveDecimal.create(((Double) rand.nextDouble()).toString()).setScale((short)typeInfo.scale()));
+      repeatingValue.set(HiveDecimal.create(((Double) rand.nextDouble()).toString()).setScale((short)typeInfo.scale(), HiveDecimal.ROUND_HALF_UP));
     }while(repeatingValue.getHiveDecimal().doubleValue() == 0);
 
     int nullFrequency = generateNullFrequency(rand);
@@ -126,14 +159,14 @@ public class VectorizedRowGroupGenUtil {
     for(int i = 0; i < size; i++) {
       if(nulls && (repeating || i % nullFrequency == 0)) {
         dcv.isNull[i] = true;
-        dcv.vector[i] = null;//Decimal128.ONE;
+        dcv.vector[i] = null;
 
       }else {
         dcv.isNull[i] = false;
         if (repeating) {
           dcv.vector[i].set(repeatingValue);
         } else {
-          dcv.vector[i].set(HiveDecimal.create(((Double) rand.nextDouble()).toString()).setScale((short) typeInfo.scale()));
+          dcv.vector[i].set(HiveDecimal.create(((Double) rand.nextDouble()).toString()).setScale((short) typeInfo.scale(), HiveDecimal.ROUND_HALF_UP));
         }
 
         if(dcv.vector[i].getHiveDecimal().doubleValue() == 0) {

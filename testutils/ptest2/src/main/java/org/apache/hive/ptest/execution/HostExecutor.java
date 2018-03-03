@@ -29,6 +29,8 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 
+import com.google.common.base.Stopwatch;
+import org.apache.commons.lang.StringUtils;
 import org.apache.hive.ptest.execution.conf.Host;
 import org.apache.hive.ptest.execution.conf.TestBatch;
 import org.apache.hive.ptest.execution.ssh.RSyncCommand;
@@ -64,14 +66,17 @@ class HostExecutor {
   private final File mSuccessfulTestLogDir;
   private final File mFailedTestLogDir;
   private final long mNumPollSeconds;
+  private final boolean fetchLogsForSuccessfulTests;
   private volatile boolean mShutdown;
+  private int numParallelBatchesProcessed = 0;
+  private int numIsolatedBatchesProcessed = 0;
   
   HostExecutor(Host host, String privateKey, ListeningExecutorService executor,
       SSHCommandExecutor sshCommandExecutor,
       RSyncCommandExecutor rsyncCommandExecutor,
       ImmutableMap<String, String> templateDefaults, File scratchDir,
       File succeededLogDir, File failedLogDir, long numPollSeconds,
-      Logger logger) {
+      boolean fetchLogsForSuccessfulTests, Logger logger) {
     List<Drone> drones = Lists.newArrayList();
     String[] localDirs = host.getLocalDirectories();
     for (int index = 0; index < host.getThreads(); index++) {
@@ -89,6 +94,7 @@ class HostExecutor {
     mSuccessfulTestLogDir = succeededLogDir;
     mFailedTestLogDir = failedLogDir;
     mNumPollSeconds = numPollSeconds;
+    this.fetchLogsForSuccessfulTests  = fetchLogsForSuccessfulTests;
     mLogger = logger;
   }
 
@@ -100,7 +106,18 @@ class HostExecutor {
     return mExecutor.submit(new Callable<Void>() {
       @Override
       public Void call() throws Exception {
-        executeTests(parallelWorkQueue, isolatedWorkQueue, failedTestResults);
+        Stopwatch stopwatch = Stopwatch.createStarted();
+        mLogger.info("Starting SubmitTests on host {}", getHost());
+        try {
+          executeTests(parallelWorkQueue, isolatedWorkQueue, failedTestResults);
+        } finally {
+          stopwatch.stop();
+          mLogger.info("Finishing submitTests on host: {}. ElapsedTime(ms)={}," +
+              " NumParallelBatchesProcessed={}, NumIsolatedBatchesProcessed={}",
+              new Object[]{getHost().toString(),
+                  stopwatch.elapsed(TimeUnit.MILLISECONDS), numParallelBatchesProcessed,
+                  numIsolatedBatchesProcessed});
+        }
         return null;
       }
 
@@ -143,6 +160,7 @@ class HostExecutor {
         @Override
         public Void call() throws Exception {
           TestBatch batch = null;
+          Stopwatch sw = Stopwatch.createUnstarted();
           try {
             do {
               batch = parallelWorkQueue.poll(mNumPollSeconds, TimeUnit.SECONDS);
@@ -151,8 +169,16 @@ class HostExecutor {
                 return null;
               }
               if(batch != null) {
-                if(!executeTestBatch(drone, batch, failedTestResults)) {
-                  failedTestResults.add(batch);
+                numParallelBatchesProcessed++;
+                sw.reset().start();
+                try {
+                  if (!executeTestBatch(drone, batch, failedTestResults)) {
+                    failedTestResults.add(batch);
+                  }
+                } finally {
+                  sw.stop();
+                  mLogger.info("Finished processing parallel batch [{}] on host {}. ElapsedTime(ms)={}",
+                      new Object[]{batch.getName(), getHost().toShortString(), sw.elapsed(TimeUnit.MILLISECONDS)});
                 }
               }
             } while(!mShutdown && !parallelWorkQueue.isEmpty());
@@ -176,12 +202,22 @@ class HostExecutor {
     mLogger.info("Starting isolated execution on " + mHost.getName());
     for(Drone drone : ImmutableList.copyOf(mDrones)) {
       TestBatch batch = null;
+      Stopwatch sw = Stopwatch.createUnstarted();
       try {
         do {
+
           batch = isolatedWorkQueue.poll(mNumPollSeconds, TimeUnit.SECONDS);
           if(batch != null) {
-            if(!executeTestBatch(drone, batch, failedTestResults)) {
-              failedTestResults.add(batch);
+            numIsolatedBatchesProcessed++;
+            sw.reset().start();
+            try {
+              if (!executeTestBatch(drone, batch, failedTestResults)) {
+                failedTestResults.add(batch);
+              }
+            } finally {
+              sw.stop();
+              mLogger.info("Finished processing isolated batch [{}] on host {}. ElapsedTime(ms)={}",
+                  new Object[]{batch.getName(), getHost().toShortString(), sw.elapsed(TimeUnit.MILLISECONDS)});
             }
           }
         } while(!mShutdown && !isolatedWorkQueue.isEmpty());
@@ -206,19 +242,25 @@ class HostExecutor {
     Map<String, String> templateVariables = Maps.newHashMap(mTemplateDefaults);
     templateVariables.put("instanceName", drone.getInstanceName());
     templateVariables.put("batchName", batch.getName());
-    templateVariables.put("testClass", batch.getTestClass());
     templateVariables.put("testArguments", batch.getTestArguments());
     templateVariables.put("localDir", drone.getLocalDirectory());
     templateVariables.put("logDir", drone.getLocalLogDirectory());
+    Preconditions.checkArgument(StringUtils.isNotBlank(batch.getTestModuleRelativeDir()));
+    templateVariables.put("testModule", batch.getTestModuleRelativeDir());
     String command = Templates.getTemplateResult("bash $localDir/$instanceName/scratch/" + script.getName(),
         templateVariables);
     Templates.writeTemplateResult("batch-exec.vm", script, templateVariables);
     copyToDroneFromLocal(drone, script.getAbsolutePath(), "$localDir/$instanceName/scratch/" + scriptName);
     script.delete();
+    Stopwatch sw = Stopwatch.createStarted();
     mLogger.info(drone + " executing " + batch + " with " + command);
     RemoteCommandResult sshResult = new SSHCommand(mSSHCommandExecutor, drone.getPrivateKey(), drone.getUser(),
         drone.getHost(), drone.getInstance(), command, true).
         call();
+    sw.stop();
+    mLogger.info("Completed executing tests for batch [{}] on host {}. ElapsedTime(ms)={}",
+        new Object[]{batch.getName(),
+            getHost().toShortString(), sw.elapsed(TimeUnit.MILLISECONDS)});
     File batchLogDir = null;
     if(sshResult.getExitCode() == Constants.EXIT_CODE_UNKNOWN) {
       throw new AbortDroneException("Drone " + drone.toString() + " exited with " +
@@ -237,7 +279,7 @@ class HostExecutor {
       batchLogDir = Dirs.create(new File(mSuccessfulTestLogDir, batch.getName()));
     }
     copyFromDroneToLocal(drone, batchLogDir.getAbsolutePath(),
-        drone.getLocalLogDirectory() + "/");
+        drone.getLocalLogDirectory() + "/", fetchLogsForSuccessfulTests || !result);
     File logFile = new File(batchLogDir, String.format("%s.txt", batch.getName()));
     PrintWriter writer = new PrintWriter(logFile);
     writer.write(String.format("result = '%s'\n", sshResult.toString()));
@@ -325,7 +367,7 @@ class HostExecutor {
       }
     });
   }
-  RSyncResult copyFromDroneToLocal(Drone drone, String localFile, String remoteFile)
+  RSyncResult copyFromDroneToLocal(Drone drone, String localFile, String remoteFile, boolean fetchAllLogs)
       throws SSHExecutionException, IOException {
     Map<String, String> templateVariables = Maps.newHashMap(mTemplateDefaults);
     templateVariables.put("instanceName", drone.getInstanceName());
@@ -334,7 +376,7 @@ class HostExecutor {
         drone.getHost(), drone.getInstance(),
         Templates.getTemplateResult(localFile, templateVariables),
         Templates.getTemplateResult(remoteFile, templateVariables),
-        RSyncCommand.Type.TO_LOCAL).call();
+        fetchAllLogs ? RSyncCommand.Type.TO_LOCAL : RSyncCommand.Type.TO_LOCAL_NON_RECURSIVE).call();
     if(result.getException() != null || result.getExitCode() != Constants.EXIT_CODE_SUCCESS) {
       throw new SSHExecutionException(result);
     }

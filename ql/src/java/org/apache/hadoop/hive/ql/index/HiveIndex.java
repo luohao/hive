@@ -17,23 +17,22 @@
  */
 package org.apache.hadoop.hive.ql.index;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.hive.ql.index.bitmap.BitmapIndexHandler;
+import org.apache.hadoop.hive.ql.index.compact.CompactIndexHandler;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Holds index related constants
  */
 public class HiveIndex {
-
-  public static final Log l4j = LogFactory.getLog("HiveIndex");
-
-  public static String INDEX_TABLE_CREATETIME = "hive.index.basetbl.dfs.lastModifiedTime";
+  public static final Logger l4j = LoggerFactory.getLogger("HiveIndex");
+  public static final String INDEX_TABLE_CREATETIME = "hive.index.basetbl.dfs.lastModifiedTime";
 
   public static enum IndexType {
-    AGGREGATE_TABLE("aggregate", "org.apache.hadoop.hive.ql.AggregateIndexHandler"),
-    COMPACT_SUMMARY_TABLE("compact", "org.apache.hadoop.hive.ql.index.compact.CompactIndexHandler"),
-    BITMAP_TABLE("bitmap",
-"org.apache.hadoop.hive.ql.index.bitmap.BitmapIndexHandler");
+    AGGREGATE_TABLE("aggregate",  AggregateIndexHandler.class.getName()),
+    COMPACT_SUMMARY_TABLE("compact", CompactIndexHandler.class.getName()),
+    BITMAP_TABLE("bitmap", BitmapIndexHandler.class.getName());
 
     private IndexType(String indexType, String className) {
       indexTypeName = indexType;

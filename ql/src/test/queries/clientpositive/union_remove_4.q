@@ -1,6 +1,6 @@
+set hive.mapred.mode=nonstrict;
 set hive.stats.autogather=false;
 set hive.optimize.union.remove=true;
-set hive.mapred.supports.subdirectories=true;
 
 set hive.merge.sparkfiles=true;
 set hive.merge.mapfiles=true;
@@ -8,6 +8,7 @@ set hive.merge.mapredfiles=true;
 set mapred.input.dir.recursive=true;
 set hive.merge.smallfiles.avgsize=1;
 
+-- SORT_QUERY_RESULTS
 -- This is to test the union->selectstar->filesink optimization
 -- Union of 2 map-reduce subqueries is performed followed by select star and a file sink
 -- There is no need to write the temporary results of the sub-queries, and then read them 
@@ -43,4 +44,4 @@ FROM (
 desc formatted outputTbl1;
 
 set hive.input.format=org.apache.hadoop.hive.ql.io.HiveInputFormat;
-select * from outputTbl1 order by key, `values`;
+select * from outputTbl1;

@@ -18,27 +18,15 @@
 
 package org.apache.hadoop.hive.ql.plan;
 
-import java.io.IOException;
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.Comparator;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Properties;
-import java.util.Set;
-
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hive.common.JavaUtils;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.conf.HiveConf.ConfVars;
+import org.apache.hadoop.hive.llap.LlapOutputFormat;
 import org.apache.hadoop.hive.metastore.MetaStoreUtils;
 import org.apache.hadoop.hive.metastore.api.FieldSchema;
+import org.apache.hadoop.hive.metastore.api.hive_metastoreConstants;
 import org.apache.hadoop.hive.ql.exec.ColumnInfo;
-import org.apache.hadoop.hive.ql.exec.Operator;
 import org.apache.hadoop.hive.ql.exec.RowSchema;
 import org.apache.hadoop.hive.ql.exec.TableScanOperator;
 import org.apache.hadoop.hive.ql.exec.Utilities;
@@ -52,6 +40,7 @@ import org.apache.hadoop.hive.ql.metadata.Hive;
 import org.apache.hadoop.hive.ql.metadata.HiveException;
 import org.apache.hadoop.hive.ql.metadata.HiveStorageHandler;
 import org.apache.hadoop.hive.ql.metadata.HiveUtils;
+import org.apache.hadoop.hive.ql.metadata.Partition;
 import org.apache.hadoop.hive.ql.metadata.Table;
 import org.apache.hadoop.hive.ql.parse.ParseContext;
 import org.apache.hadoop.hive.ql.parse.SemanticAnalyzer;
@@ -64,16 +53,30 @@ import org.apache.hadoop.hive.serde2.Deserializer;
 import org.apache.hadoop.hive.serde2.MetadataTypedColumnsetSerDe;
 import org.apache.hadoop.hive.serde2.binarysortable.BinarySortableSerDe;
 import org.apache.hadoop.hive.serde2.columnar.ColumnarSerDe;
-import org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe;
 import org.apache.hadoop.hive.serde2.lazy.LazySerDeParameters;
+import org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe;
 import org.apache.hadoop.hive.serde2.lazybinary.LazyBinarySerDe;
 import org.apache.hadoop.hive.serde2.typeinfo.TypeInfo;
 import org.apache.hadoop.hive.serde2.typeinfo.TypeInfoFactory;
 import org.apache.hadoop.mapred.InputFormat;
 import org.apache.hadoop.mapred.JobConf;
+import org.apache.hadoop.mapred.OutputFormat;
 import org.apache.hadoop.mapred.SequenceFileInputFormat;
 import org.apache.hadoop.mapred.SequenceFileOutputFormat;
 import org.apache.hadoop.mapred.TextInputFormat;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Properties;
+import java.util.Set;
 
 /**
  * PlanUtils.
@@ -81,7 +84,7 @@ import org.apache.hadoop.mapred.TextInputFormat;
  */
 public final class PlanUtils {
 
-  protected static final Log LOG = LogFactory.getLog("org.apache.hadoop.hive.ql.plan.PlanUtils");
+  protected static final Logger LOG = LoggerFactory.getLogger("org.apache.hadoop.hive.ql.plan.PlanUtils");
 
   private static long countForMapJoinDumpFilePrefix = 0;
 
@@ -92,6 +95,8 @@ public final class PlanUtils {
   public static enum ExpressionTypes {
     FIELD, JEXL
   };
+  public static final String LLAP_OUTPUT_FORMAT_KEY = "Llap";
+  private static final String LLAP_OF_SH_CLASS = "org.apache.hadoop.hive.llap.LlapStorageHandler";
 
   public static synchronized long getCountForMapJoinDumpFilePrefix() {
     return countForMapJoinDumpFilePrefix++;
@@ -138,6 +143,9 @@ public final class PlanUtils {
       if (directoryDesc.getSerName() != null) {
         properties.setProperty(
             serdeConstants.SERIALIZATION_LIB, directoryDesc.getSerName());
+      }
+      if (directoryDesc.getSerdeProps() != null) {
+        properties.putAll(directoryDesc.getSerdeProps());
       }
       if (directoryDesc.getOutputFormat() != null){
         ret.setOutputFileFormatClass(JavaUtils.loadClass(directoryDesc.getOutputFormat()));
@@ -226,7 +234,7 @@ public final class PlanUtils {
 
     return getTableDesc(serdeClass, separatorCode, columns, columnTypes,
         lastColumnTakesRestOfTheLine, useDelimitedJSON, "TextFile");
- }
+  }
 
   public static TableDesc getTableDesc(
       Class<? extends Deserializer> serdeClass, String separatorCode,
@@ -268,6 +276,10 @@ public final class PlanUtils {
       inputFormat = RCFileInputFormat.class;
       outputFormat = RCFileOutputFormat.class;
       assert serdeClass == ColumnarSerDe.class;
+    } else if (LLAP_OUTPUT_FORMAT_KEY.equalsIgnoreCase(fileFormat)) {
+      inputFormat = TextInputFormat.class;
+      outputFormat = LlapOutputFormat.class;
+      properties.setProperty(hive_metastoreConstants.META_TABLE_STORAGE, LLAP_OF_SH_CLASS);
     } else { // use TextFile by default
       inputFormat = TextInputFormat.class;
       outputFormat = IgnoreKeyTextOutputFormat.class;
@@ -277,14 +289,15 @@ public final class PlanUtils {
   }
 
   public static TableDesc getDefaultQueryOutputTableDesc(String cols, String colTypes,
-      String fileFormat) {
-    TableDesc tblDesc = getTableDesc(LazySimpleSerDe.class, "" + Utilities.ctrlaCode, cols, colTypes,
-        false, false, fileFormat);
-    //enable escaping
+      String fileFormat, Class<? extends Deserializer> serdeClass) {
+    TableDesc tblDesc =
+        getTableDesc(serdeClass, "" + Utilities.ctrlaCode, cols, colTypes, false, false, fileFormat);
+    // enable escaping
     tblDesc.getProperties().setProperty(serdeConstants.ESCAPE_CHAR, "\\");
-    //enable extended nesting levels
+    tblDesc.getProperties().setProperty(serdeConstants.SERIALIZATION_ESCAPE_CRLF, "true");
+    // enable extended nesting levels
     tblDesc.getProperties().setProperty(
-    		LazySerDeParameters.SERIALIZATION_EXTEND_ADDITIONAL_NESTING_LEVELS, "true");
+        LazySerDeParameters.SERIALIZATION_EXTEND_ADDITIONAL_NESTING_LEVELS, "true");
     return tblDesc;
   }
 
@@ -294,17 +307,26 @@ public final class PlanUtils {
   public static TableDesc getTableDesc(CreateTableDesc crtTblDesc, String cols,
       String colTypes) {
 
-    Class<? extends Deserializer> serdeClass = LazySimpleSerDe.class;
-    String separatorCode = Integer.toString(Utilities.ctrlaCode);
-    String columns = cols;
-    String columnTypes = colTypes;
-    boolean lastColumnTakesRestOfTheLine = false;
     TableDesc ret;
 
+    // Resolve storage handler (if any)
     try {
-      if (crtTblDesc.getSerName() != null) {
-        Class c = JavaUtils.loadClass(crtTblDesc.getSerName());
-        serdeClass = c;
+      HiveStorageHandler storageHandler = null;
+      if (crtTblDesc.getStorageHandler() != null) {
+        storageHandler = HiveUtils.getStorageHandler(
+                SessionState.getSessionConf(), crtTblDesc.getStorageHandler());
+      }
+
+      Class<? extends Deserializer> serdeClass = LazySimpleSerDe.class;
+      String separatorCode = Integer.toString(Utilities.ctrlaCode);
+      String columns = cols;
+      String columnTypes = colTypes;
+      boolean lastColumnTakesRestOfTheLine = false;
+
+      if (storageHandler != null) {
+        serdeClass = storageHandler.getSerDeClass();
+      } else if (crtTblDesc.getSerName() != null) {
+        serdeClass = JavaUtils.loadClass(crtTblDesc.getSerName());
       }
 
       if (crtTblDesc.getFieldDelim() != null) {
@@ -316,6 +338,12 @@ public final class PlanUtils {
 
       // set other table properties
       Properties properties = ret.getProperties();
+
+      if (crtTblDesc.getStorageHandler() != null) {
+        properties.setProperty(
+                org.apache.hadoop.hive.metastore.api.hive_metastoreConstants.META_TABLE_STORAGE,
+                crtTblDesc.getStorageHandler());
+      }
 
       if (crtTblDesc.getCollItemDelim() != null) {
         properties.setProperty(serdeConstants.COLLECTION_DELIM, crtTblDesc
@@ -355,13 +383,63 @@ public final class PlanUtils {
 
       // replace the default input & output file format with those found in
       // crtTblDesc
-      Class c1 = JavaUtils.loadClass(crtTblDesc.getInputFormat());
-      Class c2 = JavaUtils.loadClass(crtTblDesc.getOutputFormat());
-      Class<? extends InputFormat> in_class = c1;
-      Class<? extends HiveOutputFormat> out_class = c2;
-
+      Class<? extends InputFormat> in_class;
+      if (storageHandler != null) {
+        in_class = storageHandler.getInputFormatClass();
+      } else {
+        in_class = JavaUtils.loadClass(crtTblDesc.getInputFormat());
+      }
+      Class<? extends OutputFormat> out_class;
+      if (storageHandler != null) {
+        out_class = storageHandler.getOutputFormatClass();
+      } else {
+        out_class = JavaUtils.loadClass(crtTblDesc.getOutputFormat());
+      }
       ret.setInputFileFormatClass(in_class);
       ret.setOutputFileFormatClass(out_class);
+    } catch (ClassNotFoundException e) {
+      throw new RuntimeException("Unable to find class in getTableDesc: " + e.getMessage(), e);
+    } catch (HiveException e) {
+      throw new RuntimeException("Error loading storage handler in getTableDesc: " + e.getMessage(), e);
+    }
+    return ret;
+  }
+
+ /**
+   * Generate a table descriptor from a createViewDesc.
+   */
+  public static TableDesc getTableDesc(CreateViewDesc crtViewDesc, String cols, String colTypes) {
+    TableDesc ret;
+
+    try {
+      Class serdeClass = JavaUtils.loadClass(crtViewDesc.getSerde());
+      ret = getTableDesc(serdeClass, new String(LazySerDeParameters.DefaultSeparators), cols,
+          colTypes, false,  false);
+
+      // set other table properties
+      /*
+      TODO - I don't think I need any of this
+      Properties properties = ret.getProperties();
+
+      if (crtTblDesc.getTableName() != null && crtTblDesc.getDatabaseName() != null) {
+        properties.setProperty(org.apache.hadoop.hive.metastore.api.hive_metastoreConstants.META_TABLE_NAME,
+            crtTblDesc.getTableName());
+      }
+
+      if (crtTblDesc.getTblProps() != null) {
+        properties.putAll(crtTblDesc.getTblProps());
+      }
+       */
+
+      // replace the default input & output file format with those found in
+      // crtTblDesc
+      Class<? extends InputFormat> inClass =
+          (Class<? extends InputFormat>)JavaUtils.loadClass(crtViewDesc.getInputFormat());
+      Class<? extends HiveOutputFormat> outClass =
+          (Class<? extends HiveOutputFormat>)JavaUtils.loadClass(crtViewDesc.getOutputFormat());
+
+      ret.setInputFileFormatClass(inClass);
+      ret.setOutputFileFormatClass(outClass);
     } catch (ClassNotFoundException e) {
       throw new RuntimeException("Unable to find class in getTableDesc: " + e.getMessage(), e);
     }
@@ -386,14 +464,16 @@ public final class PlanUtils {
    * Generate the table descriptor for reduce key.
    */
   public static TableDesc getReduceKeyTableDesc(List<FieldSchema> fieldSchemas,
-      String order) {
+      String order, String nullOrder) {
     return new TableDesc(
         SequenceFileInputFormat.class, SequenceFileOutputFormat.class,
         Utilities.makeProperties(serdeConstants.LIST_COLUMNS, MetaStoreUtils
         .getColumnNamesFromFieldSchema(fieldSchemas),
+        serdeConstants.COLUMN_NAME_DELIMITER, MetaStoreUtils.getColumnNameDelimiter(fieldSchemas),
         serdeConstants.LIST_COLUMN_TYPES, MetaStoreUtils
         .getColumnTypesFromFieldSchema(fieldSchemas),
         serdeConstants.SERIALIZATION_SORT_ORDER, order,
+        serdeConstants.SERIALIZATION_NULL_SORT_ORDER, nullOrder,
         serdeConstants.SERIALIZATION_LIB, BinarySortableSerDe.class.getName()));
   }
 
@@ -408,16 +488,20 @@ public final class PlanUtils {
       // be broadcast (instead of partitioned). As a consequence we use
       // a different SerDe than in the MR mapjoin case.
       StringBuilder order = new StringBuilder();
+      StringBuilder nullOrder = new StringBuilder();
       for (FieldSchema f: fieldSchemas) {
         order.append("+");
+        nullOrder.append("a");
       }
       return new TableDesc(
           SequenceFileInputFormat.class, SequenceFileOutputFormat.class,
           Utilities.makeProperties(serdeConstants.LIST_COLUMNS, MetaStoreUtils
               .getColumnNamesFromFieldSchema(fieldSchemas),
+              serdeConstants.COLUMN_NAME_DELIMITER, MetaStoreUtils.getColumnNameDelimiter(fieldSchemas),
               serdeConstants.LIST_COLUMN_TYPES, MetaStoreUtils
               .getColumnTypesFromFieldSchema(fieldSchemas),
               serdeConstants.SERIALIZATION_SORT_ORDER, order.toString(),
+              serdeConstants.SERIALIZATION_NULL_SORT_ORDER, nullOrder.toString(),
               serdeConstants.SERIALIZATION_LIB, BinarySortableSerDe.class.getName()));
     } else {
       return new TableDesc(SequenceFileInputFormat.class,
@@ -439,6 +523,7 @@ public final class PlanUtils {
           SequenceFileOutputFormat.class, Utilities.makeProperties(
               serdeConstants.LIST_COLUMNS, MetaStoreUtils
               .getColumnNamesFromFieldSchema(fieldSchemas),
+              serdeConstants.COLUMN_NAME_DELIMITER, MetaStoreUtils.getColumnNameDelimiter(fieldSchemas),
               serdeConstants.LIST_COLUMN_TYPES, MetaStoreUtils
               .getColumnTypesFromFieldSchema(fieldSchemas),
               serdeConstants.ESCAPE_CHAR, "\\",
@@ -454,6 +539,8 @@ public final class PlanUtils {
         SequenceFileOutputFormat.class, Utilities.makeProperties(
         serdeConstants.LIST_COLUMNS, MetaStoreUtils
         .getColumnNamesFromFieldSchema(fieldSchemas),
+        serdeConstants.COLUMN_NAME_DELIMITER, MetaStoreUtils.getColumnNameDelimiter(fieldSchemas),
+        serdeConstants.COLUMN_NAME_DELIMITER, MetaStoreUtils.getColumnNameDelimiter(fieldSchemas),
         serdeConstants.LIST_COLUMN_TYPES, MetaStoreUtils
         .getColumnTypesFromFieldSchema(fieldSchemas),
         serdeConstants.ESCAPE_CHAR, "\\",
@@ -559,7 +646,7 @@ public final class PlanUtils {
     List<FieldSchema> schemas = new ArrayList<FieldSchema>(cols.size());
     for (int i = 0; i < cols.size(); i++) {
       String name = cols.get(i).getInternalName();
-      if (name.equals(Integer.valueOf(i).toString())) {
+      if (name.equals(String.valueOf(i))) {
         name = fieldPrefix + name;
       }
       schemas.add(MetaStoreUtils.getFieldSchemaFromTypeInfo(name, cols.get(i)
@@ -603,15 +690,15 @@ public final class PlanUtils {
   public static ReduceSinkDesc getReduceSinkDesc(
       ArrayList<ExprNodeDesc> keyCols, ArrayList<ExprNodeDesc> valueCols,
       List<String> outputColumnNames, boolean includeKeyCols, int tag,
-      ArrayList<ExprNodeDesc> partitionCols, String order, int numReducers,
-      AcidUtils.Operation writeType) {
+      ArrayList<ExprNodeDesc> partitionCols, String order, String nullOrder,
+      int numReducers, AcidUtils.Operation writeType) {
     return getReduceSinkDesc(keyCols, keyCols.size(), valueCols,
         new ArrayList<List<Integer>>(),
         includeKeyCols ? outputColumnNames.subList(0, keyCols.size()) :
           new ArrayList<String>(),
         includeKeyCols ? outputColumnNames.subList(keyCols.size(),
             outputColumnNames.size()) : outputColumnNames,
-        includeKeyCols, tag, partitionCols, order, numReducers, writeType);
+        includeKeyCols, tag, partitionCols, order, nullOrder, numReducers, writeType);
   }
 
   /**
@@ -648,8 +735,8 @@ public final class PlanUtils {
       List<String> outputKeyColumnNames,
       List<String> outputValueColumnNames,
       boolean includeKeyCols, int tag,
-      ArrayList<ExprNodeDesc> partitionCols, String order, int numReducers,
-      AcidUtils.Operation writeType) {
+      ArrayList<ExprNodeDesc> partitionCols, String order, String nullOrder,
+      int numReducers, AcidUtils.Operation writeType) {
     TableDesc keyTable = null;
     TableDesc valueTable = null;
     ArrayList<String> outputKeyCols = new ArrayList<String>();
@@ -660,11 +747,14 @@ public final class PlanUtils {
       if (order.length() < outputKeyColumnNames.size()) {
         order = order + "+";
       }
-      keyTable = getReduceKeyTableDesc(keySchema, order);
+      if (nullOrder.length() < outputKeyColumnNames.size()) {
+        nullOrder = nullOrder + "a";
+      }
+      keyTable = getReduceKeyTableDesc(keySchema, order, nullOrder);
       outputKeyCols.addAll(outputKeyColumnNames);
     } else {
       keyTable = getReduceKeyTableDesc(getFieldSchemasFromColumnList(
-          keyCols, "reducesinkkey"),order);
+          keyCols, "reducesinkkey"), order, nullOrder);
      for (int i = 0; i < keyCols.size(); i++) {
         outputKeyCols.add("reducesinkkey" + i);
       }
@@ -675,7 +765,7 @@ public final class PlanUtils {
     return new ReduceSinkDesc(keyCols, numKeys, valueCols, outputKeyCols,
         distinctColIndices, outputValCols,
         tag, partitionCols, numReducers, keyTable,
-        valueTable, writeType);
+        valueTable);
   }
 
   /**
@@ -761,12 +851,14 @@ public final class PlanUtils {
     }
 
     StringBuilder order = new StringBuilder();
+    StringBuilder nullOrder = new StringBuilder();
     for (int i = 0; i < keyCols.size(); i++) {
       order.append("+");
+      nullOrder.append("a");
     }
     return getReduceSinkDesc(keyCols, numKeys, valueCols, distinctColIndices,
         outputKeyColumnNames, outputValueColumnNames, includeKey, tag,
-        partitionCols, order.toString(), numReducers, writeType);
+        partitionCols, order.toString(), nullOrder.toString(), numReducers, writeType);
   }
 
   /**
@@ -885,6 +977,10 @@ public final class PlanUtils {
     // prevent instantiation
   }
 
+  public static ReadEntity addInput(Set<ReadEntity> inputs, ReadEntity newInput) {
+    return addInput(inputs,newInput,false);
+  }
+
   // Add the input 'newInput' to the set of inputs for the query.
   // The input may or may not be already present.
   // The ReadEntity also contains the parents from it is derived (only populated
@@ -902,13 +998,16 @@ public final class PlanUtils {
   //
   // If the ReadEntity is already present and another ReadEntity with same name is
   // added, then the isDirect flag is updated to be the OR of values of both.
-  public static ReadEntity addInput(Set<ReadEntity> inputs, ReadEntity newInput) {
+  // mergeIsDirectFlag, need to merge isDirect flag even newInput does not have parent
+  public static ReadEntity addInput(Set<ReadEntity> inputs, ReadEntity newInput, boolean mergeIsDirectFlag) {
     // If the input is already present, make sure the new parent is added to the input.
     if (inputs.contains(newInput)) {
       for (ReadEntity input : inputs) {
         if (input.equals(newInput)) {
           if ((newInput.getParents() != null) && (!newInput.getParents().isEmpty())) {
             input.getParents().addAll(newInput.getParents());
+            input.setDirect(input.isDirect() || newInput.isDirect());
+          } else if (mergeIsDirectFlag) {
             input.setDirect(input.isDirect() || newInput.isDirect());
           }
           return input;
@@ -923,7 +1022,11 @@ public final class PlanUtils {
     return null;
   }
 
-  public static String getExprListString(Collection<?  extends ExprNodeDesc> exprs) {
+  public static String getExprListString(Collection<? extends ExprNodeDesc> exprs) {
+    return getExprListString(exprs, false);
+  }
+
+  public static String getExprListString(Collection<?  extends ExprNodeDesc> exprs, boolean userLevelExplain) {
     StringBuilder sb = new StringBuilder();
     boolean first = true;
     for (ExprNodeDesc expr: exprs) {
@@ -932,31 +1035,80 @@ public final class PlanUtils {
       } else {
         first = false;
       }
-      addExprToStringBuffer(expr, sb);
+      addExprToStringBuffer(expr, sb, userLevelExplain);
     }
 
     return sb.length() == 0 ? null : sb.toString();
   }
 
-  public static void addExprToStringBuffer(ExprNodeDesc expr, Appendable sb) {
+  public static void addExprToStringBuffer(ExprNodeDesc expr, Appendable sb, boolean userLevelExplain) {
     try {
       sb.append(expr.getExprString());
-      sb.append(" (type: ");
-      sb.append(expr.getTypeString());
-      sb.append(")");
+      if (!userLevelExplain) {
+        sb.append(" (type: ");
+        sb.append(expr.getTypeString());
+        sb.append(")");
+      }
     } catch (IOException e) {
       throw new RuntimeException(e);
     }
   }
 
-  public static void addInputsForView(ParseContext parseCtx) throws HiveException {
-    Set<ReadEntity> inputs = parseCtx.getSemanticInputs();
-    for (Map.Entry<String, Operator<?>> entry : parseCtx.getTopOps().entrySet()) {
-      if (!(entry.getValue() instanceof TableScanOperator)) {
+  /**
+   * Check if the table is the temporary table created by VALUES() syntax
+   * @param tableName table name
+   * @return
+   */
+  public static boolean isValuesTempTable(String tableName) {
+    return tableName.toLowerCase().startsWith(SemanticAnalyzer.VALUES_TMP_TABLE_NAME_PREFIX.toLowerCase());
+  }
+
+  public static void addPartitionInputs(Collection<Partition> parts, Collection<ReadEntity> inputs,
+      ReadEntity parentViewInfo, boolean isDirectRead) {
+    // Store the inputs in a HashMap since we can't get a ReadEntity from inputs since it is
+    // implemented as a set.ReadEntity is used as the key so that the HashMap has the same behavior
+    // of equals and hashCode
+    Map<ReadEntity, ReadEntity> readEntityMap =
+        new LinkedHashMap<ReadEntity, ReadEntity>(inputs.size());
+    for (ReadEntity input : inputs) {
+      readEntityMap.put(input, input);
+    }
+
+    for (Partition part : parts) {
+      // Don't add the partition or table created during the execution as the input source
+      if (isValuesTempTable(part.getTable().getTableName())) {
         continue;
       }
+
+      ReadEntity newInput = null;
+      if (part.getTable().isPartitioned()) {
+        newInput = new ReadEntity(part, parentViewInfo, isDirectRead);
+      } else {
+        newInput = new ReadEntity(part.getTable(), parentViewInfo, isDirectRead);
+      }
+
+      if (readEntityMap.containsKey(newInput)) {
+        ReadEntity input = readEntityMap.get(newInput);
+        if ((newInput.getParents() != null) && (!newInput.getParents().isEmpty())) {
+          input.getParents().addAll(newInput.getParents());
+          input.setDirect(input.isDirect() || newInput.isDirect());
+        }
+      } else {
+        readEntityMap.put(newInput, newInput);
+      }
+    }
+
+    // Add the new ReadEntity that were added to readEntityMap in PlanUtils.addInput
+    if (inputs.size() != readEntityMap.size()) {
+      inputs.addAll(readEntityMap.keySet());
+    }
+  }
+
+  public static void addInputsForView(ParseContext parseCtx) throws HiveException {
+    Set<ReadEntity> inputs = parseCtx.getSemanticInputs();
+    for (Map.Entry<String, TableScanOperator> entry : parseCtx.getTopOps().entrySet()) {
       String alias = entry.getKey();
-      TableScanOperator topOp = (TableScanOperator) entry.getValue();
+      TableScanOperator topOp = entry.getValue();
       ReadEntity parentViewInfo = getParentViewInfo(alias, parseCtx.getViewAliasToInput());
 
       // Adds tables only for create view (PPD filter can be appended by outer query)
@@ -975,7 +1127,8 @@ public final class PlanUtils {
     // For eg: for a query like 'select * from V3', where V3 -> V2, V2 -> V1, V1 -> T
     // -> implies depends on.
     // T's parent would be V1
-    for (int pos = 0; pos < aliases.length; pos++) {
+    // do not check last alias in the array for parent can not be itself.
+    for (int pos = 0; pos < aliases.length -1; pos++) {
       currentAlias = currentAlias == null ? aliases[pos] : currentAlias + ":" + aliases[pos];
 
       currentAlias = currentAlias.replace(SemanticAnalyzer.SUBQUERY_TAG_1, "")

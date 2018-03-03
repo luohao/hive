@@ -17,6 +17,10 @@
  */
 package org.apache.hadoop.hive.ql.optimizer.calcite.stats;
 
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Set;
+
 import org.apache.calcite.plan.RelOptUtil;
 import org.apache.calcite.plan.RelOptUtil.InputReferencedVisitor;
 import org.apache.calcite.rel.RelNode;
@@ -25,14 +29,17 @@ import org.apache.calcite.rel.core.Project;
 import org.apache.calcite.rel.metadata.RelMetadataQuery;
 import org.apache.calcite.rex.RexCall;
 import org.apache.calcite.rex.RexInputRef;
+import org.apache.calcite.rex.RexLiteral;
 import org.apache.calcite.rex.RexNode;
 import org.apache.calcite.rex.RexVisitorImpl;
 import org.apache.calcite.sql.SqlKind;
 import org.apache.calcite.sql.SqlOperator;
 import org.apache.calcite.sql.type.SqlTypeUtil;
 import org.apache.calcite.util.ImmutableBitSet;
+import org.apache.hadoop.hive.ql.optimizer.calcite.HiveCalciteUtil;
 import org.apache.hadoop.hive.ql.optimizer.calcite.RelOptHiveTable;
 import org.apache.hadoop.hive.ql.optimizer.calcite.reloperators.HiveTableScan;
+import org.apache.hadoop.hive.ql.plan.ColStatistics;
 
 public class FilterSelectivityEstimator extends RexVisitorImpl<Double> {
   private final RelNode childRel;
@@ -41,7 +48,7 @@ public class FilterSelectivityEstimator extends RexVisitorImpl<Double> {
   protected FilterSelectivityEstimator(RelNode childRel) {
     super(true);
     this.childRel = childRel;
-    this.childCardinality = RelMetadataQuery.getRowCount(childRel);
+    this.childCardinality = RelMetadataQuery.instance().getRowCount(childRel);
   }
 
   public Double estimateSelectivity(RexNode predicate) {
@@ -78,6 +85,21 @@ public class FilterSelectivityEstimator extends RexVisitorImpl<Double> {
     case NOT:
     case NOT_EQUALS: {
       selectivity = computeNotEqualitySelectivity(call);
+      break;
+    }
+
+    case IS_NOT_NULL: {
+      if (childRel instanceof HiveTableScan) {
+        double noOfNulls = getMaxNulls(call, (HiveTableScan) childRel);
+        double totalNoOfTuples = childRel.getRows();
+        if (totalNoOfTuples >= noOfNulls) {
+          selectivity = (totalNoOfTuples - noOfNulls) / Math.max(totalNoOfTuples, 1);
+        } else {
+          throw new RuntimeException("Invalid Stats number of null > no of tuples");
+        }
+      } else {
+        selectivity = computeNotEqualitySelectivity(call);
+      }
       break;
     }
 
@@ -199,14 +221,41 @@ public class FilterSelectivityEstimator extends RexVisitorImpl<Double> {
     return selectivity;
   }
 
+  /**
+   * Given a RexCall & TableScan find max no of nulls. Currently it picks the
+   * col with max no of nulls.
+   * 
+   * TODO: improve this
+   * 
+   * @param call
+   * @param t
+   * @return
+   */
+  private long getMaxNulls(RexCall call, HiveTableScan t) {
+    long tmpNoNulls = 0;
+    long maxNoNulls = 0;
+
+    Set<Integer> iRefSet = HiveCalciteUtil.getInputRefs(call);
+    List<ColStatistics> colStats = t.getColStat(new ArrayList<Integer>(iRefSet));
+
+    for (ColStatistics cs : colStats) {
+      tmpNoNulls = cs.getNumNulls();
+      if (tmpNoNulls > maxNoNulls) {
+        maxNoNulls = tmpNoNulls;
+      }
+    }
+
+    return maxNoNulls;
+  }
+
   private Double getMaxNDV(RexCall call) {
     double tmpNDV;
     double maxNDV = 1.0;
     InputReferencedVisitor irv;
-
+    RelMetadataQuery mq = RelMetadataQuery.instance();
     for (RexNode op : call.getOperands()) {
       if (op instanceof RexInputRef) {
-        tmpNDV = HiveRelMdDistinctRowCount.getDistinctRowCount(this.childRel,
+        tmpNDV = HiveRelMdDistinctRowCount.getDistinctRowCount(this.childRel, mq,
             ((RexInputRef) op).getIndex());
         if (tmpNDV > maxNDV)
           maxNDV = tmpNDV;
@@ -214,7 +263,8 @@ public class FilterSelectivityEstimator extends RexVisitorImpl<Double> {
         irv = new InputReferencedVisitor();
         irv.apply(op);
         for (Integer childProjIndx : irv.inputPosReferenced) {
-          tmpNDV = HiveRelMdDistinctRowCount.getDistinctRowCount(this.childRel, childProjIndx);
+          tmpNDV = HiveRelMdDistinctRowCount.getDistinctRowCount(this.childRel,
+              mq, childProjIndx);
           if (tmpNDV > maxNDV)
             maxNDV = tmpNDV;
         }
@@ -251,5 +301,16 @@ public class FilterSelectivityEstimator extends RexVisitorImpl<Double> {
     }
 
     return op;
+  }
+
+  public Double visitLiteral(RexLiteral literal) {
+    if (literal.isAlwaysFalse()) {
+      return 0.0;
+    } else if (literal.isAlwaysTrue()) {
+      return 1.0;
+    } else {
+      assert false;
+    }
+    return null;
   }
 }

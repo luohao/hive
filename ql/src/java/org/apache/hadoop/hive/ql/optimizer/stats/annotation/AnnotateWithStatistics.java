@@ -33,22 +33,22 @@ import org.apache.hadoop.hive.ql.exec.TableScanOperator;
 import org.apache.hadoop.hive.ql.lib.DefaultRuleDispatcher;
 import org.apache.hadoop.hive.ql.lib.Dispatcher;
 import org.apache.hadoop.hive.ql.lib.GraphWalker;
+import org.apache.hadoop.hive.ql.lib.LevelOrderWalker;
 import org.apache.hadoop.hive.ql.lib.Node;
 import org.apache.hadoop.hive.ql.lib.NodeProcessor;
-import org.apache.hadoop.hive.ql.lib.PreOrderWalker;
 import org.apache.hadoop.hive.ql.lib.Rule;
 import org.apache.hadoop.hive.ql.lib.RuleRegExp;
 import org.apache.hadoop.hive.ql.optimizer.Transform;
 import org.apache.hadoop.hive.ql.parse.ParseContext;
 import org.apache.hadoop.hive.ql.parse.SemanticException;
 
-public class AnnotateWithStatistics implements Transform {
+public class AnnotateWithStatistics extends Transform {
 
   @Override
   public ParseContext transform(ParseContext pctx) throws SemanticException {
     AnnotateStatsProcCtx aspCtx = new AnnotateStatsProcCtx(pctx);
 
-    // create a walker which walks the tree in a DFS manner while maintaining the
+    // create a walker which walks the tree in a BFS manner while maintaining the
     // operator stack. The dispatcher generates the plan from the operator tree
     Map<Rule, NodeProcessor> opRules = new LinkedHashMap<Rule, NodeProcessor>();
     opRules.put(new RuleRegExp("TS", TableScanOperator.getOperatorName() + "%"),
@@ -70,7 +70,7 @@ public class AnnotateWithStatistics implements Transform {
     // rule and passes the context along
     Dispatcher disp = new DefaultRuleDispatcher(StatsRulesProcFactory.getDefaultRule(), opRules,
         aspCtx);
-    GraphWalker ogw = new PreOrderWalker(disp);
+    GraphWalker ogw = new LevelOrderWalker(disp, 0);
 
     // Create a list of topop nodes
     ArrayList<Node> topNodes = new ArrayList<Node>();

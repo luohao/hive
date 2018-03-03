@@ -20,8 +20,9 @@ package org.apache.hadoop.hive.ql.lockmgr.zookeeper;
 
 import java.util.concurrent.TimeUnit;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hive.common.util.ShutdownHookManager;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.curator.framework.CuratorFramework;
 import org.apache.curator.framework.CuratorFrameworkFactory;
 import org.apache.curator.retry.ExponentialBackoffRetry;
@@ -31,10 +32,10 @@ import org.apache.hadoop.hive.ql.util.ZooKeeperHiveHelper;
 public class CuratorFrameworkSingleton {
   private static HiveConf conf = null;
   private static CuratorFramework sharedClient = null;
-  static final Log LOG = LogFactory.getLog("CuratorFrameworkSingleton");
+  static final Logger LOG = LoggerFactory.getLogger("CuratorFrameworkSingleton");
   static {
     // Add shutdown hook.
-    Runtime.getRuntime().addShutdownHook(new Thread() {
+    ShutdownHookManager.addShutdownHook(new Runnable() {
       @Override
       public void run() {
         closeAndReleaseInstance();

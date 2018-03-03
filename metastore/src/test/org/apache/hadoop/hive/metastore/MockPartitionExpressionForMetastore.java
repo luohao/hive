@@ -18,7 +18,9 @@
 
 package org.apache.hadoop.hive.metastore;
 
+import org.apache.hadoop.hive.metastore.api.FileMetadataExprType;
 import org.apache.hadoop.hive.metastore.api.MetaException;
+import org.apache.hadoop.hive.ql.io.sarg.SearchArgument;
 import org.apache.hadoop.hive.serde2.typeinfo.PrimitiveTypeInfo;
 
 import java.util.List;
@@ -37,5 +39,20 @@ public class MockPartitionExpressionForMetastore implements PartitionExpressionP
       List<PrimitiveTypeInfo> partColumnTypeInfos, byte[] expr, String defaultPartitionName,
       List<String> partitionNames) throws MetaException {
     return false;
+  }
+
+  @Override
+  public FileMetadataExprType getMetadataType(String inputFormat) {
+    return null;
+  }
+
+  @Override
+  public SearchArgument createSarg(byte[] expr) {
+    return null;
+  }
+
+  @Override
+  public FileFormatProxy getFileFormatProxy(FileMetadataExprType type) {
+    return null;
   }
 }

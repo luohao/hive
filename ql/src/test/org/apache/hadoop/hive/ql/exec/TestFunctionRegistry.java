@@ -23,13 +23,21 @@ import java.util.ArrayList;
 import java.util.LinkedList;
 import java.util.List;
 
-import junit.framework.Assert;
 import junit.framework.TestCase;
 
 import org.apache.hadoop.hive.common.type.HiveVarchar;
 import org.apache.hadoop.hive.conf.HiveConf;
-import org.apache.hadoop.hive.ql.parse.SemanticException;
+import org.apache.hadoop.hive.ql.exec.FunctionInfo.FunctionResource;
+import org.apache.hadoop.hive.ql.exec.FunctionInfo.FunctionType;
+import org.apache.hadoop.hive.ql.plan.ExprNodeDesc;
+import org.apache.hadoop.hive.ql.plan.ExprNodeGenericFuncDesc;
 import org.apache.hadoop.hive.ql.session.SessionState;
+import org.apache.hadoop.hive.ql.udf.UDFLn;
+import org.apache.hadoop.hive.ql.udf.generic.GenericUDAFMax;
+import org.apache.hadoop.hive.ql.udf.generic.GenericUDF;
+import org.apache.hadoop.hive.ql.udf.generic.GenericUDFConcat;
+import org.apache.hadoop.hive.ql.udf.generic.GenericUDFCurrentTimestamp;
+import org.apache.hadoop.hive.ql.udf.generic.GenericUDTFExplode;
 import org.apache.hadoop.hive.serde2.io.DateWritable;
 import org.apache.hadoop.hive.serde2.io.DoubleWritable;
 import org.apache.hadoop.hive.serde2.io.HiveDecimalWritable;
@@ -42,6 +50,7 @@ import org.apache.hadoop.hive.serde2.typeinfo.TypeInfoUtils;
 import org.apache.hadoop.io.BytesWritable;
 import org.apache.hadoop.io.IntWritable;
 import org.apache.hadoop.io.Text;
+import org.junit.Assert;
 
 public class TestFunctionRegistry extends TestCase {
 
@@ -80,14 +89,15 @@ public class TestFunctionRegistry extends TestCase {
   }
 
   private void implicit(TypeInfo a, TypeInfo b, boolean convertible) {
-    assertEquals(convertible, FunctionRegistry.implicitConvertible(a, b));
+    assertEquals(convertible, TypeInfoUtils.implicitConvertible(a, b));
   }
 
   public void testImplicitConversion() {
     implicit(TypeInfoFactory.intTypeInfo, TypeInfoFactory.decimalTypeInfo, true);
-    implicit(TypeInfoFactory.floatTypeInfo, TypeInfoFactory.decimalTypeInfo, true);
-    implicit(TypeInfoFactory.doubleTypeInfo, TypeInfoFactory.decimalTypeInfo, true);
-    implicit(TypeInfoFactory.stringTypeInfo, TypeInfoFactory.decimalTypeInfo, true);
+    implicit(TypeInfoFactory.longTypeInfo, TypeInfoFactory.decimalTypeInfo, true);
+    implicit(TypeInfoFactory.floatTypeInfo, TypeInfoFactory.decimalTypeInfo, false);
+    implicit(TypeInfoFactory.doubleTypeInfo, TypeInfoFactory.decimalTypeInfo, false);
+    implicit(TypeInfoFactory.stringTypeInfo, TypeInfoFactory.decimalTypeInfo, false);
     implicit(TypeInfoFactory.dateTypeInfo, TypeInfoFactory.decimalTypeInfo, false);
     implicit(TypeInfoFactory.timestampTypeInfo, TypeInfoFactory.decimalTypeInfo, false);
     implicit(varchar10, TypeInfoFactory.stringTypeInfo, true);
@@ -185,16 +195,16 @@ public class TestFunctionRegistry extends TestCase {
   public void testGetMethodInternal() {
 
     verify(TestUDF.class, "same", TypeInfoFactory.intTypeInfo, TypeInfoFactory.intTypeInfo,
-           DoubleWritable.class, DoubleWritable.class, false);
+           HiveDecimalWritable.class, HiveDecimalWritable.class, false);
 
     verify(TestUDF.class, "same", TypeInfoFactory.doubleTypeInfo, TypeInfoFactory.doubleTypeInfo,
            DoubleWritable.class, DoubleWritable.class, false);
 
     verify(TestUDF.class, "same", TypeInfoFactory.doubleTypeInfo, TypeInfoFactory.decimalTypeInfo,
-           HiveDecimalWritable.class, HiveDecimalWritable.class, false);
+           DoubleWritable.class, DoubleWritable.class, false);
 
     verify(TestUDF.class, "same", TypeInfoFactory.decimalTypeInfo, TypeInfoFactory.doubleTypeInfo,
-           HiveDecimalWritable.class, HiveDecimalWritable.class, false);
+           DoubleWritable.class, DoubleWritable.class, false);
 
     verify(TestUDF.class, "same", TypeInfoFactory.decimalTypeInfo, TypeInfoFactory.decimalTypeInfo,
            HiveDecimalWritable.class, HiveDecimalWritable.class, false);
@@ -226,7 +236,7 @@ public class TestFunctionRegistry extends TestCase {
     common(TypeInfoFactory.stringTypeInfo, TypeInfoFactory.decimalTypeInfo,
            TypeInfoFactory.stringTypeInfo);
     common(TypeInfoFactory.doubleTypeInfo, TypeInfoFactory.decimalTypeInfo,
-           TypeInfoFactory.decimalTypeInfo);
+           TypeInfoFactory.doubleTypeInfo);
     common(TypeInfoFactory.doubleTypeInfo, TypeInfoFactory.stringTypeInfo,
            TypeInfoFactory.stringTypeInfo);
 
@@ -246,21 +256,27 @@ public class TestFunctionRegistry extends TestCase {
     comparison(TypeInfoFactory.intTypeInfo, TypeInfoFactory.decimalTypeInfo,
                TypeInfoFactory.decimalTypeInfo);
     comparison(TypeInfoFactory.stringTypeInfo, TypeInfoFactory.decimalTypeInfo,
-               TypeInfoFactory.decimalTypeInfo);
+               TypeInfoFactory.doubleTypeInfo);
     comparison(TypeInfoFactory.doubleTypeInfo, TypeInfoFactory.decimalTypeInfo,
-               TypeInfoFactory.decimalTypeInfo);
+               TypeInfoFactory.doubleTypeInfo);
     comparison(TypeInfoFactory.doubleTypeInfo, TypeInfoFactory.stringTypeInfo,
                TypeInfoFactory.doubleTypeInfo);
 
     comparison(TypeInfoFactory.dateTypeInfo, TypeInfoFactory.stringTypeInfo,
-        TypeInfoFactory.stringTypeInfo);
+        TypeInfoFactory.dateTypeInfo);
     comparison(TypeInfoFactory.stringTypeInfo, TypeInfoFactory.dateTypeInfo,
-        TypeInfoFactory.stringTypeInfo);
+        TypeInfoFactory.dateTypeInfo);
+    comparison(TypeInfoFactory.timestampTypeInfo, TypeInfoFactory.stringTypeInfo,
+        TypeInfoFactory.timestampTypeInfo);
+    comparison(TypeInfoFactory.stringTypeInfo, TypeInfoFactory.timestampTypeInfo,
+        TypeInfoFactory.timestampTypeInfo);
 
     comparison(TypeInfoFactory.intTypeInfo, TypeInfoFactory.timestampTypeInfo,
         TypeInfoFactory.doubleTypeInfo);
     comparison(TypeInfoFactory.timestampTypeInfo, TypeInfoFactory.intTypeInfo,
         TypeInfoFactory.doubleTypeInfo);
+   comparison(TypeInfoFactory.timestampTypeInfo, TypeInfoFactory.dateTypeInfo,
+        TypeInfoFactory.timestampTypeInfo);
 
     comparison(TypeInfoFactory.stringTypeInfo, varchar10, TypeInfoFactory.stringTypeInfo);
     comparison(varchar10, TypeInfoFactory.stringTypeInfo, TypeInfoFactory.stringTypeInfo);
@@ -323,14 +339,12 @@ public class TestFunctionRegistry extends TestCase {
   }
 
   public void testCommonClassUnionAll() {
+    unionAll(TypeInfoFactory.doubleTypeInfo, TypeInfoFactory.intTypeInfo,
+        TypeInfoFactory.doubleTypeInfo);
     unionAll(TypeInfoFactory.intTypeInfo, TypeInfoFactory.decimalTypeInfo,
         TypeInfoFactory.decimalTypeInfo);
-    unionAll(TypeInfoFactory.stringTypeInfo, TypeInfoFactory.decimalTypeInfo,
-        TypeInfoFactory.decimalTypeInfo);
     unionAll(TypeInfoFactory.doubleTypeInfo, TypeInfoFactory.decimalTypeInfo,
-        TypeInfoFactory.decimalTypeInfo);
-    unionAll(TypeInfoFactory.doubleTypeInfo, TypeInfoFactory.stringTypeInfo,
-        TypeInfoFactory.stringTypeInfo);
+        TypeInfoFactory.doubleTypeInfo);
 
     unionAll(varchar5, varchar10, varchar10);
     unionAll(varchar10, varchar5, varchar10);
@@ -342,8 +356,13 @@ public class TestFunctionRegistry extends TestCase {
     unionAll(char10, TypeInfoFactory.stringTypeInfo, TypeInfoFactory.stringTypeInfo);
     unionAll(TypeInfoFactory.stringTypeInfo, char10, TypeInfoFactory.stringTypeInfo);
 
-    // common class for char/varchar is string?
-    comparison(char10, varchar5, TypeInfoFactory.stringTypeInfo);
+    unionAll(TypeInfoFactory.timestampTypeInfo, TypeInfoFactory.dateTypeInfo,
+        TypeInfoFactory.timestampTypeInfo);
+
+    // Invalid cases
+    unionAll(TypeInfoFactory.stringTypeInfo, TypeInfoFactory.decimalTypeInfo, null);
+    unionAll(TypeInfoFactory.doubleTypeInfo, varchar10, null);
+
   }
 
   public void testGetTypeInfoForPrimitiveCategory() {
@@ -364,15 +383,15 @@ public class TestFunctionRegistry extends TestCase {
 
     // non-qualified types should simply return the TypeInfo associated with that type
     assertEquals(TypeInfoFactory.stringTypeInfo, FunctionRegistry.getTypeInfoForPrimitiveCategory(
-        (PrimitiveTypeInfo) varchar10, (PrimitiveTypeInfo) TypeInfoFactory.stringTypeInfo,
+        (PrimitiveTypeInfo) varchar10, TypeInfoFactory.stringTypeInfo,
         PrimitiveCategory.STRING));
     assertEquals(TypeInfoFactory.stringTypeInfo, FunctionRegistry.getTypeInfoForPrimitiveCategory(
-        (PrimitiveTypeInfo) TypeInfoFactory.stringTypeInfo,
-        (PrimitiveTypeInfo) TypeInfoFactory.stringTypeInfo,
+        TypeInfoFactory.stringTypeInfo,
+        TypeInfoFactory.stringTypeInfo,
         PrimitiveCategory.STRING));
     assertEquals(TypeInfoFactory.doubleTypeInfo, FunctionRegistry.getTypeInfoForPrimitiveCategory(
-        (PrimitiveTypeInfo) TypeInfoFactory.doubleTypeInfo,
-        (PrimitiveTypeInfo) TypeInfoFactory.stringTypeInfo,
+        TypeInfoFactory.doubleTypeInfo,
+        TypeInfoFactory.stringTypeInfo,
         PrimitiveCategory.DOUBLE));
   }
 
@@ -398,5 +417,95 @@ public class TestFunctionRegistry extends TestCase {
     Assert.assertTrue(FunctionRegistry.impliesOrder("lead"));
     Assert.assertTrue(FunctionRegistry.impliesOrder("lag"));
     Assert.assertFalse(FunctionRegistry.impliesOrder("min"));
+  }
+
+  public void testRegisterTemporaryFunctions() throws Exception {
+    FunctionResource[] emptyResources = new FunctionResource[] {};
+
+    // UDF
+    FunctionRegistry.registerTemporaryUDF("tmp_ln", UDFLn.class, emptyResources);
+    FunctionInfo functionInfo = FunctionRegistry.getFunctionInfo("tmp_ln");
+    assertFalse(functionInfo.isNative());
+
+    // GenericUDF
+    FunctionRegistry.registerTemporaryUDF("tmp_concat", GenericUDFConcat.class, emptyResources);
+    functionInfo = FunctionRegistry.getFunctionInfo("tmp_concat");
+    assertFalse(functionInfo.isNative());
+
+    // GenericUDAF
+    FunctionRegistry.registerTemporaryUDF("tmp_max",GenericUDAFMax.class, emptyResources);
+    functionInfo = FunctionRegistry.getFunctionInfo("tmp_max");
+    assertFalse(functionInfo.isNative());
+    functionInfo = FunctionRegistry.getWindowFunctionInfo("tmp_max");
+    assertFalse(functionInfo.isNative());
+
+    // UDTF
+    FunctionRegistry.registerTemporaryUDF("tmp_explode", GenericUDTFExplode.class, emptyResources);
+    functionInfo = FunctionRegistry.getFunctionInfo("tmp_explode");
+    assertFalse(functionInfo.isNative());
+  }
+
+  public void testRegisterPermanentFunction() throws Exception {
+    FunctionResource[] emptyResources = new FunctionResource[] {};
+
+    // UDF
+    FunctionRegistry.registerPermanentFunction("perm_ln", UDFLn.class.getName(), true, emptyResources);
+    FunctionInfo functionInfo = FunctionRegistry.getFunctionInfo("perm_ln");
+    assertTrue(functionInfo.isPersistent());
+    assertTrue(functionInfo.isNative());
+    assertFalse(functionInfo.isBuiltIn());
+    functionInfo = FunctionRegistry.getFunctionInfo("default.perm_ln");
+    assertTrue(functionInfo.isPersistent());
+    assertTrue(functionInfo.isNative());
+    assertFalse(functionInfo.isBuiltIn());
+
+    // GenericUDF
+    FunctionRegistry.registerPermanentFunction("default.perm_concat",
+        GenericUDFConcat.class.getName(), true, emptyResources);
+    functionInfo = FunctionRegistry.getFunctionInfo("default.perm_concat");
+    assertTrue(functionInfo.isPersistent());
+    assertTrue(functionInfo.isNative());
+    assertFalse(functionInfo.isBuiltIn());
+
+    // GenericUDAF
+    FunctionRegistry.registerPermanentFunction("default.perm_max",
+        GenericUDAFMax.class.getName(), true, emptyResources);
+    functionInfo = FunctionRegistry.getFunctionInfo("default.perm_max");
+    assertTrue(functionInfo.isPersistent());
+    functionInfo = FunctionRegistry.getWindowFunctionInfo("default.perm_max");
+    assertTrue(functionInfo.isPersistent());
+    assertTrue(functionInfo.isNative());
+    assertFalse(functionInfo.isBuiltIn());
+
+    // UDTF
+    FunctionRegistry.registerPermanentFunction("default.perm_explode",
+        GenericUDTFExplode.class.getName(), true, emptyResources);
+    functionInfo = FunctionRegistry.getFunctionInfo("default.perm_explode");
+    assertTrue(functionInfo.isPersistent());
+    assertTrue(functionInfo.isNative());
+    assertFalse(functionInfo.isBuiltIn());
+  }
+
+  public void testBuiltInFunction() throws Exception {
+    FunctionInfo functionInfo = FunctionRegistry.getFunctionInfo("ln");
+    assertTrue(functionInfo.isBuiltIn());
+    assertTrue(functionInfo.isNative());
+  }
+
+  public void testIsPermanentFunction() throws Exception {
+    // Setup exprNode
+    GenericUDF udf = new GenericUDFCurrentTimestamp();
+    List<ExprNodeDesc> children = new ArrayList<ExprNodeDesc>();
+    ExprNodeGenericFuncDesc fnExpr =
+        new ExprNodeGenericFuncDesc(TypeInfoFactory.timestampTypeInfo, udf, children);
+
+    assertFalse("Function not added as permanent yet", FunctionRegistry.isPermanentFunction(fnExpr));
+
+    // Now register as permanent function
+    FunctionResource[] emptyResources = new FunctionResource[] {};
+    FunctionRegistry.registerPermanentFunction("default.perm_current_timestamp",
+        GenericUDFCurrentTimestamp.class.getName(), true, emptyResources);
+
+    assertTrue("Function should now be recognized as permanent function", FunctionRegistry.isPermanentFunction(fnExpr));
   }
 }

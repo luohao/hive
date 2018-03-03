@@ -18,13 +18,17 @@
 
 package org.apache.hadoop.hive.ql.io.merge;
 
+import org.apache.hadoop.hive.ql.exec.mr.ExecDriver;
+
 import org.apache.commons.lang.StringUtils;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hive.conf.HiveConf;
+import org.apache.hadoop.hive.ql.CompilationOpContext;
 import org.apache.hadoop.hive.ql.Context;
 import org.apache.hadoop.hive.ql.DriverContext;
 import org.apache.hadoop.hive.ql.QueryPlan;
+import org.apache.hadoop.hive.ql.QueryState;
 import org.apache.hadoop.hive.ql.exec.Operator;
 import org.apache.hadoop.hive.ql.exec.Task;
 import org.apache.hadoop.hive.ql.exec.Utilities;
@@ -43,6 +47,7 @@ import org.apache.hadoop.mapred.FileInputFormat;
 import org.apache.hadoop.mapred.JobClient;
 import org.apache.hadoop.mapred.JobConf;
 import org.apache.hadoop.mapred.RunningJob;
+import org.apache.hadoop.mapreduce.MRJobConfig;
 
 import java.io.IOException;
 import java.io.Serializable;
@@ -58,9 +63,9 @@ public class MergeFileTask extends Task<MergeFileWork> implements Serializable,
   private boolean success = true;
 
   @Override
-  public void initialize(HiveConf conf, QueryPlan queryPlan,
-      DriverContext driverContext) {
-    super.initialize(conf, queryPlan, driverContext);
+  public void initialize(QueryState queryState, QueryPlan queryPlan,
+      DriverContext driverContext, CompilationOpContext opContext) {
+    super.initialize(queryState, queryPlan, driverContext, opContext);
     job = new JobConf(conf, MergeFileTask.class);
     jobExecHelper = new HadoopJobExecHelper(job, this.console, this, this);
   }
@@ -105,9 +110,10 @@ public class MergeFileTask extends Task<MergeFileWork> implements Serializable,
         fs.mkdirs(tempOutPath);
       }
 
+      ExecDriver.propagateSplitSettings(job, work);
+
       // set job name
-      boolean noName = StringUtils.isEmpty(HiveConf.getVar(job,
-          HiveConf.ConfVars.HADOOPJOBNAME));
+      boolean noName = StringUtils.isEmpty(job.get(MRJobConfig.JOB_NAME));
 
       String jobName = null;
       if (noName && this.getQueryPlan() != null) {
@@ -118,7 +124,7 @@ public class MergeFileTask extends Task<MergeFileWork> implements Serializable,
 
       if (noName) {
         // This is for a special case to ensure unit tests pass
-        HiveConf.setVar(job, HiveConf.ConfVars.HADOOPJOBNAME,
+        job.set(MRJobConfig.JOB_NAME,
             jobName != null ? jobName : "JOB" + Utilities.randGen.nextInt());
       }
 
@@ -148,11 +154,12 @@ public class MergeFileTask extends Task<MergeFileWork> implements Serializable,
 
       // Finally SUBMIT the JOB!
       rj = jc.submitJob(job);
-
-      returnVal = jobExecHelper.progress(rj, jc, null);
+      this.jobID = rj.getJobID();
+      returnVal = jobExecHelper.progress(rj, jc, ctx);
       success = (returnVal == 0);
 
     } catch (Exception e) {
+      setException(e);
       String mesg = " with exception '" + Utilities.getNameMessage(e) + "'";
       if (rj != null) {
         mesg = "Ended Job = " + rj.getJobID() + mesg;
@@ -176,7 +183,6 @@ public class MergeFileTask extends Task<MergeFileWork> implements Serializable,
           if (returnVal != 0) {
             rj.killJob();
           }
-          jobID = rj.getID().toString();
         }
         // get the list of Dynamic partition paths
         if (rj != null) {
@@ -189,8 +195,9 @@ public class MergeFileTask extends Task<MergeFileWork> implements Serializable,
         }
       } catch (Exception e) {
 	// jobClose needs to execute successfully otherwise fail task
-	LOG.warn(e);
+	LOG.warn("Job close failed ",e);
         if (success) {
+          setException(e);
           success = false;
           returnVal = 3;
           String mesg = "Job Commit failed with exception '" +

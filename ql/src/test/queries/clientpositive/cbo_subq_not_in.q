@@ -1,3 +1,4 @@
+set hive.mapred.mode=nonstrict;
 set hive.cbo.enable=true;
 set hive.exec.check.crossproducts=false;
 
@@ -32,15 +33,6 @@ part where part.p_size not in
   from (select p_size from part) a 
   where p_size < 10
   ) order by p_name
-;
-
--- agg, corr
-select p_mfgr, p_name, p_size 
-from part b where b.p_size not in 
-  (select min(p_size) 
-  from (select p_mfgr, p_size from part) a 
-  where p_size < 10 and b.p_mfgr = a.p_mfgr
-  ) order by  p_name
 ;
 
 -- non agg, non corr, Group By in Parent Query

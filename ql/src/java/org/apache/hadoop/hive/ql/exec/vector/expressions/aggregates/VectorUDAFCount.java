@@ -60,6 +60,12 @@ public class VectorUDAFCount extends VectorAggregateExpression {
     }
 
     private VectorExpression inputExpression = null;
+
+    @Override
+    public VectorExpression inputExpression() {
+      return inputExpression;
+    }
+
     transient private final LongWritable result;
 
     public VectorUDAFCount(VectorExpression inputExpression) {
@@ -97,7 +103,12 @@ public class VectorUDAFCount extends VectorAggregateExpression {
 
       ColumnVector inputVector = batch.cols[this.inputExpression.getOutputColumn()];
 
-      if (inputVector.noNulls) {
+      if (inputVector.isRepeating) {
+        if (inputVector.noNulls || !inputVector.isNull[0]) {
+          iterateNoNullsWithAggregationSelection(
+              aggregationBufferSets, aggregateIndex, batchSize);
+        }
+      } else if (inputVector.noNulls) {
           // if there are no nulls then the iteration is the same on all cases
           iterateNoNullsWithAggregationSelection(
             aggregationBufferSets, aggregateIndex, batchSize);

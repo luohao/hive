@@ -25,18 +25,19 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.hive.ql.exec.NodeUtils.Function;
+import org.apache.hadoop.hive.ql.plan.MapJoinDesc;
 import org.apache.hadoop.hive.ql.plan.OperatorDesc;
 import org.apache.hadoop.mapred.OutputCollector;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import com.google.common.collect.ImmutableMultimap;
 import com.google.common.collect.Multimap;
 
 public class OperatorUtils {
 
-  private static final Log LOG = LogFactory.getLog(OperatorUtils.class);
+  private static final Logger LOG = LoggerFactory.getLogger(OperatorUtils.class);
 
   public static <T> Set<T> findOperators(Operator<?> start, Class<T> clazz) {
     return findOperators(start, clazz, new HashSet<T>());
@@ -80,6 +81,11 @@ public class OperatorUtils {
     return found.size() == 1 ? found.iterator().next() : null;
   }
 
+  public static <T> T findSingleOperatorUpstreamJoinAccounted(Operator<?> start, Class<T> clazz) {
+    Set<T> found = findOperatorsUpstreamJoinAccounted(start, clazz, new HashSet<T>());
+    return found.size() >= 1 ? found.iterator().next(): null;
+  }
+
   public static <T> Set<T> findOperatorsUpstream(Collection<Operator<?>> starts, Class<T> clazz) {
     Set<T> found = new HashSet<T>();
     for (Operator<?> start : starts) {
@@ -101,6 +107,34 @@ public class OperatorUtils {
     return found;
   }
 
+  public static <T> Set<T> findOperatorsUpstreamJoinAccounted(Operator<?> start, Class<T> clazz,
+      Set<T> found) {
+    if (clazz.isInstance(start)) {
+      found.add((T) start);
+    }
+    int onlyIncludeIndex = -1;
+    if (start instanceof AbstractMapJoinOperator) {
+      AbstractMapJoinOperator mapJoinOp = (AbstractMapJoinOperator) start;
+      MapJoinDesc desc = (MapJoinDesc) mapJoinOp.getConf();
+      onlyIncludeIndex = desc.getPosBigTable();
+    }
+    if (start.getParentOperators() != null) {
+      int i = 0;
+      for (Operator<?> parent : start.getParentOperators()) {
+        if (onlyIncludeIndex >= 0) {
+          if (onlyIncludeIndex == i) {
+            findOperatorsUpstream(parent, clazz, found);
+          }
+        } else {
+          findOperatorsUpstream(parent, clazz, found);
+        }
+        i++;
+      }
+    }
+    return found;
+  }
+
+
   public static void setChildrenCollector(List<Operator<? extends OperatorDesc>> childOperators, OutputCollector out) {
     if (childOperators == null) {
       return;
@@ -119,12 +153,11 @@ public class OperatorUtils {
       return;
     }
     for (Operator<? extends OperatorDesc> op : childOperators) {
-      if(op.getName().equals(ReduceSinkOperator.getOperatorName())) {
-        ReduceSinkOperator rs = ((ReduceSinkOperator)op);
-        if (outMap.containsKey(rs.getConf().getOutputName())) {
-          LOG.info("Setting output collector: " + rs + " --> "
-            + rs.getConf().getOutputName());
-          rs.setOutputCollector(outMap.get(rs.getConf().getOutputName()));
+      if (op.getIsReduceSink()) {
+        String outputName = op.getReduceOutputName();
+        if (outMap.containsKey(outputName)) {
+          LOG.info("Setting output collector: " + op + " --> " + outputName);
+          op.setOutputCollector(outMap.get(outputName));
         }
       } else {
         setChildrenCollector(op.getChildOperators(), outMap);
@@ -203,7 +236,7 @@ public class OperatorUtils {
   }
 
   public static boolean sameRowSchema(Operator<?> operator1, Operator<?> operator2) {
-	return operator1.getSchema().equals(operator2.getSchema());
+    return operator1.getSchema().equals(operator2.getSchema());
   }
 
   /**
@@ -221,9 +254,9 @@ public class OperatorUtils {
    * them
    */
   public static Multimap<Class<? extends Operator<?>>, Operator<?>> classifyOperators(
-        Operator<?> start, Set<Class<? extends Operator<?>>> classes) {
+      Operator<?> start, Set<Class<? extends Operator<?>>> classes) {
     ImmutableMultimap.Builder<Class<? extends Operator<?>>, Operator<?>> resultMap =
-          new ImmutableMultimap.Builder<Class<? extends Operator<?>>, Operator<?>>();
+        new ImmutableMultimap.Builder<Class<? extends Operator<?>>, Operator<?>>();
     List<Operator<?>> ops = new ArrayList<Operator<?>>();
     ops.add(start);
     while (!ops.isEmpty()) {
@@ -256,9 +289,9 @@ public class OperatorUtils {
    * them
    */
   public static Multimap<Class<? extends Operator<?>>, Operator<?>> classifyOperatorsUpstream(
-        Operator<?> start, Set<Class<? extends Operator<?>>> classes) {
+      Operator<?> start, Set<Class<? extends Operator<?>>> classes) {
     ImmutableMultimap.Builder<Class<? extends Operator<?>>, Operator<?>> resultMap =
-          new ImmutableMultimap.Builder<Class<? extends Operator<?>>, Operator<?>>();
+        new ImmutableMultimap.Builder<Class<? extends Operator<?>>, Operator<?>>();
     List<Operator<?>> ops = new ArrayList<Operator<?>>();
     ops.add(start);
     while (!ops.isEmpty()) {
@@ -276,5 +309,82 @@ public class OperatorUtils {
       ops = allParent;
     }
     return resultMap.build();
+  }
+
+  /**
+   * Given an operator and a set of classes, it returns the number of operators it finds
+   * upstream that instantiate any of the given classes.
+   *
+   * @param start the start operator
+   * @param classes the set of classes
+   * @return the number of operators
+   */
+  public static int countOperatorsUpstream(Operator<?> start, Set<Class<? extends Operator<?>>> classes) {
+    Multimap<Class<? extends Operator<?>>, Operator<?>> ops = classifyOperatorsUpstream(start, classes);
+    int numberOperators = 0;
+    Set<Operator<?>> uniqueOperators = new HashSet<Operator<?>>();
+    for (Operator<?> op : ops.values()) {
+      if (uniqueOperators.add(op)) {
+        numberOperators++;
+      }
+    }
+    return numberOperators;
+  }
+
+  public static void setMemoryAvailable(final List<Operator<? extends OperatorDesc>> operators,
+    final long memoryAvailableToTask) {
+    if (operators == null) {
+      return;
+    }
+
+    for (Operator<? extends OperatorDesc> op : operators) {
+      if (op.getConf() != null) {
+        op.getConf().setMaxMemoryAvailable(memoryAvailableToTask);
+      }
+      if (op.getChildOperators() != null && !op.getChildOperators().isEmpty()) {
+        setMemoryAvailable(op.getChildOperators(), memoryAvailableToTask);
+      }
+    }
+  }
+
+  /**
+   * Given the input operator 'op', walk up the operator tree from 'op', and collect all the
+   * roots that can be reached from it. The results are stored in 'roots'.
+   */
+  public static void findRoots(Operator<?> op, Collection<Operator<?>> roots) {
+    List<Operator<?>> parents = op.getParentOperators();
+    if (parents == null || parents.isEmpty()) {
+      roots.add(op);
+      return;
+    }
+    for (Operator<?> p : parents) {
+      findRoots(p, roots);
+    }
+  }
+
+  /**
+   * Remove the branch that contains the specified operator. Do nothing if there's no branching,
+   * i.e. all the upstream operators have only one child.
+   */
+  public static void removeBranch(Operator<?> op) {
+    Operator<?> child = op;
+    Operator<?> curr = op;
+
+    while (curr.getChildOperators().size() <= 1) {
+      child = curr;
+      if (curr.getParentOperators() == null || curr.getParentOperators().isEmpty()) {
+        return;
+      }
+      curr = curr.getParentOperators().get(0);
+    }
+
+    curr.removeChild(child);
+  }
+
+  public static String getOpNamePretty(Operator<?> op) {
+    if (op instanceof TableScanOperator) {
+      return op.toString() + " (" + ((TableScanOperator) op).getConf().getAlias() + ")";
+    }
+    return op.toString();
   }
 }

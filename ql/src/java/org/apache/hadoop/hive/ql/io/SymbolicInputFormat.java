@@ -25,11 +25,13 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Map.Entry;
 
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hive.common.FileUtils;
+import org.apache.hadoop.hive.common.StringInternUtils;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.ql.plan.MapredWork;
 import org.apache.hadoop.hive.ql.plan.PartitionDesc;
@@ -38,28 +40,26 @@ import org.apache.hadoop.mapred.TextInputFormat;
 public class SymbolicInputFormat implements ReworkMapredInputFormat {
 
   public void rework(HiveConf job, MapredWork work) throws IOException {
-    Map<String, PartitionDesc> pathToParts = work.getMapWork().getPathToPartitionInfo();
-    List<String> toRemovePaths = new ArrayList<String>();
-    Map<String, PartitionDesc> toAddPathToPart = new HashMap<String, PartitionDesc>();
-    Map<String, ArrayList<String>> pathToAliases = work.getMapWork().getPathToAliases();
+    Map<Path, PartitionDesc> pathToParts = work.getMapWork().getPathToPartitionInfo();
+    List<Path> toRemovePaths = new ArrayList<>();
+    Map<Path, PartitionDesc> toAddPathToPart = new HashMap<>();
+    Map<Path, ArrayList<String>> pathToAliases = work.getMapWork().getPathToAliases();
 
-    for (Map.Entry<String, PartitionDesc> pathPartEntry : pathToParts
-        .entrySet()) {
-      String path = pathPartEntry.getKey();
+    for (Map.Entry<Path, PartitionDesc> pathPartEntry : pathToParts.entrySet()) {
+      Path path = pathPartEntry.getKey();
       PartitionDesc partDesc = pathPartEntry.getValue();
       // this path points to a symlink path
       if (partDesc.getInputFileFormatClass().equals(
           SymlinkTextInputFormat.class)) {
         // change to TextInputFormat
         partDesc.setInputFileFormatClass(TextInputFormat.class);
-        Path symlinkDir = new Path(path);
-        FileSystem fileSystem = symlinkDir.getFileSystem(job);
-        FileStatus fStatus = fileSystem.getFileStatus(symlinkDir);
+        FileSystem fileSystem = path.getFileSystem(job);
+        FileStatus fStatus = fileSystem.getFileStatus(path);
         FileStatus[] symlinks = null;
         if (!fStatus.isDir()) {
           symlinks = new FileStatus[] { fStatus };
         } else {
-          symlinks = fileSystem.listStatus(symlinkDir, FileUtils.HIDDEN_FILES_PATH_FILTER);
+          symlinks = fileSystem.listStatus(path, FileUtils.HIDDEN_FILES_PATH_FILTER);
         }
         toRemovePaths.add(path);
         ArrayList<String> aliases = pathToAliases.remove(path);
@@ -75,8 +75,13 @@ public class SymbolicInputFormat implements ReworkMapredInputFormat {
             while ((line = reader.readLine()) != null) {
               // no check for the line? How to check?
               // if the line is invalid for any reason, the job will fail.
-              toAddPathToPart.put(line, partDesc);
-              pathToAliases.put(line, aliases);
+              FileStatus[] matches = fileSystem.globStatus(new Path(line));
+              for (FileStatus fileStatus : matches) {
+                Path schemaLessPath = Path.getPathWithoutSchemeAndAuthority(fileStatus.getPath());
+                StringInternUtils.internUriStringsInPath(schemaLessPath);
+                toAddPathToPart.put(schemaLessPath, partDesc);
+                pathToAliases.put(schemaLessPath, aliases);
+              }
             }
           } finally {
             org.apache.hadoop.io.IOUtils.closeStream(reader);
@@ -85,9 +90,11 @@ public class SymbolicInputFormat implements ReworkMapredInputFormat {
       }
     }
 
-    pathToParts.putAll(toAddPathToPart);
-    for (String toRemove : toRemovePaths) {
-      pathToParts.remove(toRemove);
+    for (Entry<Path, PartitionDesc> toAdd : toAddPathToPart.entrySet()) {
+      work.getMapWork().addPathToPartitionInfo(toAdd.getKey(), toAdd.getValue());
+    }
+    for (Path toRemove : toRemovePaths) {
+      work.getMapWork().removePathToPartitionInfo(toRemove);
     }
   }
 }

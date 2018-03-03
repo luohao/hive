@@ -20,13 +20,12 @@ package org.apache.hadoop.hive.serde2.lazy.fast;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.nio.charset.CharacterCodingException;
 import java.sql.Date;
 import java.sql.Timestamp;
 
 import org.apache.commons.codec.binary.Base64;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.hive.common.type.HiveChar;
 import org.apache.hadoop.hive.common.type.HiveDecimal;
 import org.apache.hadoop.hive.common.type.HiveIntervalDayTime;
@@ -47,13 +46,6 @@ import org.apache.hadoop.hive.serde2.lazy.LazyLong;
 import org.apache.hadoop.hive.serde2.lazy.LazySerDeParameters;
 import org.apache.hadoop.hive.serde2.lazy.LazyTimestamp;
 import org.apache.hadoop.hive.serde2.lazy.LazyUtils;
-import org.apache.hadoop.hive.serde2.lazy.objectinspector.primitive.LazyObjectInspectorParameters;
-import org.apache.hadoop.hive.serde2.lazybinary.LazyBinaryUtils;
-import org.apache.hadoop.hive.serde2.objectinspector.primitive.ByteObjectInspector;
-import org.apache.hadoop.hive.serde2.objectinspector.primitive.DateObjectInspector;
-import org.apache.hadoop.hive.serde2.objectinspector.primitive.HiveDecimalObjectInspector;
-import org.apache.hadoop.hive.serde2.objectinspector.primitive.LongObjectInspector;
-import org.apache.hadoop.hive.serde2.objectinspector.primitive.TimestampObjectInspector;
 import org.apache.hadoop.hive.serde2.fast.SerializeWrite;
 import org.apache.hadoop.io.Text;
 import org.apache.hive.common.util.DateUtils;
@@ -63,8 +55,8 @@ import org.apache.hive.common.util.DateUtils;
 *
  * This is an alternative way to serialize than what is provided by LazyBinarySerDe.
   */
-public class LazySimpleSerializeWrite implements SerializeWrite {
-  public static final Log LOG = LogFactory.getLog(LazySimpleSerializeWrite.class.getName());
+public final class LazySimpleSerializeWrite implements SerializeWrite {
+  public static final Logger LOG = LoggerFactory.getLogger(LazySimpleSerializeWrite.class.getName());
 
   private LazySerDeParameters lazyParams;
 
@@ -85,6 +77,7 @@ public class LazySimpleSerializeWrite implements SerializeWrite {
   private HiveIntervalYearMonthWritable hiveIntervalYearMonthWritable;
   private HiveIntervalDayTimeWritable hiveIntervalDayTimeWritable;
   private HiveIntervalDayTime hiveIntervalDayTime;
+  private byte[] decimalScratchBuffer;
 
   public LazySimpleSerializeWrite(int fieldCount,
     byte separator, LazySerDeParameters lazyParams) {
@@ -482,37 +475,36 @@ public class LazySimpleSerializeWrite implements SerializeWrite {
     index++;
   }
 
+  /*
+   * DECIMAL.
+   *
+   * NOTE: The scale parameter is for text serialization (e.g. HiveDecimal.toFormatString) that
+   * creates trailing zeroes output decimals.
+   */
   @Override
-  public void writeHiveIntervalDayTime(long totalNanos) throws IOException {
-
+  public void writeHiveDecimal(HiveDecimal dec, int scale) throws IOException {
     if (index > 0) {
       output.write(separator);
     }
 
-    if (hiveIntervalDayTime == null) {
-      hiveIntervalDayTime = new HiveIntervalDayTime();
+    if (decimalScratchBuffer == null) {
+      decimalScratchBuffer = new byte[HiveDecimal.SCRATCH_BUFFER_LEN_TO_BYTES];
     }
-    if (hiveIntervalDayTimeWritable == null) {
-      hiveIntervalDayTimeWritable = new HiveIntervalDayTimeWritable();
-    }
-    DateUtils.setIntervalDayTimeTotalNanos(hiveIntervalDayTime, totalNanos);
-    hiveIntervalDayTimeWritable.set(hiveIntervalDayTime);
-    LazyHiveIntervalDayTime.writeUTF8(output, hiveIntervalDayTimeWritable);
+    LazyHiveDecimal.writeUTF8(output, dec, scale, decimalScratchBuffer);
 
     index++;
   }
 
-  /*
-   * DECIMAL.
-   */
   @Override
-  public void writeHiveDecimal(HiveDecimal v) throws IOException {
-
+  public void writeHiveDecimal(HiveDecimalWritable decWritable, int scale) throws IOException {
     if (index > 0) {
       output.write(separator);
     }
 
-    LazyHiveDecimal.writeUTF8(output, v);
+    if (decimalScratchBuffer == null) {
+      decimalScratchBuffer = new byte[HiveDecimal.SCRATCH_BUFFER_LEN_TO_BYTES];
+    }
+    LazyHiveDecimal.writeUTF8(output, decWritable, scale, decimalScratchBuffer);
 
     index++;
   }

@@ -23,20 +23,23 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
+import org.apache.hadoop.mapreduce.lib.input.FileInputFormat;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.LocalFileSystem;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.hive.conf.HiveConf;
+import org.apache.hadoop.hive.common.FileUtils;
 import org.apache.hadoop.hive.ql.exec.FileSinkOperator.RecordWriter;
 import org.apache.hadoop.hive.ql.exec.Utilities;
 import org.apache.hadoop.hive.ql.io.HiveFileFormatUtils;
 import org.apache.hadoop.hive.ql.io.HiveOutputFormat;
 import org.apache.hadoop.hive.ql.metadata.HiveException;
+import org.apache.hadoop.hive.ql.metadata.HiveUtils;
 import org.apache.hadoop.hive.ql.plan.TableDesc;
-import org.apache.hadoop.hive.serde2.SerDe;
+import org.apache.hadoop.hive.serde2.AbstractSerDe;
 import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspector;
 import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspectorUtils;
 import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspectorUtils.ObjectInspectorCopyOption;
@@ -74,7 +77,7 @@ import org.apache.hive.common.util.ReflectionUtil;
 public class RowContainer<ROW extends List<Object>>
   implements AbstractRowContainer<ROW>, AbstractRowContainer.RowIterator<ROW> {
 
-  protected static Log LOG = LogFactory.getLog(RowContainer.class);
+  protected static final Logger LOG = LoggerFactory.getLogger(RowContainer.class);
 
   // max # of rows can be put into one block
   private static final int BLOCKSIZE = 25000;
@@ -90,11 +93,11 @@ public class RowContainer<ROW extends List<Object>>
   private long size;    // total # of elements in the RowContainer
   private File tmpFile; // temporary file holding the spilled blocks
   Path tempOutPath = null;
-  private File parentFile;
+  private File parentDir;
   private int itrCursor; // iterator cursor in the currBlock
   private int readBlockSize; // size of current read block
   private int addCursor; // append cursor in the lastBlock
-  private SerDe serde; // serialization/deserialization for the row
+  private AbstractSerDe serde; // serialization/deserialization for the row
   private ObjectInspector standardOI; // object inspector for the row
 
   private List<Object> keyObject;
@@ -103,7 +106,7 @@ public class RowContainer<ROW extends List<Object>>
 
   boolean firstCalled = false; // once called first, it will never be able to
   // write again.
-  int acutalSplitNum = 0;
+  private int actualSplitNum = 0;
   int currentSplitPointer = 0;
   org.apache.hadoop.mapred.RecordReader rr = null; // record reader
   RecordWriter rw = null;
@@ -111,6 +114,8 @@ public class RowContainer<ROW extends List<Object>>
   InputSplit[] inputSplits = null;
   private ROW dummyRow = null;
   private final Reporter reporter;
+  private final String spillFileDirs;
+
 
   Writable val = null; // cached to use serialize data
 
@@ -129,6 +134,7 @@ public class RowContainer<ROW extends List<Object>>
     this.size = 0;
     this.itrCursor = 0;
     this.addCursor = 0;
+    this.spillFileDirs = HiveUtils.getLocalDirList(jc);
     this.numFlushedBlocks = 0;
     this.tmpFile = null;
     this.currentWriteBlock = (ROW[]) new ArrayList[blockSize];
@@ -147,13 +153,14 @@ public class RowContainer<ROW extends List<Object>>
   private JobConf getLocalFSJobConfClone(Configuration jc) {
     if (this.jobCloneUsingLocalFs == null) {
       this.jobCloneUsingLocalFs = new JobConf(jc);
-      HiveConf.setVar(jobCloneUsingLocalFs, HiveConf.ConfVars.HADOOPFS, Utilities.HADOOP_LOCAL_FS);
+      jobCloneUsingLocalFs.set(CommonConfigurationKeysPublic.FS_DEFAULT_NAME_KEY,
+          Utilities.HADOOP_LOCAL_FS);
     }
     return this.jobCloneUsingLocalFs;
   }
 
 
-  public void setSerDe(SerDe sd, ObjectInspector oi) {
+  public void setSerDe(AbstractSerDe sd, ObjectInspector oi) {
     this.serde = sd;
     this.standardOI = oi;
   }
@@ -217,10 +224,10 @@ public class RowContainer<ROW extends List<Object>>
                 tblDesc.getInputFileFormatClass(), localJc);
           }
 
-          HiveConf.setVar(localJc, HiveConf.ConfVars.HADOOPMAPREDINPUTDIR,
-              org.apache.hadoop.util.StringUtils.escapeString(parentFile.getAbsolutePath()));
+          localJc.set(FileInputFormat.INPUT_DIR,
+              org.apache.hadoop.util.StringUtils.escapeString(parentDir.getAbsolutePath()));
           inputSplits = inputFormat.getSplits(localJc, 1);
-          acutalSplitNum = inputSplits.length;
+          actualSplitNum = inputSplits.length;
         }
         currentSplitPointer = 0;
         rr = inputFormat.getRecordReader(inputSplits[currentSplitPointer],
@@ -287,7 +294,7 @@ public class RowContainer<ROW extends List<Object>>
   }
 
   private final ArrayList<Object> row = new ArrayList<Object>(2);
-
+  
   private void spillBlock(ROW[] block, int length) throws HiveException {
     try {
       if (tmpFile == null) {
@@ -375,7 +382,7 @@ public class RowContainer<ROW extends List<Object>>
         }
       }
 
-      if (nextSplit && this.currentSplitPointer < this.acutalSplitNum) {
+      if (nextSplit && this.currentSplitPointer < this.actualSplitNum) {
         JobConf localJc = getLocalFSJobConfClone(jc);
         // open record reader to read next split
         rr = inputFormat.getRecordReader(inputSplits[currentSplitPointer], jobCloneUsingLocalFs,
@@ -421,7 +428,7 @@ public class RowContainer<ROW extends List<Object>>
     addCursor = 0;
     numFlushedBlocks = 0;
     this.readBlockSize = 0;
-    this.acutalSplitNum = 0;
+    this.actualSplitNum = 0;
     this.currentSplitPointer = -1;
     this.firstCalled = false;
     this.inputSplits = null;
@@ -443,8 +450,8 @@ public class RowContainer<ROW extends List<Object>>
       rw = null;
       rr = null;
       tmpFile = null;
-      deleteLocalFile(parentFile, true);
-      parentFile = null;
+      deleteLocalFile(parentDir, true);
+      parentDir = null;
     }
   }
 
@@ -516,21 +523,14 @@ public class RowContainer<ROW extends List<Object>>
         suffix = "." + this.keyObject.toString() + suffix;
       }
 
-      while (true) {
-        parentFile = File.createTempFile("hive-rowcontainer", "");
-        boolean success = parentFile.delete() && parentFile.mkdir();
-        if (success) {
-          break;
-        }
-        LOG.debug("retry creating tmp row-container directory...");
-      }
+      parentDir = FileUtils.createLocalDirsTempFile(spillFileDirs, "hive-rowcontainer", "", true);
 
-      tmpFile = File.createTempFile("RowContainer", suffix, parentFile);
+      tmpFile = File.createTempFile("RowContainer", suffix, parentDir);
       LOG.info("RowContainer created temp file " + tmpFile.getAbsolutePath());
       // Delete the temp file if the JVM terminate normally through Hadoop job
       // kill command.
       // Caveat: it won't be deleted if JVM is killed by 'kill -9'.
-      parentFile.deleteOnExit();
+      parentDir.deleteOnExit();
       tmpFile.deleteOnExit();
 
       // rFile = new RandomAccessFile(tmpFile, "rw");
@@ -605,5 +605,9 @@ public class RowContainer<ROW extends List<Object>>
   protected void close() throws HiveException {
     clearRows();
     currentReadBlock = firstReadBlockPointer = currentWriteBlock = null;
+  }
+
+  protected int getLastActualSplit() {
+    return actualSplitNum - 1;
   }
 }

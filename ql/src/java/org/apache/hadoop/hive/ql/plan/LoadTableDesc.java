@@ -36,7 +36,6 @@ public class LoadTableDesc extends org.apache.hadoop.hive.ql.plan.LoadDesc
   private boolean replace;
   private DynamicPartitionCtx dpCtx;
   private ListBucketingCtx lbCtx;
-  private boolean holdDDLTime;
   private boolean inheritTableSpecs = true; //For partitions, flag controlling whether the current
                                             //table specs are to be used
   // Need to remember whether this is an acid compliant operation, and if so whether it is an
@@ -47,8 +46,16 @@ public class LoadTableDesc extends org.apache.hadoop.hive.ql.plan.LoadDesc
   private org.apache.hadoop.hive.ql.plan.TableDesc table;
   private Map<String, String> partitionSpec; // NOTE: this partitionSpec has to be ordered map
 
-  public LoadTableDesc() {
-    this.holdDDLTime = false;
+  public LoadTableDesc(final LoadTableDesc o) {
+    super(o.getSourcePath());
+
+    this.replace = o.replace;
+    this.dpCtx = o.dpCtx;
+    this.lbCtx = o.lbCtx;
+    this.inheritTableSpecs = o.inheritTableSpecs;
+    this.writeType = o.writeType;
+    this.table = o.table;
+    this.partitionSpec = o.partitionSpec;
   }
 
   public LoadTableDesc(final Path sourcePath,
@@ -114,16 +121,7 @@ public class LoadTableDesc extends org.apache.hadoop.hive.ql.plan.LoadDesc
     this.table = table;
     this.partitionSpec = partitionSpec;
     this.replace = replace;
-    this.holdDDLTime = false;
     this.writeType = writeType;
-  }
-
-  public void setHoldDDLTime(boolean ddlTime) {
-    holdDDLTime = ddlTime;
-  }
-
-  public boolean getHoldDDLTime() {
-    return holdDDLTime;
   }
 
   @Explain(displayName = "table", explainLevels = { Level.USER, Level.DEFAULT, Level.EXTENDED })
@@ -135,7 +133,7 @@ public class LoadTableDesc extends org.apache.hadoop.hive.ql.plan.LoadDesc
     this.table = table;
   }
 
-  @Explain(displayName = "partition", explainLevels = { Level.USER, Level.DEFAULT, Level.EXTENDED })
+  @Explain(displayName = "partition")
   public Map<String, String> getPartitionSpec() {
     return partitionSpec;
   }

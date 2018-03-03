@@ -1,8 +1,5 @@
 
-set hive.mapred.supports.subdirectories=true;
-
 -- INCLUDE_HADOOP_MAJOR_VERSIONS(0.23)
--- JAVA_VERSION_SPECIFIC_OUTPUT
 
 drop table stats_list_bucket;
 drop table stats_list_bucket_1;
@@ -15,9 +12,7 @@ skewed by (c1, c2) on  (('466','val_466'),('287','val_287'),('82','val_82'))
 stored as directories
 stored as rcfile;
 
-set hive.stats.key.prefix.max.length=1;
 
--- Make sure we use hashed IDs during stats publishing.
 -- Try partitioned table with list bucketing.
 -- The stats should show 500 rows loaded, as many rows as the src table has.
 

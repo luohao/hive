@@ -19,10 +19,9 @@
 package org.apache.hadoop.hive.ql.exec;
 
 import java.io.Serializable;
-import java.util.Collection;
-import java.util.concurrent.Future;
 
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hive.ql.CompilationOpContext;
 import org.apache.hadoop.hive.ql.metadata.HiveException;
 import org.apache.hadoop.hive.ql.plan.ForwardDesc;
 import org.apache.hadoop.hive.ql.plan.api.OperatorType;
@@ -54,15 +53,24 @@ public class ForwardOperator extends Operator<ForwardDesc> implements
    */
   @Override
   public String getName() {
-    return getOperatorName();
+    return ForwardOperator.getOperatorName();
   }
 
   static public String getOperatorName() {
     return "FOR";
   }
 
+  /** Kryo ctor. */
+  protected ForwardOperator() {
+    super();
+  }
+
+  public ForwardOperator(CompilationOpContext ctx) {
+    super(ctx);
+  }
+
   @Override
-  protected Collection<Future<?>> initializeOp(Configuration hconf) throws HiveException {
-    return super.initializeOp(hconf);
+  protected void initializeOp(Configuration hconf) throws HiveException {
+    super.initializeOp(hconf);
   }
 }

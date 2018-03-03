@@ -20,43 +20,28 @@ package org.apache.hadoop.hive.metastore;
 
 import java.io.FileNotFoundException;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.hive.conf.HiveConf;
+import org.apache.hadoop.hive.common.FileUtils;
 import org.apache.hadoop.hive.metastore.api.MetaException;
-import org.apache.hadoop.hive.shims.HadoopShims;
-import org.apache.hadoop.hive.shims.ShimLoader;
 
 public class HiveMetaStoreFsImpl implements MetaStoreFS {
 
-  public static final Log LOG = LogFactory
-      .getLog("hive.metastore.hivemetastoressimpl");
+  public static final Logger LOG = LoggerFactory
+      .getLogger("hive.metastore.hivemetastoreFsimpl");
 
   @Override
   public boolean deleteDir(FileSystem fs, Path f, boolean recursive,
       boolean ifPurge, Configuration conf) throws MetaException {
-    LOG.info("deleting  " + f);
-    HadoopShims hadoopShim = ShimLoader.getHadoopShims();
-
     try {
-      if (ifPurge) {
-        LOG.info("Not moving "+ f +" to trash");
-      } else if (hadoopShim.moveToAppropriateTrash(fs, f, conf)) {
-        LOG.info("Moved to trash: " + f);
-        return true;
-      }
-
-      if (fs.delete(f, true)) {
-        LOG.info("Deleted the diretory " + f);
-        return true;
-      }
-
+      FileUtils.moveToTrash(fs, f, conf, ifPurge);
       if (fs.exists(f)) {
         throw new MetaException("Unable to delete directory: " + f);
       }
+      return true;
     } catch (FileNotFoundException e) {
       return true; // ok even if there is not data
     } catch (Exception e) {
@@ -64,5 +49,4 @@ public class HiveMetaStoreFsImpl implements MetaStoreFS {
     }
     return false;
   }
-
 }

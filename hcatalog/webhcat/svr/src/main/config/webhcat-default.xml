@@ -32,6 +32,12 @@
   </property>
 
   <property>
+    <name>templeton.jetty.configuration</name>
+    <value></value>
+    <description>The embedded jetty configuration file.</description>
+  </property>
+
+  <property>
     <name>templeton.hadoop.conf.dir</name>
     <value>${env.HADOOP_CONF_DIR}</value>
     <description>The path to the Hadoop configuration.</description>
@@ -357,4 +363,12 @@
     </description>
   </property>
 -->
+  <property>
+    <name>templeton.xsrf.filter.enabled</name>
+    <value>false</value>
+    <description>
+        Enable XSRF protection - looks for the presence of a X-XSRF-HEADER header
+        in all PUT/POST requests, and rejects requests that do not have these.
+    </description>
+  </property>
 </configuration>

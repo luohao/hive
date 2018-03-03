@@ -18,10 +18,9 @@
 
 package org.apache.hadoop.hive.ql.exec.vector.expressions;
 
-import org.apache.hadoop.hive.ql.metadata.HiveException;
 import org.apache.hadoop.hive.ql.udf.UDFLike;
-import org.apache.hadoop.io.Text;
 
+import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.List;
 import java.util.regex.Matcher;
@@ -38,19 +37,16 @@ public class FilterStringColLikeStringScalar extends AbstractFilterStringColLike
       new EndCheckerFactory(),
       new MiddleCheckerFactory(),
       new NoneCheckerFactory(),
+      new ChainedCheckerFactory(),
       new ComplexCheckerFactory());
 
   public FilterStringColLikeStringScalar() {
     super();
   }
 
-  public FilterStringColLikeStringScalar(int colNum, byte[] likePattern) throws HiveException {
+  public FilterStringColLikeStringScalar(int colNum, byte[] likePattern) {
     super(colNum, null);
-    try {
-      super.setPattern(new String(likePattern, "UTF-8"));
-    } catch (Exception ex) {
-      throw new HiveException(ex);
-    }
+    super.setPattern(new String(likePattern, StandardCharsets.UTF_8));
   }
 
   @Override
@@ -119,11 +115,29 @@ public class FilterStringColLikeStringScalar extends AbstractFilterStringColLike
   }
 
   /**
+   * Accepts chained LIKE patterns without escaping like "abc%def%ghi%" and creates corresponding
+   * checkers.
+   *
+   */
+  private static class ChainedCheckerFactory implements CheckerFactory {
+    private static final Pattern CHAIN_PATTERN = Pattern.compile("(%?[^%_\\\\]+%?)+");
+
+    public Checker tryCreate(String pattern) {
+      Matcher matcher = CHAIN_PATTERN.matcher(pattern);
+      if (matcher.matches()) {
+        return new ChainedChecker(pattern);
+      }
+      return null;
+    }
+  }
+
+  /**
    * Accepts any LIKE patterns and creates corresponding checkers.
    */
   private static class ComplexCheckerFactory implements CheckerFactory {
     public Checker tryCreate(String pattern) {
-      return new ComplexChecker(UDFLike.likePatternToRegExp(pattern));
+      // anchor the pattern to the start:end of the whole string.
+      return new ComplexChecker("^" + UDFLike.likePatternToRegExp(pattern) + "$");
     }
   }
 }

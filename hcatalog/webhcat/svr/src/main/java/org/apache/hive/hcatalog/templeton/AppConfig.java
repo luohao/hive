@@ -24,17 +24,15 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
-import java.util.Comparator;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
-import java.util.StringTokenizer;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hive.conf.HiveConf;
+import org.apache.hadoop.hive.conf.HiveConfUtil;
 import org.apache.hadoop.util.StringUtils;
 import org.apache.hadoop.util.VersionInfo;
 import org.apache.hive.hcatalog.templeton.tool.JobState;
@@ -89,7 +87,13 @@ public class AppConfig extends Configuration {
     "webhcat-site.xml"
   };
 
+  public enum JobsListOrder {
+    lexicographicalasc,
+    lexicographicaldesc,
+  }
+
   public static final String PORT                = "templeton.port";
+  public static final String JETTY_CONFIGURATION = "templeton.jetty.configuration";
   public static final String EXEC_ENCODING_NAME  = "templeton.exec.encoding";
   public static final String EXEC_ENVS_NAME      = "templeton.exec.envs";
   public static final String EXEC_MAX_BYTES_NAME = "templeton.exec.max-output-bytes";
@@ -105,6 +109,44 @@ public class AppConfig extends Configuration {
   public static final String HIVE_PATH_NAME      = "templeton.hive.path";
   public static final String MAPPER_MEMORY_MB    = "templeton.mapper.memory.mb";
   public static final String MR_AM_MEMORY_MB     = "templeton.mr.am.memory.mb";
+  public static final String TEMPLETON_JOBSLIST_ORDER = "templeton.jobs.listorder";
+
+  /*
+   * These parameters controls the maximum number of concurrent job submit/status/list
+   * operations in templeton service. If more number of concurrent requests comes then
+   * they will be rejected with BusyException.
+   */
+  public static final String JOB_SUBMIT_MAX_THREADS = "templeton.parallellism.job.submit";
+  public static final String JOB_STATUS_MAX_THREADS = "templeton.parallellism.job.status";
+  public static final String JOB_LIST_MAX_THREADS = "templeton.parallellism.job.list";
+
+  /*
+   * These parameters controls the maximum time job submit/status/list operation is
+   * executed in templeton service. On time out, the execution is interrupted and
+   * TimeoutException is returned to client. On time out
+   *   For list and status operation, there is no action needed as they are read requests.
+   *   For submit operation, we do best effort to kill the job if its generated. Enabling
+   *     this parameter may have following side effects
+   *     1) There is a possibility for having active job for some time when the client gets
+   *        response for submit operation and a list operation from client could potential
+   *        show the newly created job which may eventually be killed with no guarantees.
+   *     2) If submit operation retried by client then there is a possibility of duplicate
+   *        jobs triggered.
+   *
+   * Time out configs should be configured in seconds.
+   *
+   */
+  public static final String JOB_SUBMIT_TIMEOUT   = "templeton.job.submit.timeout";
+  public static final String JOB_STATUS_TIMEOUT   = "templeton.job.status.timeout";
+  public static final String JOB_LIST_TIMEOUT   = "templeton.job.list.timeout";
+
+  /*
+   * If task execution time out is configured for submit operation then job may need to
+   * be killed on execution time out. These parameters controls the maximum number of
+   * retries and retry wait time in seconds for executing the time out task.
+   */
+  public static final String JOB_TIMEOUT_TASK_RETRY_COUNT = "templeton.job.timeout.task.retry.count";
+  public static final String JOB_TIMEOUT_TASK_RETRY_INTERVAL = "templeton.job.timeout.task.retry.interval";
 
   /**
    * see webhcat-default.xml
@@ -161,8 +203,9 @@ public class AppConfig extends Configuration {
    */
   public static final String HIVE_EXTRA_FILES = "templeton.hive.extra.files";
 
+  public static final String XSRF_FILTER_ENABLED = "templeton.xsrf.filter.enabled";
 
-  private static final Log LOG = LogFactory.getLog(AppConfig.class);
+  private static final Logger LOG = LoggerFactory.getLogger(AppConfig.class);
 
   public AppConfig() {
     init();
@@ -194,14 +237,19 @@ public class AppConfig extends Configuration {
    * been installed.  We need pass some properties to that client to make sure it connects to the
    * right Metastore, configures Tez, etc.  Here we look for such properties in hive config,
    * and set a comma-separated list of key values in {@link #HIVE_PROPS_NAME}.
+   * The HIVE_CONF_HIDDEN_LIST should be handled separately too - this also should be copied from
+   * the hive config to the webhcat config if not defined there.
    * Note that the user may choose to set the same keys in HIVE_PROPS_NAME directly, in which case
    * those values should take precedence.
    */
   private void handleHiveProperties() {
     HiveConf hiveConf = new HiveConf();//load hive-site.xml from classpath
     List<String> interestingPropNames = Arrays.asList(
-      "hive.metastore.uris","hive.metastore.sasl.enabled",
-      "hive.metastore.execute.setugi","hive.execution.engine");
+        HiveConf.ConfVars.METASTOREURIS.varname,
+        HiveConf.ConfVars.METASTORE_USE_THRIFT_SASL.varname,
+        HiveConf.ConfVars.METASTORE_EXECUTE_SET_UGI.varname,
+        HiveConf.ConfVars.HIVE_EXECUTION_ENGINE.varname,
+        HiveConf.ConfVars.HIVE_CONF_HIDDEN_LIST.varname);
 
     //each items is a "key=value" format
     List<String> webhcatHiveProps = new ArrayList<String>(hiveProps());
@@ -226,6 +274,12 @@ public class AppConfig extends Configuration {
       hiveProps.append(hiveProps.length() > 0 ? "," : "").append(StringUtils.escapeString(whProp));
     }
     set(HIVE_PROPS_NAME, hiveProps.toString());
+    // Setting the hidden list
+    String hiddenProperties = hiveConf.get(HiveConf.ConfVars.HIVE_CONF_HIDDEN_LIST.varname);
+    if (this.get(HiveConf.ConfVars.HIVE_CONF_HIDDEN_LIST.varname) == null
+        && hiddenProperties!=null) {
+      set(HiveConf.ConfVars.HIVE_CONF_HIDDEN_LIST.varname, hiddenProperties);
+    }
   }
 
   private static void logConfigLoadAttempt(String path) {
@@ -239,46 +293,28 @@ public class AppConfig extends Configuration {
   private String dumpEnvironent() {
     StringBuilder sb = TempletonUtils.dumpPropMap("========WebHCat System.getenv()========", System.getenv());
     sb.append("START========WebHCat AppConfig.iterator()========: \n");
-    dumpConfig(this, sb);
+    HiveConfUtil.dumpConfig(this, sb);
     sb.append("END========WebHCat AppConfig.iterator()========: \n");
 
     sb.append(TempletonUtils.dumpPropMap("========WebHCat System.getProperties()========", System.getProperties()));
 
-    sb.append("START========\"new HiveConf()\"========\n");
-    HiveConf c = new HiveConf();
-    sb.append("hiveDefaultUrl=").append(c.getHiveDefaultLocation()).append('\n');
-    sb.append("hiveSiteURL=").append(HiveConf.getHiveSiteLocation()).append('\n');
-    sb.append("hiveServer2SiteUrl=").append(HiveConf.getHiveServer2SiteLocation()).append('\n');
-    sb.append("hivemetastoreSiteUrl=").append(HiveConf.getMetastoreSiteLocation()).append('\n');
-    dumpConfig(c, sb);
-    sb.append("END========\"new HiveConf()\"========\n");
+    sb.append(HiveConfUtil.dumpConfig(new HiveConf()));
     return sb.toString();
   }
-  private static void dumpConfig(Configuration conf, StringBuilder sb) {
-    Iterator<Map.Entry<String, String>> configIter = conf.iterator();
-    List<Map.Entry<String, String>>configVals = new ArrayList<>();
-    while(configIter.hasNext()) {
-      configVals.add(configIter.next());
-    }
-    Collections.sort(configVals, new Comparator<Map.Entry<String, String>> () {
-      @Override
-      public int compare(Map.Entry<String, String> ent, Map.Entry<String, String> ent2) {
-        return ent.getKey().compareTo(ent2.getKey());
+
+  public JobsListOrder getListJobsOrder() {
+    String requestedOrder = get(TEMPLETON_JOBSLIST_ORDER);
+    if (requestedOrder != null) {
+      try {
+        return JobsListOrder.valueOf(requestedOrder.toLowerCase());
       }
-    });
-    for(Map.Entry<String, String> entry : configVals) {
-      //use get() to make sure variable substitution works
-      if(entry.getKey().toLowerCase().contains("path")) {
-        StringTokenizer st = new StringTokenizer(conf.get(entry.getKey()), File.pathSeparator);
-        sb.append(entry.getKey()).append("=\n");
-        while(st.hasMoreTokens()) {
-          sb.append("    ").append(st.nextToken()).append(File.pathSeparator).append('\n');
-        }
-      }
-      else {
-        sb.append(entry.getKey()).append('=').append(conf.get(entry.getKey())).append('\n');
+      catch(IllegalArgumentException ex) {
+        LOG.warn("Ignoring setting " + TEMPLETON_JOBSLIST_ORDER + " configured with in-correct value " + requestedOrder);
       }
     }
+
+    // Default to lexicographicalasc
+    return JobsListOrder.lexicographicalasc;
   }
 
   public void startCleanup() {
@@ -319,6 +355,7 @@ public class AppConfig extends Configuration {
     return false;
   }
 
+  public String jettyConfiguration() { return get(JETTY_CONFIGURATION); }
   public String libJars()          { return get(LIB_JARS_NAME); }
   public String hadoopQueueName()  { return get(HADOOP_QUEUE_NAME); }
   public String enableJobReconnectDefault() { return get(ENABLE_JOB_RECONNECT_DEFAULT); }

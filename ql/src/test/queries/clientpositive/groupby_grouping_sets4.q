@@ -1,3 +1,5 @@
+set hive.explain.user=false;
+set hive.mapred.mode=nonstrict;
 set hive.merge.mapfiles = false;
 set hive.merge.mapredfiles = false;
 
@@ -15,6 +17,13 @@ SELECT * FROM
 (SELECT a, b, count(*) from T1 where a < 3 group by a, b with cube) subq1
 join
 (SELECT a, b, count(*) from T1 where a < 3 group by a, b with cube) subq2
+on subq1.a = subq2.a;
+
+EXPLAIN
+SELECT * FROM
+(SELECT a, b, count(*) from T1 where a < 3 group by cube(a, b) ) subq1
+join
+(SELECT a, b, count(*) from T1 where a < 3 group by cube(a, b) ) subq2
 on subq1.a = subq2.a;
 
 SELECT * FROM

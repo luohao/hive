@@ -24,6 +24,7 @@ import java.util.Map;
 
 import org.apache.hadoop.hive.metastore.api.FieldSchema;
 import org.apache.hadoop.hive.ql.exec.Utilities;
+import org.apache.hadoop.hive.ql.parse.ReplicationSpec;
 import org.apache.hadoop.hive.ql.plan.Explain.Level;
 
 
@@ -38,6 +39,7 @@ public class CreateViewDesc extends DDLDesc implements Serializable {
   private String viewName;
   private String originalText;
   private String expandedText;
+  private boolean rewriteEnabled;
   private List<FieldSchema> schema;
   private Map<String, String> tblProps;
   private List<String> partColNames;
@@ -46,6 +48,14 @@ public class CreateViewDesc extends DDLDesc implements Serializable {
   private boolean ifNotExists;
   private boolean orReplace;
   private boolean isAlterViewAs;
+  private boolean isMaterialized;
+  private String inputFormat;
+  private String outputFormat;
+  private String location; // only used for materialized views
+  private String serde; // only used for materialized views
+  private String storageHandler; // only used for materialized views
+  private Map<String, String> serdeProps; // only used for materialized views
+  private ReplicationSpec replicationSpec = null;
 
   /**
    * For serialization only.
@@ -53,18 +63,77 @@ public class CreateViewDesc extends DDLDesc implements Serializable {
   public CreateViewDesc() {
   }
 
-  public CreateViewDesc(String viewName, List<FieldSchema> schema,
-      String comment, Map<String, String> tblProps,
-      List<String> partColNames, boolean ifNotExists,
-      boolean orReplace, boolean isAlterViewAs) {
+  /**
+   * Used to create a materialized view descriptor
+   * @param viewName
+   * @param schema
+   * @param comment
+   * @param tblProps
+   * @param partColNames
+   * @param ifNotExists
+   * @param orReplace
+   * @param isAlterViewAs
+   * @param inputFormat
+   * @param outputFormat
+   * @param location
+   * @param serde
+   * @param storageHandler
+   * @param serdeProps
+   */
+  public CreateViewDesc(String viewName, List<FieldSchema> schema, String comment,
+          Map<String, String> tblProps, List<String> partColNames,
+          boolean ifNotExists, boolean orReplace, boolean rewriteEnabled, boolean isAlterViewAs,
+          String inputFormat, String outputFormat, String location,
+          String serde, String storageHandler, Map<String, String> serdeProps) {
     this.viewName = viewName;
     this.schema = schema;
-    this.comment = comment;
     this.tblProps = tblProps;
     this.partColNames = partColNames;
+    this.comment = comment;
+    this.ifNotExists = ifNotExists;
+    this.orReplace = orReplace;
+    this.isMaterialized = true;
+    this.rewriteEnabled = rewriteEnabled;
+    this.isAlterViewAs = isAlterViewAs;
+    this.inputFormat = inputFormat;
+    this.outputFormat = outputFormat;
+    this.location = location;
+    this.serde = serde;
+    this.storageHandler = storageHandler;
+    this.serdeProps = serdeProps;
+  }
+
+  /**
+   * Used to create a view descriptor
+   * @param viewName
+   * @param schema
+   * @param comment
+   * @param tblProps
+   * @param partColNames
+   * @param ifNotExists
+   * @param orReplace
+   * @param isAlterViewAs
+   * @param inputFormat
+   * @param outputFormat
+   * @param serde
+   */
+  public CreateViewDesc(String viewName, List<FieldSchema> schema, String comment,
+                        Map<String, String> tblProps, List<String> partColNames,
+                        boolean ifNotExists, boolean orReplace, boolean isAlterViewAs,
+                        String inputFormat, String outputFormat, String serde) {
+    this.viewName = viewName;
+    this.schema = schema;
+    this.tblProps = tblProps;
+    this.partColNames = partColNames;
+    this.comment = comment;
     this.ifNotExists = ifNotExists;
     this.orReplace = orReplace;
     this.isAlterViewAs = isAlterViewAs;
+    this.isMaterialized = false;
+    this.rewriteEnabled = false;
+    this.inputFormat = inputFormat;
+    this.outputFormat = outputFormat;
+    this.serde = serde;
   }
 
   @Explain(displayName = "name", explainLevels = { Level.USER, Level.DEFAULT, Level.EXTENDED })
@@ -92,6 +161,15 @@ public class CreateViewDesc extends DDLDesc implements Serializable {
 
   public void setViewExpandedText(String expandedText) {
     this.expandedText = expandedText;
+  }
+
+  @Explain(displayName = "rewrite enabled")
+  public boolean isRewriteEnabled() {
+    return rewriteEnabled;
+  }
+
+  public void setRewriteEnabled(boolean rewriteEnabled) {
+    this.rewriteEnabled = rewriteEnabled;
   }
 
   @Explain(displayName = "columns")
@@ -171,5 +249,62 @@ public class CreateViewDesc extends DDLDesc implements Serializable {
 
   public void setIsAlterViewAs(boolean isAlterViewAs) {
     this.isAlterViewAs = isAlterViewAs;
+  }
+
+  public String getInputFormat() {
+    return inputFormat;
+  }
+
+  public void setInputFormat(String inputFormat) {
+    this.inputFormat = inputFormat;
+  }
+
+  public String getOutputFormat() {
+    return outputFormat;
+  }
+
+  public void setOutputFormat(String outputFormat) {
+    this.outputFormat = outputFormat;
+  }
+
+  public boolean isMaterialized() {
+    return isMaterialized;
+  }
+
+  public void setLocation(String location) {
+    this.location = location;
+  }
+  public String getLocation() {
+    return location;
+  }
+
+  public String getSerde() {
+    return serde;
+  }
+
+  public String getStorageHandler() {
+    return storageHandler;
+  }
+
+  public Map<String, String> getSerdeProps() {
+    return serdeProps;
+  }
+
+  /**
+   * @param replicationSpec Sets the replication spec governing this create.
+   * This parameter will have meaningful values only for creates happening as a result of a replication.
+   */
+  public void setReplicationSpec(ReplicationSpec replicationSpec) {
+    this.replicationSpec = replicationSpec;
+  }
+
+  /**
+   * @return what kind of replication spec this create is running under.
+   */
+  public ReplicationSpec getReplicationSpec(){
+    if (replicationSpec == null){
+      this.replicationSpec = new ReplicationSpec();
+    }
+    return this.replicationSpec;
   }
 }

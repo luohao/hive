@@ -19,24 +19,32 @@
 package org.apache.hadoop.hive.ql.parse;
 
 import java.io.IOException;
-import java.util.HashMap;
+import java.util.ArrayList;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
-import org.apache.hadoop.hive.conf.HiveConf;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.apache.hadoop.hive.common.HiveStatsUtils;
 import org.apache.hadoop.hive.conf.HiveConf.ConfVars;
+import org.apache.hadoop.hive.conf.HiveVariableSource;
+import org.apache.hadoop.hive.conf.VariableSubstitution;
 import org.apache.hadoop.hive.metastore.api.FieldSchema;
 import org.apache.hadoop.hive.ql.Context;
 import org.apache.hadoop.hive.ql.ErrorMsg;
+import org.apache.hadoop.hive.ql.QueryState;
 import org.apache.hadoop.hive.ql.exec.Utilities;
 import org.apache.hadoop.hive.ql.metadata.HiveException;
-import org.apache.hadoop.hive.ql.metadata.InvalidTableException;
 import org.apache.hadoop.hive.ql.metadata.Table;
+import org.apache.hadoop.hive.ql.session.OperationLog;
+import org.apache.hadoop.hive.ql.session.OperationLog.LoggingLevel;
 import org.apache.hadoop.hive.ql.session.SessionState;
+import org.apache.hadoop.hive.ql.session.SessionState.LogHelper;
 import org.apache.hadoop.hive.serde.serdeConstants;
+import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspector;
+import org.apache.hadoop.hive.serde2.typeinfo.TypeInfo;
+import org.apache.hadoop.hive.serde2.typeinfo.TypeInfoUtils;
 
 /**
  * ColumnStatsSemanticAnalyzer.
@@ -45,8 +53,9 @@ import org.apache.hadoop.hive.serde.serdeConstants;
  *
  */
 public class ColumnStatsSemanticAnalyzer extends SemanticAnalyzer {
-  private static final Log LOG = LogFactory
-      .getLog(ColumnStatsSemanticAnalyzer.class);
+  private static final Logger LOG = LoggerFactory
+      .getLogger(ColumnStatsSemanticAnalyzer.class);
+  static final private LogHelper console = new LogHelper(LOG);
 
   private ASTNode originalTree;
   private ASTNode rewrittenTree;
@@ -60,8 +69,8 @@ public class ColumnStatsSemanticAnalyzer extends SemanticAnalyzer {
   private List<String> colType;
   private Table tbl;
 
-  public ColumnStatsSemanticAnalyzer(HiveConf conf) throws SemanticException {
-    super(conf);
+  public ColumnStatsSemanticAnalyzer(QueryState queryState) throws SemanticException {
+    super(queryState);
   }
 
   private boolean shouldRewrite(ASTNode tree) {
@@ -82,35 +91,6 @@ public class ColumnStatsSemanticAnalyzer extends SemanticAnalyzer {
     return rwt;
   }
 
-  private boolean isPartitionLevelStats(ASTNode tree) {
-    boolean isPartitioned = false;
-    ASTNode child = (ASTNode) tree.getChild(0);
-    if (child.getChildCount() > 1) {
-      child = (ASTNode) child.getChild(1);
-      if (child.getToken().getType() == HiveParser.TOK_PARTSPEC) {
-        isPartitioned = true;
-      }
-    }
-    return isPartitioned;
-  }
-
-  private Table getTable(ASTNode tree) throws SemanticException {
-    String tableName = getUnescapedName((ASTNode) tree.getChild(0).getChild(0));
-    String currentDb = SessionState.get().getCurrentDatabase();
-    String [] names = Utilities.getDbTableName(currentDb, tableName);
-    return getTable(names[0], names[1], true);
-  }
-
-  private Map<String,String> getPartKeyValuePairsFromAST(Table tbl, ASTNode tree,
-      HiveConf hiveConf) throws SemanticException {
-    ASTNode child = ((ASTNode) tree.getChild(0).getChild(1));
-    Map<String,String> partSpec = new HashMap<String, String>();
-    if (child != null) {
-      partSpec = DDLSemanticAnalyzer.getValidatedPartSpec(tbl, child, hiveConf, false);
-    } //otherwise, it is the case of analyze table T compute statistics for columns;
-    return partSpec;
-  }
-
   private List<String> getColumnName(ASTNode tree) throws SemanticException{
 
     switch (tree.getChildCount()) {
@@ -129,7 +109,7 @@ public class ColumnStatsSemanticAnalyzer extends SemanticAnalyzer {
     }
   }
 
-  private void handlePartialPartitionSpec(Map<String,String> partSpec) throws
+  private void handlePartialPartitionSpec(Map<String,String> partSpec, ColumnStatsAutoGatherContext context) throws
     SemanticException {
 
     // If user has fully specified partition, validate that partition exists
@@ -138,11 +118,18 @@ public class ColumnStatsSemanticAnalyzer extends SemanticAnalyzer {
       partValsSpecified += partSpec.get(partKey) == null ? 0 : 1;
     }
     try {
-      if ((partValsSpecified == tbl.getPartitionKeys().size()) && (db.getPartition(tbl, partSpec, false, null, false) == null)) {
-        throw new SemanticException(ErrorMsg.COLUMNSTATSCOLLECTOR_INVALID_PARTITION.getMsg() + " : " + partSpec);
+      // for static partition, it may not exist when HIVESTATSCOLAUTOGATHER is
+      // set to true
+      if (context == null) {
+        if ((partValsSpecified == tbl.getPartitionKeys().size())
+            && (db.getPartition(tbl, partSpec, false, null, false) == null)) {
+          throw new SemanticException(ErrorMsg.COLUMNSTATSCOLLECTOR_INVALID_PARTITION.getMsg()
+              + " : " + partSpec);
+        }
       }
     } catch (HiveException he) {
-      throw new SemanticException(ErrorMsg.COLUMNSTATSCOLLECTOR_INVALID_PARTITION.getMsg() + " : " + partSpec);
+      throw new SemanticException(ErrorMsg.COLUMNSTATSCOLLECTOR_INVALID_PARTITION.getMsg() + " : "
+          + partSpec);
     }
 
     // User might have only specified partial list of partition keys, in which case add other partition keys in partSpec
@@ -185,7 +172,7 @@ public class ColumnStatsSemanticAnalyzer extends SemanticAnalyzer {
         } else {
           groupByClause.append(",");
         }
-        groupByClause.append(fs.getName());
+      groupByClause.append("`" + fs.getName() + "`");
     }
 
     // attach the predicate and group by to the return clause
@@ -198,7 +185,7 @@ public class ColumnStatsSemanticAnalyzer extends SemanticAnalyzer {
     if (partColType.equals(serdeConstants.STRING_TYPE_NAME) ||
         partColType.contains(serdeConstants.VARCHAR_TYPE_NAME) ||
         partColType.contains(serdeConstants.CHAR_TYPE_NAME)) {
-      returnVal = "'" + partVal + "'";
+      returnVal = "'" + escapeSQLString(partVal) + "'";
     } else if (partColType.equals(serdeConstants.TINYINT_TYPE_NAME)) {
       returnVal = partVal+"Y";
     } else if (partColType.equals(serdeConstants.SMALLINT_TYPE_NAME)) {
@@ -211,15 +198,15 @@ public class ColumnStatsSemanticAnalyzer extends SemanticAnalyzer {
       returnVal = partVal + "BD";
     } else if (partColType.equals(serdeConstants.DATE_TYPE_NAME) ||
         partColType.equals(serdeConstants.TIMESTAMP_TYPE_NAME)) {
-      returnVal = partColType + " '" + partVal + "'";
+      returnVal = partColType + " '" + escapeSQLString(partVal) + "'";
     } else {
       //for other usually not used types, just quote the value
-      returnVal = "'" + partVal + "'";
+      returnVal = "'" + escapeSQLString(partVal) + "'";
     }
-    
+
     return returnVal;
   }
-  
+
   private String getColTypeOf (String partKey) throws SemanticException{
 
     for (FieldSchema fs : tbl.getPartitionKeys()) {
@@ -230,73 +217,33 @@ public class ColumnStatsSemanticAnalyzer extends SemanticAnalyzer {
     throw new SemanticException ("Unknown partition key : " + partKey);
   }
 
-  private int getNumBitVectorsForNDVEstimation(HiveConf conf) throws SemanticException {
-    int numBitVectors;
-    float percentageError = HiveConf.getFloatVar(conf, HiveConf.ConfVars.HIVE_STATS_NDV_ERROR);
-
-    if (percentageError < 0.0) {
-      throw new SemanticException("hive.stats.ndv.error can't be negative");
-    } else if (percentageError <= 2.4) {
-      numBitVectors = 1024;
-      LOG.info("Lowest error achievable is 2.4% but error requested is " + percentageError + "%");
-      LOG.info("Choosing 1024 bit vectors..");
-    } else if (percentageError <= 3.4 ) {
-      numBitVectors = 1024;
-      LOG.info("Error requested is " + percentageError + "%");
-      LOG.info("Choosing 1024 bit vectors..");
-    } else if (percentageError <= 4.8) {
-      numBitVectors = 512;
-      LOG.info("Error requested is " + percentageError + "%");
-      LOG.info("Choosing 512 bit vectors..");
-     } else if (percentageError <= 6.8) {
-      numBitVectors = 256;
-      LOG.info("Error requested is " + percentageError + "%");
-      LOG.info("Choosing 256 bit vectors..");
-    } else if (percentageError <= 9.7) {
-      numBitVectors = 128;
-      LOG.info("Error requested is " + percentageError + "%");
-      LOG.info("Choosing 128 bit vectors..");
-    } else if (percentageError <= 13.8) {
-      numBitVectors = 64;
-      LOG.info("Error requested is " + percentageError + "%");
-      LOG.info("Choosing 64 bit vectors..");
-    } else if (percentageError <= 19.6) {
-      numBitVectors = 32;
-      LOG.info("Error requested is " + percentageError + "%");
-      LOG.info("Choosing 32 bit vectors..");
-    } else if (percentageError <= 28.2) {
-      numBitVectors = 16;
-      LOG.info("Error requested is " + percentageError + "%");
-      LOG.info("Choosing 16 bit vectors..");
-    } else if (percentageError <= 40.9) {
-      numBitVectors = 8;
-      LOG.info("Error requested is " + percentageError + "%");
-      LOG.info("Choosing 8 bit vectors..");
-    } else if (percentageError <= 61.0) {
-      numBitVectors = 4;
-      LOG.info("Error requested is " + percentageError + "%");
-      LOG.info("Choosing 4 bit vectors..");
-    } else {
-      numBitVectors = 2;
-      LOG.info("Error requested is " + percentageError + "%");
-      LOG.info("Choosing 2 bit vectors..");
-    }
-    return numBitVectors;
-  }
-
   private List<String> getColumnTypes(List<String> colNames)
       throws SemanticException{
-    List<String> colTypes = new LinkedList<String>();
+    List<String> colTypes = new ArrayList<String>();
     List<FieldSchema> cols = tbl.getCols();
+    List<String> copyColNames = new ArrayList<>();
+    copyColNames.addAll(colNames);
 
-    for (String colName : colNames) {
-      for (FieldSchema col: cols) {
+    for (String colName : copyColNames) {
+      for (FieldSchema col : cols) {
         if (colName.equalsIgnoreCase(col.getName())) {
-          colTypes.add(new String(col.getType()));
+          String type = col.getType();
+          TypeInfo typeInfo = TypeInfoUtils.getTypeInfoFromTypeString(type);
+          if (typeInfo.getCategory() != ObjectInspector.Category.PRIMITIVE) {
+            logTypeWarning(colName, type);
+            colNames.remove(colName);
+          } else {
+            colTypes.add(type);
+          }
         }
       }
     }
+    
     return colTypes;
+  }
+
+  private String escapeBackTicks(String colName) {
+    return colName.replaceAll("`", "``");
   }
 
   private String genRewrittenQuery(List<String> colNames, int numBitVectors, Map<String,String> partSpec,
@@ -309,7 +256,7 @@ public class ColumnStatsSemanticAnalyzer extends SemanticAnalyzer {
         rewrittenQueryBuilder.append(" , ");
       }
       rewrittenQueryBuilder.append("compute_stats(`");
-      rewrittenQueryBuilder.append(colNames.get(i));
+      rewrittenQueryBuilder.append(escapeBackTicks(colNames.get(i)));
       rewrittenQueryBuilder.append("` , ");
       rewrittenQueryBuilder.append(numBitVectors);
       rewrittenQueryBuilder.append(" )");
@@ -317,13 +264,13 @@ public class ColumnStatsSemanticAnalyzer extends SemanticAnalyzer {
 
     if (isPartitionStats) {
       for (FieldSchema fs : tbl.getPartCols()) {
-        rewrittenQueryBuilder.append(" , " + fs.getName());
+        rewrittenQueryBuilder.append(" , `" + fs.getName() + "`");
       }
     }
-    rewrittenQueryBuilder.append(" from ");
+    rewrittenQueryBuilder.append(" from `");
     rewrittenQueryBuilder.append(tbl.getDbName());
-    rewrittenQueryBuilder.append(".");
-    rewrittenQueryBuilder.append(tbl.getTableName());
+    rewrittenQueryBuilder.append("`.");
+    rewrittenQueryBuilder.append("`" + tbl.getTableName() + "`");
     isRewritten = true;
 
     // If partition level statistics is requested, add predicate and group by as needed to rewritten
@@ -333,7 +280,12 @@ public class ColumnStatsSemanticAnalyzer extends SemanticAnalyzer {
     }
 
     rewrittenQuery = rewrittenQueryBuilder.toString();
-    rewrittenQuery = new VariableSubstitution().substitute(conf, rewrittenQuery);
+    rewrittenQuery = new VariableSubstitution(new HiveVariableSource() {
+      @Override
+      public Map<String, String> getHiveVariable() {
+        return SessionState.get().getHiveVariables();
+      }
+    }).substitute(conf, rewrittenQuery);
     return rewrittenQuery;
   }
 
@@ -346,14 +298,12 @@ public class ColumnStatsSemanticAnalyzer extends SemanticAnalyzer {
       throw new SemanticException(ErrorMsg.COLUMNSTATSCOLLECTOR_IO_ERROR.getMsg());
     }
     ctx.setCmd(rewrittenQuery);
-    ParseDriver pd = new ParseDriver();
 
     try {
-      rewrittenTree = pd.parse(rewrittenQuery, ctx);
+      rewrittenTree = ParseUtils.parse(rewrittenQuery, ctx);
     } catch (ParseException e) {
       throw new SemanticException(ErrorMsg.COLUMNSTATSCOLLECTOR_PARSE_ERROR.getMsg());
     }
-    rewrittenTree = ParseUtils.findRootNonNullToken(rewrittenTree);
     return rewrittenTree;
   }
 
@@ -382,6 +332,18 @@ public class ColumnStatsSemanticAnalyzer extends SemanticAnalyzer {
     }
   }
 
+  private void logTypeWarning(String colName, String colType) {
+    String warning = "Only primitive type arguments are accepted but " + colType
+        + " is passed for " + colName + ".";
+    warning = "WARNING: " + warning;
+    console.printInfo(warning);
+    // Propagate warning to beeline via operation log.
+    OperationLog ol = OperationLog.getCurrentOperationLog();
+    if (ol != null) {
+      ol.writeOperationLog(LoggingLevel.EXECUTION, warning + "\n");
+    }
+  }
+
   @Override
   public void analyze(ASTNode ast, Context origCtx) throws SemanticException {
     QB qb;
@@ -399,11 +361,11 @@ public class ColumnStatsSemanticAnalyzer extends SemanticAnalyzer {
      * an aggregation.
      */
     if (shouldRewrite(ast)) {
-      tbl = getTable(ast);
+      tbl = AnalyzeCommandUtils.getTable(ast, this);
       colNames = getColumnName(ast);
       // Save away the original AST
       originalTree = ast;
-      boolean isPartitionStats = isPartitionLevelStats(ast);
+      boolean isPartitionStats = AnalyzeCommandUtils.isPartitionLevelStats(ast);
       Map<String,String> partSpec = null;
       checkForPartitionColumns(
           colNames, Utilities.getColumnNamesFromFieldSchema(tbl.getPartitionKeys()));
@@ -414,13 +376,18 @@ public class ColumnStatsSemanticAnalyzer extends SemanticAnalyzer {
 
       if (isPartitionStats) {
         isTableLevel = false;
-        partSpec = getPartKeyValuePairsFromAST(tbl, ast, conf);
-        handlePartialPartitionSpec(partSpec);
+        partSpec = AnalyzeCommandUtils.getPartKeyValuePairsFromAST(tbl, ast, conf);
+        handlePartialPartitionSpec(partSpec, null);
       } else {
         isTableLevel = true;
       }
       colType = getColumnTypes(colNames);
-      int numBitVectors = getNumBitVectorsForNDVEstimation(conf);
+      int numBitVectors;
+      try {
+        numBitVectors = HiveStatsUtils.getNumBitVectorsForNDVEstimation(conf);
+      } catch (Exception e) {
+        throw new SemanticException(e.getMessage());
+      }
       rewrittenQuery = genRewrittenQuery(colNames, numBitVectors, partSpec, isPartitionStats);
       rewrittenTree = genRewrittenTree(rewrittenQuery);
     } else {
@@ -442,6 +409,7 @@ public class ColumnStatsSemanticAnalyzer extends SemanticAnalyzer {
       analyzeRewrite.setColType(colType);
       qbp.setAnalyzeRewrite(analyzeRewrite);
       initCtx(ctx);
+      ctx.setExplainConfig(origCtx.getExplainConfig());
       LOG.info("Invoking analyze on rewritten query");
       analyzeInternal(rewrittenTree);
     } else {
@@ -449,5 +417,55 @@ public class ColumnStatsSemanticAnalyzer extends SemanticAnalyzer {
       LOG.info("Invoking analyze on original query");
       analyzeInternal(originalTree);
     }
+  }
+
+  /**
+   * @param ast
+   *          is the original analyze ast
+   * @param qb
+   *          is the qb that calls this function
+   * @param sem
+   *          is the semantic analyzer that calls this function
+   * @return
+   * @throws SemanticException
+   */
+  public ASTNode rewriteAST(ASTNode ast, ColumnStatsAutoGatherContext context)
+      throws SemanticException {
+    tbl = AnalyzeCommandUtils.getTable(ast, this);
+    colNames = getColumnName(ast);
+    // Save away the original AST
+    originalTree = ast;
+    boolean isPartitionStats = AnalyzeCommandUtils.isPartitionLevelStats(ast);
+    Map<String, String> partSpec = null;
+    checkForPartitionColumns(colNames,
+        Utilities.getColumnNamesFromFieldSchema(tbl.getPartitionKeys()));
+    validateSpecifiedColumnNames(colNames);
+    if (conf.getBoolVar(ConfVars.HIVE_STATS_COLLECT_PART_LEVEL_STATS) && tbl.isPartitioned()) {
+      isPartitionStats = true;
+    }
+
+    if (isPartitionStats) {
+      isTableLevel = false;
+      partSpec = AnalyzeCommandUtils.getPartKeyValuePairsFromAST(tbl, ast, conf);
+      handlePartialPartitionSpec(partSpec, context);
+    } else {
+      isTableLevel = true;
+    }
+    colType = getColumnTypes(colNames);
+    int numBitVectors = 0;
+    try {
+      numBitVectors = HiveStatsUtils.getNumBitVectorsForNDVEstimation(conf);
+    } catch (Exception e) {
+      throw new SemanticException(e.getMessage());
+    }
+    rewrittenQuery = genRewrittenQuery(colNames, numBitVectors, partSpec, isPartitionStats);
+    rewrittenTree = genRewrittenTree(rewrittenQuery);
+
+    context.analyzeRewrite = new AnalyzeRewriteContext();
+    context.analyzeRewrite.setTableName(tbl.getDbName() + "." + tbl.getTableName());
+    context.analyzeRewrite.setTblLvl(isTableLevel);
+    context.analyzeRewrite.setColName(colNames);
+    context.analyzeRewrite.setColType(colType);
+    return rewrittenTree;
   }
 }

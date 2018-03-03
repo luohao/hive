@@ -20,8 +20,8 @@ package org.apache.hadoop.hive.ql.processors;
 
 import java.io.IOException;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.hive.ql.CommandNeedRetryException;
 import org.apache.hadoop.hive.ql.session.SessionState;
 
@@ -29,7 +29,7 @@ import org.apache.hadoop.hive.ql.session.SessionState;
  * used for reload auxiliary and jars without restarting hive server2
  */
 public class ReloadProcessor implements CommandProcessor{
-  private static final Log LOG = LogFactory.getLog(ReloadProcessor.class);
+  private static final Logger LOG = LoggerFactory.getLogger(ReloadProcessor.class);
 
   @Override
   public void init() {
@@ -39,7 +39,7 @@ public class ReloadProcessor implements CommandProcessor{
   public CommandProcessorResponse run(String command) throws CommandNeedRetryException {
     SessionState ss = SessionState.get();
     try {
-      ss.reloadAuxJars();
+      ss.loadReloadableAuxJars();
     } catch (IOException e) {
       LOG.error("fail to reload auxiliary jar files", e);
       return CommandProcessorResponse.create(e);

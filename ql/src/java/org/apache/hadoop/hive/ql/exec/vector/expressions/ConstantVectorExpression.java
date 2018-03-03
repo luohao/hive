@@ -18,10 +18,16 @@
 
 package org.apache.hadoop.hive.ql.exec.vector.expressions;
 
+import java.nio.charset.StandardCharsets;
+import java.sql.Timestamp;
+
 import org.apache.hadoop.hive.common.type.HiveDecimal;
 import org.apache.hadoop.hive.common.type.HiveChar;
+import org.apache.hadoop.hive.common.type.HiveIntervalDayTime;
 import org.apache.hadoop.hive.common.type.HiveVarchar;
 import org.apache.hadoop.hive.ql.exec.vector.*;
+import org.apache.hadoop.hive.serde2.typeinfo.TypeInfo;
+import org.apache.hadoop.hive.serde2.typeinfo.TypeInfoUtils;
 
 /**
  * Constant is represented as a vector with repeating values.
@@ -30,21 +36,16 @@ public class ConstantVectorExpression extends VectorExpression {
 
   private static final long serialVersionUID = 1L;
 
-  private static enum Type {
-    LONG,
-    DOUBLE,
-    BYTES,
-    DECIMAL
-  }
-
   private int outputColumn;
   protected long longValue = 0;
   private double doubleValue = 0;
   private byte[] bytesValue = null;
   private HiveDecimal decimalValue = null;
+  private Timestamp timestampValue = null;
+  private HiveIntervalDayTime intervalDayTimeValue = null;
   private boolean isNullValue = false;
 
-  private Type type;
+  private ColumnVector.Type type;
   private int bytesValueLength = 0;
 
   public ConstantVectorExpression() {
@@ -72,19 +73,30 @@ public class ConstantVectorExpression extends VectorExpression {
     setBytesValue(value);
   }
 
-  public ConstantVectorExpression(int outputColumn, HiveChar value) {
-    this(outputColumn, "char");
+  public ConstantVectorExpression(int outputColumn, HiveChar value, String typeName) {
+    this(outputColumn, typeName);
     setBytesValue(value.getStrippedValue().getBytes());
   }
 
-  public ConstantVectorExpression(int outputColumn, HiveVarchar value) {
-    this(outputColumn, "varchar");
+  public ConstantVectorExpression(int outputColumn, HiveVarchar value, String typeName) {
+    this(outputColumn, typeName);
     setBytesValue(value.getValue().getBytes());
   }
 
-  public ConstantVectorExpression(int outputColumn, HiveDecimal value) {
-    this(outputColumn, "decimal");
+  // Include type name for precision/scale.
+  public ConstantVectorExpression(int outputColumn, HiveDecimal value, String typeName) {
+    this(outputColumn, typeName);
     setDecimalValue(value);
+  }
+
+  public ConstantVectorExpression(int outputColumn, Timestamp value) {
+    this(outputColumn, "timestamp");
+    setTimestampValue(value);
+  }
+
+  public ConstantVectorExpression(int outputColumn, HiveIntervalDayTime value) {
+    this(outputColumn, "interval_day_time");
+    setIntervalDayTimeValue(value);
   }
 
   /*
@@ -140,6 +152,28 @@ public class ConstantVectorExpression extends VectorExpression {
     }
   }
 
+  private void evaluateTimestamp(VectorizedRowBatch vrg) {
+    TimestampColumnVector dcv = (TimestampColumnVector) vrg.cols[outputColumn];
+    dcv.isRepeating = true;
+    dcv.noNulls = !isNullValue;
+    if (!isNullValue) {
+      dcv.set(0, timestampValue);
+    } else {
+      dcv.isNull[0] = true;
+    }
+  }
+
+  private void evaluateIntervalDayTime(VectorizedRowBatch vrg) {
+    IntervalDayTimeColumnVector dcv = (IntervalDayTimeColumnVector) vrg.cols[outputColumn];
+    dcv.isRepeating = true;
+    dcv.noNulls = !isNullValue;
+    if (!isNullValue) {
+      dcv.set(0, intervalDayTimeValue);
+    } else {
+      dcv.isNull[0] = true;
+    }
+  }
+
   @Override
   public void evaluate(VectorizedRowBatch vrg) {
     switch (type) {
@@ -154,6 +188,12 @@ public class ConstantVectorExpression extends VectorExpression {
       break;
     case DECIMAL:
       evaluateDecimal(vrg);
+      break;
+    case TIMESTAMP:
+      evaluateTimestamp(vrg);
+      break;
+    case INTERVAL_DAY_TIME:
+      evaluateIntervalDayTime(vrg);
       break;
     }
   }
@@ -192,39 +232,72 @@ public class ConstantVectorExpression extends VectorExpression {
     this.decimalValue = decimalValue;
   }
 
+  public HiveDecimal getDecimalValue() {
+    return decimalValue;
+  }
+
+  public void setTimestampValue(Timestamp timestampValue) {
+    this.timestampValue = timestampValue;
+  }
+
+  public Timestamp getTimestampValue() {
+    return timestampValue;
+  }
+
+  public void setIntervalDayTimeValue(HiveIntervalDayTime intervalDayTimeValue) {
+    this.intervalDayTimeValue = intervalDayTimeValue;
+  }
+
+  public HiveIntervalDayTime getIntervalDayTimeValue() {
+    return intervalDayTimeValue;
+  }
+
   public String getTypeString() {
     return getOutputType();
   }
 
-  public void setTypeString(String typeString) {
+  private void setTypeString(String typeString) {
     this.outputType = typeString;
-    if (VectorizationContext.isStringFamily(typeString)) {
-      this.type = Type.BYTES;
-    } else if (VectorizationContext.isFloatFamily(typeString)) {
-      this.type = Type.DOUBLE;
-    } else if (VectorizationContext.isDecimalFamily(typeString)){
-      this.type = Type.DECIMAL;
-    } else {
-      // everything else that does not belong to string, double, decimal is treated as long.
-      this.type = Type.LONG;
-    }
+
+    String typeName = VectorizationContext.mapTypeNameSynonyms(outputType);
+    TypeInfo typeInfo = TypeInfoUtils.getTypeInfoFromTypeString(typeName);
+    this.type = VectorizationContext.getColumnVectorTypeFromTypeInfo(typeInfo);
   }
 
   public void setOutputColumn(int outputColumn) {
     this.outputColumn = outputColumn;
   }
 
-  public Type getType() {
-    return type;
-  }
-
-  public void setType(Type type) {
-    this.type = type;
-  }
-
   @Override
-  public void setOutputType(String type) {
-    setTypeString(type);
+  public String vectorExpressionParameters() {
+    String value;
+    if (isNullValue) {
+      value = "null";
+    } else {
+      switch (type) {
+      case LONG:
+        value = Long.toString(longValue);
+        break;
+      case DOUBLE:
+        value = Double.toString(doubleValue);
+        break;
+      case BYTES:
+        value = new String(bytesValue, StandardCharsets.UTF_8);
+        break;
+      case DECIMAL:
+        value = decimalValue.toString();
+        break;
+      case TIMESTAMP:
+        value = timestampValue.toString();
+        break;
+      case INTERVAL_DAY_TIME:
+        value = intervalDayTimeValue.toString();
+        break;
+      default:
+        throw new RuntimeException("Unknown vector column type " + type);
+      }
+    }
+    return "val " + value;
   }
 
   @Override

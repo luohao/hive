@@ -24,8 +24,9 @@ import java.util.Map;
 import java.util.TreeMap;
 
 import org.apache.commons.lang.StringUtils;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.apache.hadoop.hive.conf.HiveConf.ConfVars;
 import org.apache.hadoop.hive.ql.debug.Utils;
 import org.apache.hadoop.hive.serde2.ByteStream.RandomAccessOutput;
 import org.apache.hadoop.hive.serde2.SerDeException;
@@ -46,7 +47,7 @@ import com.google.common.annotations.VisibleForTesting;
  * and there's very little in common left save for quadratic probing (and that with some changes).
  */
 public final class BytesBytesMultiHashMap {
-  public static final Log LOG = LogFactory.getLog(BytesBytesMultiHashMap.class);
+  public static final Logger LOG = LoggerFactory.getLogger(BytesBytesMultiHashMap.class);
 
   /*
    * This hashtable stores "references" in an array of longs;  index in the array is hash of
@@ -153,9 +154,11 @@ public final class BytesBytesMultiHashMap {
   /** 8 Gb of refs is the max capacity if memory limit is not specified. If someone has 100s of
    * Gbs of memory (this might happen pretty soon) we'd need to string together arrays anyway. */
   private final static int DEFAULT_MAX_CAPACITY = 1024 * 1024 * 1024;
+  /** Make sure maxCapacity has a lower limit */
+  private final static int DEFAULT_MIN_MAX_CAPACITY = 16 * 1024 * 1024;
 
   public BytesBytesMultiHashMap(int initialCapacity,
-      float loadFactor, int wbSize, long memUsage) {
+      float loadFactor, int wbSize, long maxProbeSize) {
     if (loadFactor < 0 || loadFactor > 1) {
       throw new AssertionError("Load factor must be between (0, 1].");
     }
@@ -163,8 +166,11 @@ public final class BytesBytesMultiHashMap {
     initialCapacity = (Long.bitCount(initialCapacity) == 1)
         ? initialCapacity : nextHighestPowerOfTwo(initialCapacity);
     // 8 bytes per long in the refs, assume data will be empty. This is just a sanity check.
-    int maxCapacity =  (memUsage <= 0) ? DEFAULT_MAX_CAPACITY
-        : (int)Math.min((long)DEFAULT_MAX_CAPACITY, memUsage / 8);
+    int maxCapacity =  (maxProbeSize <= 0) ? DEFAULT_MAX_CAPACITY
+        : (int)Math.min((long)DEFAULT_MAX_CAPACITY, maxProbeSize / 8);
+    if (maxCapacity < DEFAULT_MIN_MAX_CAPACITY) {
+      maxCapacity = DEFAULT_MIN_MAX_CAPACITY;
+    }
     if (maxCapacity < initialCapacity || initialCapacity <= 0) {
       // Either initialCapacity is too large, or nextHighestPowerOfTwo overflows
       initialCapacity = (Long.bitCount(maxCapacity) == 1)
@@ -293,8 +299,8 @@ public final class BytesBytesMultiHashMap {
     }
 
     /**
-     * Read the current value.  
-     * 
+     * Read the current value.
+     *
      * @return
      *           The ByteSegmentRef to the current value read.
      */
@@ -375,29 +381,6 @@ public final class BytesBytesMultiHashMap {
     }
 
     /**
-     * @return Whether we have read all the values or not.
-     */
-    public boolean isEof() {
-      // LOG.info("BytesBytesMultiHashMap isEof hasRows " + hasRows + " hasList " + hasList + " readIndex " + readIndex + " nextTailOffset " + nextTailOffset);
-      if (!hasRows) {
-        return true;
-      }
-
-      if (!hasList) {
-        return (readIndex > 0);
-      } else {
-        // Multiple values.
-        if (readIndex <= 1) {
-          // Careful: We have not read the list record and 2nd value yet, so nextTailOffset
-          // is not valid yet.
-          return false;
-        } else {
-          return (nextTailOffset <= 0);
-        }
-      }
-    }
-
-    /**
      * Lets go of any references to a hash map.
      */
     public void forget() {
@@ -444,7 +427,7 @@ public final class BytesBytesMultiHashMap {
 
     kv.writeKey(writeBuffers);
     int keyLength = (int)(writeBuffers.getWritePoint() - keyOffset);
-    int hashCode = (keyHashCode == -1) ? writeBuffers.hashCode(keyOffset, keyLength) : keyHashCode;
+    int hashCode = (keyHashCode == -1) ? writeBuffers.unsafeHashCode(keyOffset, keyLength) : keyHashCode;
 
     int slot = findKeySlotToWrite(keyOffset, keyLength, hashCode);
     // LOG.info("Write hash code is " + Integer.toBinaryString(hashCode) + " - " + slot);
@@ -571,6 +554,12 @@ public final class BytesBytesMultiHashMap {
     if (capacity <= 0) {
       throw new AssertionError("Invalid capacity " + capacity);
     }
+    if (capacity > Integer.MAX_VALUE) {
+      throw new RuntimeException("Attempting to expand the hash table to " + capacity
+          + " that overflows maximum array size. For this query, you may want to disable "
+          + ConfVars.HIVEDYNAMICPARTITIONHASHJOIN.varname + " or reduce "
+          + ConfVars.HIVECONVERTJOINNOCONDITIONALTASKTHRESHOLD.varname);
+    }
   }
 
   /**
@@ -678,8 +667,8 @@ public final class BytesBytesMultiHashMap {
     if (!compareHashBits(ref, hashCode)) {
       return false; // Hash bits in ref don't match.
     }
-    writeBuffers.setReadPoint(getFirstRecordLengthsOffset(ref, null));
-    int valueLength = (int)writeBuffers.readVLong(), keyLength = (int)writeBuffers.readVLong();
+    writeBuffers.setUnsafeReadPoint(getFirstRecordLengthsOffset(ref, null));
+    int valueLength = (int)writeBuffers.unsafeReadVLong(), keyLength = (int)writeBuffers.unsafeReadVLong();
     if (keyLength != cmpLength) {
       return false;
     }
@@ -725,7 +714,7 @@ public final class BytesBytesMultiHashMap {
   private long getFirstRecordLengthsOffset(long ref, WriteBuffers.Position readPos) {
     long tailOffset = Ref.getOffset(ref);
     if (Ref.hasList(ref)) {
-      long relativeOffset = (readPos == null) ? writeBuffers.readNByteLong(tailOffset, 5)
+      long relativeOffset = (readPos == null) ? writeBuffers.unsafeReadNByteLong(tailOffset, 5)
           : writeBuffers.readNByteLong(tailOffset, 5, readPos);
       tailOffset += relativeOffset;
     }
@@ -733,10 +722,9 @@ public final class BytesBytesMultiHashMap {
   }
 
   private void expandAndRehash() {
-    long capacity = refs.length << 1;
-    expandAndRehashImpl(capacity);
+    expandAndRehashImpl(((long)refs.length) << 1);
   }
-  
+
   private void expandAndRehashImpl(long capacity) {
     long expandTime = System.currentTimeMillis();
     final long[] oldRefs = refs;
@@ -758,10 +746,10 @@ public final class BytesBytesMultiHashMap {
       // TODO: we could actually store a bit flag in ref indicating whether this is a hash
       //       match or a probe, and in the former case use hash bits (for a first few resizes).
       // int hashCodeOrPart = oldSlot | Ref.getNthHashBit(oldRef, startingHashBitCount, newHashBitCount);
-      writeBuffers.setReadPoint(getFirstRecordLengthsOffset(oldRef, null));
+      writeBuffers.setUnsafeReadPoint(getFirstRecordLengthsOffset(oldRef, null));
       // Read the value and key length for the first record.
-      int hashCode = (int)writeBuffers.readNByteLong(Ref.getOffset(oldRef)
-          - writeBuffers.readVLong() - writeBuffers.readVLong() - 4, 4);
+      int hashCode = (int)writeBuffers.unsafeReadNByteLong(Ref.getOffset(oldRef)
+          - writeBuffers.unsafeReadVLong() - writeBuffers.unsafeReadVLong() - 4, 4);
       int probeSteps = relocateKeyRef(newRefs, oldRef, hashCode);
       maxSteps = Math.max(probeSteps, maxSteps);
     }
@@ -780,16 +768,16 @@ public final class BytesBytesMultiHashMap {
   private long createOrGetListRecord(long ref) {
     if (Ref.hasList(ref)) {
       // LOG.info("Found list record at " + writeBuffers.getReadPoint());
-      return writeBuffers.getReadPoint(); // Assumes we are here after key compare.
+      return writeBuffers.getUnsafeReadPoint(); // Assumes we are here after key compare.
     }
     long firstTailOffset = Ref.getOffset(ref);
     // LOG.info("First tail offset to create list record is " + firstTailOffset);
 
     // Determine the length of storage for value and key lengths of the first record.
-    writeBuffers.setReadPoint(firstTailOffset);
-    writeBuffers.skipVLong();
-    writeBuffers.skipVLong();
-    int lengthsLength = (int)(writeBuffers.getReadPoint() - firstTailOffset);
+    writeBuffers.setUnsafeReadPoint(firstTailOffset);
+    writeBuffers.unsafeSkipVLong();
+    writeBuffers.unsafeSkipVLong();
+    int lengthsLength = (int)(writeBuffers.getUnsafeReadPoint() - firstTailOffset);
 
     // Create the list record, copy first record value/key lengths there.
     writeBuffers.writeBytes(firstTailOffset, lengthsLength);
@@ -811,7 +799,7 @@ public final class BytesBytesMultiHashMap {
    */
   private void addRecordToList(long lrPtrOffset, long tailOffset) {
     // Now, insert this record into the list.
-    long prevHeadOffset = writeBuffers.readNByteLong(lrPtrOffset, 5);
+    long prevHeadOffset = writeBuffers.unsafeReadNByteLong(lrPtrOffset, 5);
     // LOG.info("Reading offset " + prevHeadOffset + " at " + lrPtrOffset);
     assert prevHeadOffset < tailOffset; // We replace an earlier element, must have lower offset.
     writeBuffers.writeFiveByteULong(lrPtrOffset, tailOffset);
@@ -880,10 +868,10 @@ public final class BytesBytesMultiHashMap {
       ++examined;
       long recOffset = getFirstRecordLengthsOffset(ref, null);
       long tailOffset = Ref.getOffset(ref);
-      writeBuffers.setReadPoint(recOffset);
-      int valueLength = (int)writeBuffers.readVLong(),
-          keyLength = (int)writeBuffers.readVLong();
-      long ptrOffset = writeBuffers.getReadPoint();
+      writeBuffers.setUnsafeReadPoint(recOffset);
+      int valueLength = (int)writeBuffers.unsafeReadVLong(),
+          keyLength = (int)writeBuffers.unsafeReadVLong();
+      long ptrOffset = writeBuffers.getUnsafeReadPoint();
       if (Ref.hasList(ref)) {
         byteIntervals.put(recOffset, (int)(ptrOffset + 5 - recOffset));
       }

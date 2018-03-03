@@ -28,7 +28,7 @@ case "$BUILD_PROFILE" in
    test -n "$TRUNK_URL" || fail "TRUNK_URL must be specified"
    url="$TRUNK_URL&ISSUE_NUM=$ISSUE_NUM"
   ;;
-  branch1-mr1|branch1-mr2)
+  branch-1-mr1|branch-1-mr2)
    test -n "$BRANCH1_URL" || fail "BRANCH1_URL must be specified"
    url="$BRANCH1_URL&ISSUE_NUM=$ISSUE_NUM"
   ;;
@@ -47,6 +47,14 @@ case "$BUILD_PROFILE" in
   beeline-cli-mr2)
    test -n "$BEELINE_CLI_URL" || fail "BEELINE_CLI_URL must be specified"
    url="$BEELINE_CLI_URL&ISSUE_NUM=$ISSUE_NUM"
+  ;;
+  java8-mr2)
+   test -n "$JAVA8_URL" || fail "JAVA8_URL must be specified"
+   url="$JAVA8_URL&ISSUE_NUM=$ISSUE_NUM"
+  ;;
+  branch-2.1-mr2)
+   test -n "$BRANCH21_URL" || fail "BRANCH21_URL must be specified"
+   url="$BRANCH21_URL&ISSUE_NUM=$ISSUE_NUM"
   ;;
   *)
   echo "Unknown profile '$BUILD_PROFILE'"

@@ -55,6 +55,7 @@ public enum HiveOperation {
   ALTERTABLE_CLUSTER_SORT("ALTERTABLE_CLUSTER_SORT",
       new Privilege[]{Privilege.ALTER_METADATA}, null),
   ANALYZE_TABLE("ANALYZE_TABLE", null, null),
+  CACHE_METADATA("CACHE_METADATA", new Privilege[]{Privilege.SELECT}, null),
   ALTERTABLE_BUCKETNUM("ALTERTABLE_BUCKETNUM",
       new Privilege[]{Privilege.ALTER_METADATA}, null),
   ALTERPARTITION_BUCKETNUM("ALTERPARTITION_BUCKETNUM",
@@ -64,18 +65,24 @@ public enum HiveOperation {
   SHOWCOLUMNS("SHOWCOLUMNS", null, null),
   SHOW_TABLESTATUS("SHOW_TABLESTATUS", null, null),
   SHOW_TBLPROPERTIES("SHOW_TBLPROPERTIES", null, null),
+  SHOW_CREATEDATABASE("SHOW_CREATEDATABASE", new Privilege[]{Privilege.SELECT}, null),
   SHOW_CREATETABLE("SHOW_CREATETABLE", new Privilege[]{Privilege.SELECT}, null),
   SHOWFUNCTIONS("SHOWFUNCTIONS", null, null),
   SHOWINDEXES("SHOWINDEXES", null, null),
   SHOWPARTITIONS("SHOWPARTITIONS", null, null),
   SHOWLOCKS("SHOWLOCKS", null, null),
   SHOWCONF("SHOWCONF", null, null),
+  SHOWVIEWS("SHOWVIEWS", null, null),
   CREATEFUNCTION("CREATEFUNCTION", null, null),
   DROPFUNCTION("DROPFUNCTION", null, null),
+  RELOADFUNCTION("RELOADFUNCTION", null, null),
   CREATEMACRO("CREATEMACRO", null, null),
   DROPMACRO("DROPMACRO", null, null),
   CREATEVIEW("CREATEVIEW", new Privilege[]{Privilege.SELECT}, new Privilege[]{Privilege.CREATE}),
+  CREATE_MATERIALIZED_VIEW("CREATE_MATERIALIZED_VIEW", new Privilege[]{Privilege.SELECT}, new
+      Privilege[]{Privilege.CREATE}),
   DROPVIEW("DROPVIEW", null, new Privilege[]{Privilege.DROP}),
+  DROP_MATERIALIZED_VIEW("DROP_MATERIALIZED_VIEW", null, new Privilege[]{Privilege.DROP}),
   CREATEINDEX("CREATEINDEX", null, null),
   DROPINDEX("DROPINDEX", null, null),
   ALTERINDEX_REBUILD("ALTERINDEX_REBUILD", null, null),
@@ -111,7 +118,13 @@ public enum HiveOperation {
   ALTERTBLPART_SKEWED_LOCATION("ALTERTBLPART_SKEWED_LOCATION",
       new Privilege[] {Privilege.ALTER_DATA}, null),
   ALTERTABLE_PARTCOLTYPE("ALTERTABLE_PARTCOLTYPE", new Privilege[] { Privilege.SELECT }, new Privilege[] { Privilege.ALTER_DATA }),
-  ALTERTABLE_EXCHANGEPARTITION("ALTERTABLE_EXCHANGEPARTITION", null, null),
+  ALTERTABLE_EXCHANGEPARTITION(
+      "ALTERTABLE_EXCHANGEPARTITION", new Privilege[] { Privilege.SELECT, Privilege.DELETE },
+      new Privilege[] { Privilege.INSERT }),
+  ALTERTABLE_DROPCONSTRAINT("ALTERTABLE_DROPCONSTRAINT",
+      new Privilege[]{Privilege.ALTER_METADATA}, null),
+  ALTERTABLE_ADDCONSTRAINT("ALTERTABLE_ADDCONSTRAINT",
+      new Privilege[]{Privilege.ALTER_METADATA}, null),
   ALTERVIEW_RENAME("ALTERVIEW_RENAME", new Privilege[] {Privilege.ALTER_METADATA}, null),
   ALTERVIEW_AS("ALTERVIEW_AS", new Privilege[] {Privilege.ALTER_METADATA}, null),
   ALTERTABLE_COMPACT("ALTERTABLE_COMPACT", new Privilege[]{Privilege.SELECT}, new Privilege[]{Privilege.ALTER_DATA}),
@@ -120,8 +133,8 @@ public enum HiveOperation {
   START_TRANSACTION("START TRANSACTION", null, null, false, false),
   COMMIT("COMMIT", null, null, true, true),
   ROLLBACK("ROLLBACK", null, null, true, true),
-  SET_AUTOCOMMIT("SET AUTOCOMMIT", null, null, true, false);
-  ;
+  SET_AUTOCOMMIT("SET AUTOCOMMIT", null, null, true, false),
+  ABORT_TRANSACTIONS("ABORT TRANSACTIONS", null, null, false, false);
 
   private String operationName;
 

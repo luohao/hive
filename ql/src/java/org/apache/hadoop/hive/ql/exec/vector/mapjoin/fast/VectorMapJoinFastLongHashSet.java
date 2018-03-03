@@ -18,27 +18,42 @@
 
 package org.apache.hadoop.hive.ql.exec.vector.mapjoin.fast;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import java.io.IOException;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.hive.ql.exec.JoinUtil;
 import org.apache.hadoop.hive.ql.exec.JoinUtil.JoinResult;
 import org.apache.hadoop.hive.ql.exec.vector.mapjoin.hashtable.VectorMapJoinHashSetResult;
 import org.apache.hadoop.hive.ql.exec.vector.mapjoin.hashtable.VectorMapJoinLongHashSet;
+import org.apache.hadoop.hive.ql.metadata.HiveException;
 import org.apache.hadoop.hive.ql.plan.VectorMapJoinDesc.HashTableKeyType;
 import org.apache.hadoop.io.BytesWritable;
+import org.apache.hive.common.util.HashCodeUtil;
+
+import com.google.common.annotations.VisibleForTesting;
 
 /*
- * An single long value multi-set optimized for vector map join.
+ * An single LONG key hash set optimized for vector map join.
  */
 public class VectorMapJoinFastLongHashSet
              extends VectorMapJoinFastLongHashTable
              implements VectorMapJoinLongHashSet {
 
-  public static final Log LOG = LogFactory.getLog(VectorMapJoinFastLongHashSet.class);
+  public static final Logger LOG = LoggerFactory.getLogger(VectorMapJoinFastLongHashSet.class);
 
   @Override
   public VectorMapJoinHashSetResult createHashSetResult() {
     return new VectorMapJoinFastHashSet.HashSetResult();
+  }
+
+  /*
+   * A Unit Test convenience method for putting the key into the hash table using the
+   * actual type.
+   */
+  @VisibleForTesting
+  public void testPutRow(long currentKey) throws HiveException, IOException {
+    add(currentKey, null);
   }
 
   @Override
@@ -60,7 +75,7 @@ public class VectorMapJoinFastLongHashSet
 
     optimizedHashSetResult.forget();
 
-    long hashCode = VectorMapJoinFastLongHashUtil.hashKey(key);
+    long hashCode = HashCodeUtil.calculateLongHashCode(key);
     long existance = findReadSlot(key, hashCode);
     JoinUtil.JoinResult joinResult;
     if (existance == -1) {
@@ -77,8 +92,8 @@ public class VectorMapJoinFastLongHashSet
 
   public VectorMapJoinFastLongHashSet(
       boolean minMaxEnabled, boolean isOuterJoin, HashTableKeyType hashTableKeyType,
-      int initialCapacity, float loadFactor, int writeBuffersSize) {
+      int initialCapacity, float loadFactor, int writeBuffersSize, long estimatedKeyCount) {
     super(minMaxEnabled, isOuterJoin, hashTableKeyType,
-        initialCapacity, loadFactor, writeBuffersSize);
+        initialCapacity, loadFactor, writeBuffersSize, estimatedKeyCount);
   }
 }

@@ -19,16 +19,11 @@
 package org.apache.hadoop.hive.serde2;
 
 import java.nio.charset.Charset;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.hive.common.type.HiveIntervalDayTime;
-import org.apache.hadoop.hive.common.type.HiveIntervalYearMonth;
 import org.apache.hadoop.hive.serde2.AbstractSerDe;
 import org.apache.hadoop.hive.serde2.objectinspector.ListObjectInspector;
 import org.apache.hadoop.hive.serde2.objectinspector.MapObjectInspector;
@@ -56,6 +51,8 @@ import org.apache.hadoop.hive.serde2.objectinspector.primitive.StringObjectInspe
 import org.apache.hadoop.hive.serde2.objectinspector.primitive.TimestampObjectInspector;
 import org.apache.hadoop.io.BytesWritable;
 import org.apache.hadoop.io.Text;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * SerDeUtils.
@@ -66,6 +63,8 @@ public final class SerDeUtils {
   public static final char QUOTE = '"';
   public static final char COLON = ':';
   public static final char COMMA = ',';
+  // we should use '\0' for COLUMN_NAME_DELIMITER if column name contains COMMA
+  // but we should also take care of the backward compatibility
   public static final char COLUMN_COMMENTS_DELIMITER = '\0';
   public static final String LBRACKET = "[";
   public static final String RBRACKET = "]";
@@ -74,8 +73,9 @@ public final class SerDeUtils {
 
   // lower case null is used within json objects
   private static final String JSON_NULL = "null";
-
-  public static final Log LOG = LogFactory.getLog(SerDeUtils.class.getName());
+  public static final String LIST_SINK_OUTPUT_FORMATTER = "list.sink.output.formatter";
+  public static final String LIST_SINK_OUTPUT_PROTOCOL = "list.sink.output.protocol";
+  public static final Logger LOG = LoggerFactory.getLogger(SerDeUtils.class.getName());
 
   /**
    * Escape a String in JSON format.
@@ -568,5 +568,16 @@ public final class SerDeUtils {
 
   public static Text transformTextFromUTF8(Text text, Charset targetCharset) {
     return new Text(new String(text.getBytes(), 0, text.getLength()).getBytes(targetCharset));
+  }
+
+  public static void writeLong(byte[] writeBuffer, int offset, long value) {
+    writeBuffer[offset] = (byte) ((value >> 0)  & 0xff);
+    writeBuffer[offset + 1] = (byte) ((value >> 8)  & 0xff);
+    writeBuffer[offset + 2] = (byte) ((value >> 16) & 0xff);
+    writeBuffer[offset + 3] = (byte) ((value >> 24) & 0xff);
+    writeBuffer[offset + 4] = (byte) ((value >> 32) & 0xff);
+    writeBuffer[offset + 5] = (byte) ((value >> 40) & 0xff);
+    writeBuffer[offset + 6] = (byte) ((value >> 48) & 0xff);
+    writeBuffer[offset + 7] = (byte) ((value >> 56) & 0xff);
   }
 }

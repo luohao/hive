@@ -29,10 +29,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Random;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import org.antlr.runtime.TokenRewriteStream;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.ContentSummary;
 import org.apache.hadoop.fs.FileStatus;
@@ -40,18 +39,27 @@ import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.hive.common.FileUtils;
+import org.apache.hadoop.hive.common.BlobStorageUtils;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.ql.exec.TaskRunner;
+import org.apache.hadoop.hive.ql.exec.Utilities;
 import org.apache.hadoop.hive.ql.hooks.WriteEntity;
-import org.apache.hadoop.hive.ql.io.AcidUtils;
+import org.apache.hadoop.hive.ql.lockmgr.DbTxnManager.Heartbeater;
 import org.apache.hadoop.hive.ql.lockmgr.HiveLock;
-import org.apache.hadoop.hive.ql.lockmgr.HiveLockManager;
 import org.apache.hadoop.hive.ql.lockmgr.HiveLockObj;
 import org.apache.hadoop.hive.ql.lockmgr.HiveTxnManager;
+import org.apache.hadoop.hive.ql.lockmgr.LockException;
+import org.apache.hadoop.hive.ql.metadata.Table;
+import org.apache.hadoop.hive.ql.parse.ASTNode;
+import org.apache.hadoop.hive.ql.parse.ExplainConfiguration;
+import org.apache.hadoop.hive.ql.parse.ExplainConfiguration.AnalyzeState;
+import org.apache.hadoop.hive.ql.parse.HiveParser;
 import org.apache.hadoop.hive.ql.plan.LoadTableDesc;
 import org.apache.hadoop.hive.ql.session.SessionState;
 import org.apache.hadoop.hive.shims.ShimLoader;
 import org.apache.hadoop.util.StringUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Context for Semantic Analyzers. Usage: not reusable - construct a new one for
@@ -62,11 +70,12 @@ public class Context {
   private Path resFile;
   private Path resDir;
   private FileSystem resFs;
-  private static final Log LOG = LogFactory.getLog("hive.ql.Context");
+  private static final Logger LOG = LoggerFactory.getLogger("hive.ql.Context");
   private Path[] resDirPaths;
   private int resDirFilesNum;
   boolean initialized;
   String originalTracker = null;
+  private CompilationOpContext opContext;
   private final Map<String, ContentSummary> pathToCS = new ConcurrentHashMap<String, ContentSummary>();
 
   // scratch path to use for all non-local (ie. hdfs) file system tmp folders
@@ -83,16 +92,19 @@ public class Context {
 
   private final Configuration conf;
   protected int pathid = 10000;
-  protected boolean explain = false;
+  protected ExplainConfiguration explainConfig = null;
   protected String cboInfo;
   protected boolean cboSucceeded;
-  protected boolean explainLogical = false;
   protected String cmd = "";
   // number of previous attempts
   protected int tryCount = 0;
   private TokenRewriteStream tokenRewriteStream;
+  // Holds the qualified name to tokenRewriteStream for the views
+  // referenced by the query. This is used to rewrite the view AST
+  // with column masking and row filtering policies.
+  private final Map<String, TokenRewriteStream> viewsTokenRewriteStreams;
 
-  private String executionId;
+  private final String executionId;
 
   // List of Locks for this query
   protected List<HiveLock> hiveLocks;
@@ -100,12 +112,11 @@ public class Context {
   // Transaction manager for this query
   protected HiveTxnManager hiveTxnManager;
 
-  // Used to track what type of acid operation (insert, update, or delete) we are doing.  Useful
-  // since we want to change where bucket columns are accessed in some operators and
-  // optimizations when doing updates and deletes.
-  private AcidUtils.Operation acidOperation = AcidUtils.Operation.NOT_ACID;
-
   private boolean needLockMgr;
+
+  private AtomicInteger sequencer = new AtomicInteger();
+
+  private final Map<String, Table> cteTables = new HashMap<String, Table>();
 
   // Keep track of the mapping from load table desc to the output and the lock
   private final Map<LoadTableDesc, WriteEntity> loadTableOutputMap =
@@ -115,6 +126,130 @@ public class Context {
 
   private final String stagingDir;
 
+  private Heartbeater heartbeater;
+
+  private boolean skipTableMasking;
+
+  // Identify whether the query involves an UPDATE, DELETE or MERGE
+  private boolean isUpdateDeleteMerge;
+
+  /**
+   * This determines the prefix of the
+   * {@link org.apache.hadoop.hive.ql.parse.SemanticAnalyzer.Phase1Ctx#dest}
+   * name for a given subtree of the AST.  Most of the times there is only 1 destination in a
+   * given tree but multi-insert has several and multi-insert representing MERGE must use
+   * different prefixes to encode the purpose of different Insert branches
+   */
+  private Map<Integer, DestClausePrefix> insertBranchToNamePrefix = new HashMap<>();
+  private Operation operation = Operation.OTHER;
+  public void setOperation(Operation operation) {
+    this.operation = operation;
+  }
+
+  /**
+   * These ops require special handling in various places
+   * (note that Insert into Acid table is in OTHER category)
+   */
+  public enum Operation {UPDATE, DELETE, MERGE, OTHER};
+  public enum DestClausePrefix {
+    INSERT("insclause-"), UPDATE("updclause-"), DELETE("delclause-");
+    private final String prefix;
+    DestClausePrefix(String prefix) {
+      this.prefix = prefix;
+    }
+    public String toString() {
+      return prefix;
+    }
+  }
+  private String getMatchedText(ASTNode n) {
+    return getTokenRewriteStream().toString(n.getTokenStartIndex(), n.getTokenStopIndex() + 1).trim();
+  }
+  /**
+   * The suffix is always relative to a given ASTNode
+   */
+  public DestClausePrefix getDestNamePrefix(ASTNode curNode) {
+    assert curNode != null : "must supply curNode";
+    if(curNode.getType() != HiveParser.TOK_INSERT_INTO) {
+      //select statement
+      assert curNode.getType() == HiveParser.TOK_DESTINATION;
+      if(operation == Operation.OTHER) {
+        //not an 'interesting' op
+        return DestClausePrefix.INSERT;
+      }
+      //if it is an 'interesting' op but it's a select it must be a sub-query or a derived table
+      //it doesn't require a special Acid code path - the reset of the code here is to ensure
+      //the tree structure is what we expect
+      boolean thisIsInASubquery = false;
+      parentLoop: while(curNode.getParent() != null) {
+        curNode = (ASTNode) curNode.getParent();
+        switch (curNode.getType()) {
+          case HiveParser.TOK_SUBQUERY_EXPR:
+            //this is a real subquery (foo IN (select ...))
+          case HiveParser.TOK_SUBQUERY:
+            //this is a Derived Table Select * from (select a from ...))
+            //strictly speaking SetOps should have a TOK_SUBQUERY parent so next 6 items are redundant
+          case HiveParser.TOK_UNIONALL:
+          case HiveParser.TOK_UNIONDISTINCT:
+          case HiveParser.TOK_EXCEPTALL:
+          case HiveParser.TOK_EXCEPTDISTINCT:
+          case HiveParser.TOK_INTERSECTALL:
+          case HiveParser.TOK_INTERSECTDISTINCT:
+            thisIsInASubquery = true;
+            break parentLoop;
+        }
+      }
+      if(!thisIsInASubquery) {
+        throw new IllegalStateException("Expected '" + getMatchedText(curNode) + "' to be in sub-query or set operation.");
+      } 
+      return DestClausePrefix.INSERT;
+    }
+    switch (operation) {
+      case OTHER:
+        return DestClausePrefix.INSERT;
+      case UPDATE:
+        return DestClausePrefix.UPDATE;
+      case DELETE:
+        return DestClausePrefix.DELETE;
+      case MERGE:
+      /* This is the structrue expected here
+        HiveParser.TOK_QUERY;
+          HiveParser.TOK_FROM
+          HiveParser.TOK_INSERT;
+            HiveParser.TOK_INSERT_INTO;
+          HiveParser.TOK_INSERT;
+            HiveParser.TOK_INSERT_INTO;
+          .....*/
+        ASTNode insert = (ASTNode) curNode.getParent();
+        assert insert != null && insert.getType() == HiveParser.TOK_INSERT;
+        ASTNode query = (ASTNode) insert.getParent();
+        assert query != null && query.getType() == HiveParser.TOK_QUERY;
+        
+        for(int childIdx = 1; childIdx < query.getChildCount(); childIdx++) {//1st child is TOK_FROM
+          assert query.getChild(childIdx).getType() == HiveParser.TOK_INSERT;
+          if(insert == query.getChild(childIdx)) {
+            DestClausePrefix prefix = insertBranchToNamePrefix.get(childIdx);
+            if(prefix == null) {
+              throw new IllegalStateException("Found a node w/o branch mapping: '" +
+                getMatchedText(insert) + "'");
+            }
+            return prefix;
+          }
+        }
+        throw new IllegalStateException("Could not locate '" + getMatchedText(insert) + "'");
+      default:
+        throw new IllegalStateException("Unexpected operation: " + operation);
+    }
+  }
+  /**
+   * Will make SemanticAnalyzer.Phase1Ctx#dest in subtree rooted at 'tree' use 'prefix'.  This to
+   * handle multi-insert stmt that represents Merge stmt and has insert branches representing
+   * update/delete/insert.
+   * @param pos ordinal index of specific TOK_INSERT as child of TOK_QUERY
+   * @return previous prefix for 'tree' or null
+   */
+  public DestClausePrefix addDestNamePrefix(int pos, DestClausePrefix prefix) {
+    return insertBranchToNamePrefix.put(pos, prefix);
+  }
   public Context(Configuration conf) throws IOException {
     this(conf, generateExecutionId());
   }
@@ -133,6 +268,9 @@ public class Context {
     localScratchDir = new Path(SessionState.getLocalSessionPath(conf), executionId).toUri().getPath();
     scratchDirPermission = HiveConf.getVar(conf, HiveConf.ConfVars.SCRATCHDIRPERMISSION);
     stagingDir = HiveConf.getVar(conf, HiveConf.ConfVars.STAGINGDIR);
+    opContext = new CompilationOpContext();
+
+    viewsTokenRewriteStreams = new HashMap<>();
   }
 
 
@@ -145,34 +283,25 @@ public class Context {
   }
 
   /**
-   * Set the context on whether the current query is an explain query.
-   * @param value true if the query is an explain query, false if not
+   * Find whether we should execute the current query due to explain
+   * @return true if the query needs to be executed, false if not
    */
-  public void setExplain(boolean value) {
-    explain = value;
-  }
-
-  /**
-   * Find whether the current query is an explain query
-   * @return true if the query is an explain query, false if not
-   */
-  public boolean getExplain() {
-    return explain;
+  public boolean isExplainSkipExecution() {
+    return (explainConfig != null && explainConfig.getAnalyze() != AnalyzeState.RUNNING);
   }
 
   /**
    * Find whether the current query is a logical explain query
    */
   public boolean getExplainLogical() {
-    return explainLogical;
+    return explainConfig != null && explainConfig.isLogical();
   }
 
-  /**
-   * Set the context on whether the current query is a logical
-   * explain query.
-   */
-  public void setExplainLogical(boolean explainLogical) {
-    this.explainLogical = explainLogical;
+  public AnalyzeState getExplainAnalyze() {
+    if (explainConfig != null) {
+      return explainConfig.getAnalyze();
+    }
+    return null;
   }
 
   /**
@@ -232,7 +361,9 @@ public class Context {
 
       if (mkdir) {
         try {
-          if (!FileUtils.mkdir(fs, dir, true, conf)) {
+          boolean inheritPerms = HiveConf.getBoolVar(conf,
+              HiveConf.ConfVars.HIVE_WAREHOUSE_SUBDIR_INHERIT_PERMS);
+          if (!FileUtils.mkdir(fs, dir, inheritPerms, conf)) {
             throw new IllegalStateException("Cannot create staging directory  '" + dir.toString() + "'");
           }
 
@@ -317,7 +448,7 @@ public class Context {
     // if we are executing entirely on the client side - then
     // just (re)use the local scratch directory
     if(isLocalOnlyExecutionMode()) {
-      return getLocalScratchDir(!explain);
+      return getLocalScratchDir(!isExplainSkipExecution());
     }
 
     try {
@@ -325,7 +456,7 @@ public class Context {
       URI uri = dir.toUri();
 
       Path newScratchDir = getScratchDir(uri.getScheme(), uri.getAuthority(),
-          !explain, uri.getPath());
+          !isExplainSkipExecution(), uri.getPath());
       LOG.info("New scratch dir is " + newScratchDir);
       return newScratchDir;
     } catch (IOException e) {
@@ -336,8 +467,60 @@ public class Context {
     }
   }
 
+  /**
+   * Create a temporary directory depending of the path specified.
+   * - If path is an Object store filesystem, then use the default MR scratch directory (HDFS), unless isFinalJob and
+   * {@link BlobStorageUtils#areOptimizationsEnabled(Configuration)} are both true, then return a path on
+   * the blobstore.
+   * - If path is on HDFS, then create a staging directory inside the path
+   *
+   * @param path Path used to verify the Filesystem to use for temporary directory
+   * @param isFinalJob true if the required {@link Path} will be used for the final job (e.g. the final FSOP)
+   *
+   * @return A path to the new temporary directory
+   */
+  public Path getTempDirForPath(Path path, boolean isFinalJob) {
+    if (((BlobStorageUtils.isBlobStoragePath(conf, path) && !BlobStorageUtils.isBlobStorageAsScratchDir(
+            conf)) || isPathLocal(path))) {
+      if (!(isFinalJob && BlobStorageUtils.areOptimizationsEnabled(conf))) {
+        // For better write performance, we use HDFS for temporary data when object store is used.
+        // Note that the scratch directory configuration variable must use HDFS or any other non-blobstorage system
+        // to take advantage of this performance.
+        return getMRTmpPath();
+      }
+    }
+    return getExtTmpPathRelTo(path);
+  }
+
+
+  /**
+   * Create a temporary directory depending of the path specified.
+   * - If path is an Object store filesystem, then use the default MR scratch directory (HDFS)
+   * - If path is on HDFS, then create a staging directory inside the path
+   *
+   * @param path Path used to verify the Filesystem to use for temporary directory
+   * @return A path to the new temporary directory
+   */
+  public Path getTempDirForPath(Path path) {
+    return getTempDirForPath(path, false);
+  }
+
+  /*
+   * Checks if the path is for the local filesystem or not
+   */
+  private boolean isPathLocal(Path path) {
+    boolean isLocal = false;
+    if (path != null) {
+      String scheme = path.toUri().getScheme();
+      if (scheme != null) {
+        isLocal = scheme.equals(Utilities.HADOOP_LOCAL_FS_SCHEME);
+      }
+    }
+    return isLocal;
+  }
+
   private Path getExternalScratchDir(URI extURI) {
-    return getStagingDir(new Path(extURI.getScheme(), extURI.getAuthority(), extURI.getPath()), !explain);
+    return getStagingDir(new Path(extURI.getScheme(), extURI.getAuthority(), extURI.getPath()), !isExplainSkipExecution());
   }
 
   /**
@@ -347,13 +530,37 @@ public class Context {
     for (Map.Entry<String, Path> entry : fsScratchDirs.entrySet()) {
       try {
         Path p = entry.getValue();
-        p.getFileSystem(conf).delete(p, true);
+        FileSystem fs = p.getFileSystem(conf);
+        LOG.debug("Deleting scratch dir: {}",  p);
+        fs.delete(p, true);
+        fs.cancelDeleteOnExit(p);
       } catch (Exception e) {
         LOG.warn("Error Removing Scratch: "
             + StringUtils.stringifyException(e));
       }
     }
     fsScratchDirs.clear();
+  }
+
+  /**
+   * Remove any created directories for CTEs.
+   */
+  public void removeMaterializedCTEs() {
+    // clean CTE tables
+    for (Table materializedTable : cteTables.values()) {
+      Path location = materializedTable.getDataLocation();
+      try {
+        FileSystem fs = location.getFileSystem(conf);
+        boolean status = fs.delete(location, true);
+        LOG.info("Removed " + location + " for materialized "
+            + materializedTable.getTableName() + ", status=" + status);
+      } catch (IOException e) {
+        // ignore
+        LOG.warn("Error removing " + location + " for materialized " + materializedTable.getTableName() +
+                ": " + StringUtils.stringifyException(e));
+      }
+    }
+    cteTables.clear();
   }
 
   private String nextPathId() {
@@ -376,7 +583,7 @@ public class Context {
   }
 
   public Path getMRTmpPath(URI uri) {
-    return new Path(getStagingDir(new Path(uri), !explain), MR_PREFIX + nextPathId());
+    return new Path(getStagingDir(new Path(uri), !isExplainSkipExecution()), MR_PREFIX + nextPathId());
   }
 
   /**
@@ -422,7 +629,7 @@ public class Context {
    * path within /tmp
    */
   public Path getExtTmpPathRelTo(Path path) {
-    return new Path(getStagingDir(path, !explain), EXT_PREFIX + nextPathId());
+    return new Path(getStagingDir(path, !isExplainSkipExecution()), EXT_PREFIX + nextPathId());
   }
 
   /**
@@ -466,6 +673,7 @@ public class Context {
     if (resDir != null) {
       try {
         FileSystem fs = resDir.getFileSystem(conf);
+        LOG.debug("Deleting result dir: {}",  resDir);
         fs.delete(resDir, true);
       } catch (IOException e) {
         LOG.info("Context clear error: " + StringUtils.stringifyException(e));
@@ -475,11 +683,13 @@ public class Context {
     if (resFile != null) {
       try {
         FileSystem fs = resFile.getFileSystem(conf);
+        LOG.debug("Deleting result file: {}",  resFile);
         fs.delete(resFile, false);
       } catch (IOException e) {
         LOG.info("Context clear error: " + StringUtils.stringifyException(e));
       }
     }
+    removeMaterializedCTEs();
     removeScratchDir();
     originalTracker = null;
     setNeedLockMgr(false);
@@ -567,7 +777,7 @@ public class Context {
    *          the stream being used
    */
   public void setTokenRewriteStream(TokenRewriteStream tokenRewriteStream) {
-    assert (this.tokenRewriteStream == null);
+    assert (this.tokenRewriteStream == null || this.getExplainAnalyze() == AnalyzeState.RUNNING);
     this.tokenRewriteStream = tokenRewriteStream;
   }
 
@@ -578,6 +788,15 @@ public class Context {
    */
   public TokenRewriteStream getTokenRewriteStream() {
     return tokenRewriteStream;
+  }
+
+  public void addViewTokenRewriteStream(String viewFullyQualifiedName,
+      TokenRewriteStream tokenRewriteStream) {
+    viewsTokenRewriteStreams.put(viewFullyQualifiedName, tokenRewriteStream);
+  }
+
+  public TokenRewriteStream getViewTokenRewriteStream(String viewFullyQualifiedName) {
+    return viewsTokenRewriteStreams.get(viewFullyQualifiedName);
   }
 
   /**
@@ -689,14 +908,6 @@ public class Context {
     this.tryCount = tryCount;
   }
 
-  public void setAcidOperation(AcidUtils.Operation op) {
-    acidOperation = op;
-  }
-
-  public AcidUtils.Operation getAcidOperation() {
-    return acidOperation;
-  }
-
   public String getCboInfo() {
     return cboInfo;
   }
@@ -713,4 +924,62 @@ public class Context {
     this.cboSucceeded = cboSucceeded;
   }
 
+  public Table getMaterializedTable(String cteName) {
+    return cteTables.get(cteName);
+  }
+
+  public void addMaterializedTable(String cteName, Table table) {
+    cteTables.put(cteName, table);
+  }
+
+  public AtomicInteger getSequencer() {
+    return sequencer;
+  }
+
+  public CompilationOpContext getOpContext() {
+    return opContext;
+  }
+
+  public Heartbeater getHeartbeater() {
+    return heartbeater;
+  }
+
+  public void setHeartbeater(Heartbeater heartbeater) {
+    this.heartbeater = heartbeater;
+  }
+
+  public void checkHeartbeaterLockException() throws LockException {
+    if (getHeartbeater() != null && getHeartbeater().getLockException() != null) {
+      throw getHeartbeater().getLockException();
+    }
+  }
+
+  public boolean isSkipTableMasking() {
+    return skipTableMasking;
+  }
+
+  public void setSkipTableMasking(boolean skipTableMasking) {
+    this.skipTableMasking = skipTableMasking;
+  }
+
+  public ExplainConfiguration getExplainConfig() {
+    return explainConfig;
+  }
+
+  public void setExplainConfig(ExplainConfiguration explainConfig) {
+    this.explainConfig = explainConfig;
+  }
+
+  public void resetOpContext(){
+    opContext = new CompilationOpContext();
+    sequencer = new AtomicInteger();
+  }
+
+  public boolean getIsUpdateDeleteMerge() {
+    return isUpdateDeleteMerge;
+  }
+
+  public void setIsUpdateDeleteMerge(boolean isUpdate) {
+    this.isUpdateDeleteMerge = isUpdate;
+  }
 }

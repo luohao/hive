@@ -17,21 +17,23 @@
  */
 package org.apache.hadoop.hive.ql.exec.persistence;
 
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.IOException;
+
+import org.apache.hadoop.fs.FileUtil;
+import org.apache.hadoop.hive.common.FileUtils;
+import org.apache.hadoop.hive.ql.exec.SerializationUtilities;
+import org.apache.hadoop.hive.ql.metadata.HiveException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import com.esotericsoftware.kryo.Kryo;
 import com.esotericsoftware.kryo.io.Input;
 import com.esotericsoftware.kryo.io.Output;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
-import org.apache.hadoop.fs.FileUtil;
-import org.apache.hadoop.hive.ql.exec.Utilities;
-import org.apache.hadoop.hive.ql.metadata.HiveException;
-
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileOutputStream;
-import java.io.IOException;
 
 /**
  * An eager object container that puts every row directly to output stream.
@@ -41,7 +43,7 @@ import java.io.IOException;
  */
 @SuppressWarnings("unchecked")
 public class ObjectContainer<ROW> {
-  private static final Log LOG = LogFactory.getLog(ObjectContainer.class);
+  private static final Logger LOG = LoggerFactory.getLogger(ObjectContainer.class);
 
   @VisibleForTesting
   static final int IN_MEMORY_NUM_ROWS = 1024;
@@ -52,39 +54,33 @@ public class ObjectContainer<ROW> {
   private int readCursor = 0;             // cursor during reading
   private int rowsOnDisk = 0;             // total number of objects in output
 
-  private File parentFile;
+  private File parentDir;
   private File tmpFile;
 
   private Input input;
   private Output output;
 
-  private Kryo kryo;
-
-  public ObjectContainer() {
+  public ObjectContainer(String spillLocalDirs) {
     readBuffer = (ROW[]) new Object[IN_MEMORY_NUM_ROWS];
     for (int i = 0; i < IN_MEMORY_NUM_ROWS; i++) {
       readBuffer[i] = (ROW) new Object();
     }
-    kryo = Utilities.runtimeSerializationKryo.get();
     try {
-      setupOutput();
+      setupOutput(spillLocalDirs);
     } catch (IOException | HiveException e) {
       throw new RuntimeException("Failed to create temporary output file on disk", e);
     }
   }
 
-  private void setupOutput() throws IOException, HiveException {
+  private void setupOutput(String spillLocalDirs) throws IOException, HiveException {
     FileOutputStream fos = null;
     try {
-      if (parentFile == null) {
-        parentFile = File.createTempFile("object-container", "");
-        if (parentFile.delete() && parentFile.mkdir()) {
-          parentFile.deleteOnExit();
-        }
+      if (parentDir == null) {
+        parentDir = FileUtils.createLocalDirsTempFile(spillLocalDirs, "object-container", "", true);
       }
 
       if (tmpFile == null || input != null) {
-        tmpFile = File.createTempFile("ObjectContainer", ".tmp", parentFile);
+        tmpFile = File.createTempFile("ObjectContainer", ".tmp", parentDir);
         LOG.info("ObjectContainer created temp file " + tmpFile.getAbsolutePath());
         tmpFile.deleteOnExit();
       }
@@ -101,7 +97,12 @@ public class ObjectContainer<ROW> {
   }
 
   public void add(ROW row) {
-    kryo.writeClassAndObject(output, row);
+    Kryo kryo = SerializationUtilities.borrowKryo();
+    try {
+      kryo.writeClassAndObject(output, row);
+    } finally {
+      SerializationUtilities.releaseKryo(kryo);
+    }
     rowsOnDisk++;
   }
 
@@ -109,7 +110,7 @@ public class ObjectContainer<ROW> {
     readCursor = rowsInReadBuffer = rowsOnDisk = 0;
     readBufferUsed = false;
 
-    if (parentFile != null) {
+    if (parentDir != null) {
       if (input != null) {
         try {
           input.close();
@@ -125,10 +126,10 @@ public class ObjectContainer<ROW> {
         output = null;
       }
       try {
-        FileUtil.fullyDelete(parentFile);
+        FileUtil.fullyDelete(parentDir);
       } catch (Throwable ignored) {
       }
-      parentFile = null;
+      parentDir = null;
       tmpFile = null;
     }
   }
@@ -164,8 +165,13 @@ public class ObjectContainer<ROW> {
             rowsInReadBuffer = rowsOnDisk;
           }
 
-          for (int i = 0; i < rowsInReadBuffer; i++) {
-            readBuffer[i] = (ROW) kryo.readClassAndObject(input);
+          Kryo kryo = SerializationUtilities.borrowKryo();
+          try {
+            for (int i = 0; i < rowsInReadBuffer; i++) {
+              readBuffer[i] = (ROW) kryo.readClassAndObject(input);
+            }
+          } finally {
+            SerializationUtilities.releaseKryo(kryo);
           }
 
           if (input.eof()) {

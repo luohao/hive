@@ -1,7 +1,7 @@
 <configuration>
 <property>
   <name>hplsql.conn.default</name>
-  <value>hiveconn</value>
+  <value>hive2conn</value>
   <description>The default connection profile</description>
 </property>
 <property>
@@ -12,7 +12,6 @@
 <property>
   <name>hplsql.conn.init.hiveconn</name>
   <value>
-     set mapred.job.queue.name=default;
      set hive.execution.engine=mr; 
      use default;
   </value>
@@ -36,7 +35,6 @@
 <property>
   <name>hplsql.conn.init.hive2conn</name>
   <value>
-     set mapred.job.queue.name=default;
      set hive.execution.engine=mr; 
      use default;
   </value>
@@ -64,7 +62,7 @@
 </property>
 <property>
   <name>hplsql.dual.table</name>
-  <value>default.dual</value>
+  <value></value>
   <description>Single row, single column table for internal operations</description>
 </property>
 <property>

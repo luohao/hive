@@ -23,31 +23,37 @@ import java.sql.DatabaseMetaData;
 import java.sql.ResultSet;
 import java.sql.RowIdLifetime;
 import java.sql.SQLException;
+import java.sql.SQLFeatureNotSupportedException;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.jar.Attributes;
 
 import org.apache.hadoop.hive.metastore.TableType;
 import org.apache.hive.service.cli.GetInfoType;
-import org.apache.hive.service.cli.thrift.TCLIService;
-import org.apache.hive.service.cli.thrift.TGetCatalogsReq;
-import org.apache.hive.service.cli.thrift.TGetCatalogsResp;
-import org.apache.hive.service.cli.thrift.TGetColumnsReq;
-import org.apache.hive.service.cli.thrift.TGetColumnsResp;
-import org.apache.hive.service.cli.thrift.TGetFunctionsReq;
-import org.apache.hive.service.cli.thrift.TGetFunctionsResp;
-import org.apache.hive.service.cli.thrift.TGetInfoReq;
-import org.apache.hive.service.cli.thrift.TGetInfoResp;
-import org.apache.hive.service.cli.thrift.TGetInfoType;
-import org.apache.hive.service.cli.thrift.TGetSchemasReq;
-import org.apache.hive.service.cli.thrift.TGetSchemasResp;
-import org.apache.hive.service.cli.thrift.TGetTableTypesReq;
-import org.apache.hive.service.cli.thrift.TGetTableTypesResp;
-import org.apache.hive.service.cli.thrift.TGetTablesReq;
-import org.apache.hive.service.cli.thrift.TGetTablesResp;
-import org.apache.hive.service.cli.thrift.TGetTypeInfoReq;
-import org.apache.hive.service.cli.thrift.TGetTypeInfoResp;
-import org.apache.hive.service.cli.thrift.TSessionHandle;
+import org.apache.hive.service.rpc.thrift.TCLIService;
+import org.apache.hive.service.rpc.thrift.TCLIService.Iface;
+import org.apache.hive.service.rpc.thrift.TGetCatalogsReq;
+import org.apache.hive.service.rpc.thrift.TGetCatalogsResp;
+import org.apache.hive.service.rpc.thrift.TGetColumnsReq;
+import org.apache.hive.service.rpc.thrift.TGetColumnsResp;
+import org.apache.hive.service.rpc.thrift.TGetCrossReferenceReq;
+import org.apache.hive.service.rpc.thrift.TGetCrossReferenceResp;
+import org.apache.hive.service.rpc.thrift.TGetFunctionsReq;
+import org.apache.hive.service.rpc.thrift.TGetFunctionsResp;
+import org.apache.hive.service.rpc.thrift.TGetInfoReq;
+import org.apache.hive.service.rpc.thrift.TGetInfoResp;
+import org.apache.hive.service.rpc.thrift.TGetInfoType;
+import org.apache.hive.service.rpc.thrift.TGetPrimaryKeysReq;
+import org.apache.hive.service.rpc.thrift.TGetPrimaryKeysResp;
+import org.apache.hive.service.rpc.thrift.TGetSchemasReq;
+import org.apache.hive.service.rpc.thrift.TGetSchemasResp;
+import org.apache.hive.service.rpc.thrift.TGetTableTypesReq;
+import org.apache.hive.service.rpc.thrift.TGetTableTypesResp;
+import org.apache.hive.service.rpc.thrift.TGetTablesReq;
+import org.apache.hive.service.rpc.thrift.TGetTablesResp;
+import org.apache.hive.service.rpc.thrift.TGetTypeInfoReq;
+import org.apache.hive.service.rpc.thrift.TGetTypeInfoResp;
+import org.apache.hive.service.rpc.thrift.TSessionHandle;
 import org.apache.thrift.TException;
 
 /**
@@ -80,7 +86,7 @@ public class HiveDatabaseMetaData implements DatabaseMetaData {
   }
 
   public boolean allProceduresAreCallable() throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public boolean allTablesAreSelectable() throws SQLException {
@@ -88,33 +94,33 @@ public class HiveDatabaseMetaData implements DatabaseMetaData {
   }
 
   public boolean autoCommitFailureClosesAllResultSets() throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public boolean dataDefinitionCausesTransactionCommit() throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public boolean dataDefinitionIgnoredInTransactions() throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public boolean deletesAreDetected(int type) throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public boolean doesMaxRowSizeIncludeBlobs() throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public ResultSet getAttributes(String catalog, String schemaPattern,
       String typeNamePattern, String attributeNamePattern) throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public ResultSet getBestRowIdentifier(String catalog, String schema,
       String table, int scope, boolean nullable) throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public String getCatalogSeparator() throws SQLException {
@@ -143,23 +149,23 @@ public class HiveDatabaseMetaData implements DatabaseMetaData {
   }
 
   public ResultSet getClientInfoProperties() throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public ResultSet getColumnPrivileges(String catalog, String schema,
       String table, String columnNamePattern) throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public ResultSet getPseudoColumns(String catalog, String schemaPattern,
       String tableNamePattern, String columnNamePattern) throws SQLException {
     // JDK 1.7
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public boolean generatedKeyAlwaysReturned() throws SQLException {
     // JDK 1.7
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   /**
@@ -254,7 +260,27 @@ public class HiveDatabaseMetaData implements DatabaseMetaData {
   public ResultSet getCrossReference(String primaryCatalog,
       String primarySchema, String primaryTable, String foreignCatalog,
       String foreignSchema, String foreignTable) throws SQLException {
-    throw new SQLException("Method not supported");
+   TGetCrossReferenceResp getFKResp;
+   TGetCrossReferenceReq getFKReq = new TGetCrossReferenceReq(sessHandle);
+   getFKReq.setParentTableName(primaryTable);
+   getFKReq.setParentSchemaName(primarySchema);
+   getFKReq.setParentCatalogName(primaryCatalog);
+   getFKReq.setForeignTableName(foreignTable);
+   getFKReq.setForeignSchemaName(foreignSchema);
+   getFKReq.setForeignCatalogName(foreignCatalog);
+
+   try {
+     getFKResp = client.GetCrossReference(getFKReq);
+   } catch (TException e) {
+     throw new SQLException(e.getMessage(), "08S01", e);
+   }
+   Utils.verifySuccess(getFKResp.getStatus());
+
+   return new HiveQueryResultSet.Builder(connection)
+     .setClient(client)
+     .setSessionHandle(sessHandle)
+     .setStmtHandle(getFKResp.getOperationHandle())
+     .build();
   }
 
   public int getDatabaseMajorVersion() throws SQLException {
@@ -302,7 +328,7 @@ public class HiveDatabaseMetaData implements DatabaseMetaData {
 
   public ResultSet getExportedKeys(String catalog, String schema, String table)
       throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public String getExtraNameCharacters() throws SQLException {
@@ -312,7 +338,7 @@ public class HiveDatabaseMetaData implements DatabaseMetaData {
 
   public ResultSet getFunctionColumns(String arg0, String arg1, String arg2,
       String arg3) throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public ResultSet getFunctions(String catalogName, String schemaPattern, String functionNamePattern)
@@ -403,15 +429,15 @@ public class HiveDatabaseMetaData implements DatabaseMetaData {
   }
 
   public int getMaxBinaryLiteralLength() throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public int getMaxCatalogNameLength() throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public int getMaxCharLiteralLength() throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   /**
@@ -423,67 +449,67 @@ public class HiveDatabaseMetaData implements DatabaseMetaData {
   }
 
   public int getMaxColumnsInGroupBy() throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public int getMaxColumnsInIndex() throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public int getMaxColumnsInOrderBy() throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public int getMaxColumnsInSelect() throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public int getMaxColumnsInTable() throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public int getMaxConnections() throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public int getMaxCursorNameLength() throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public int getMaxIndexLength() throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public int getMaxProcedureNameLength() throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public int getMaxRowSize() throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public int getMaxSchemaNameLength() throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public int getMaxStatementLength() throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public int getMaxStatements() throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public int getMaxTableNameLength() throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public int getMaxTablesInSelect() throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public int getMaxUserNameLength() throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public String getNumericFunctions() throws SQLException {
@@ -492,12 +518,23 @@ public class HiveDatabaseMetaData implements DatabaseMetaData {
 
   public ResultSet getPrimaryKeys(String catalog, String schema, String table)
       throws SQLException {
-    // Hive doesn't support primary keys
-    // using local schema with empty resultset
-    return new HiveQueryResultSet.Builder(connection).setClient(client).setEmptyResultSet(true).
-        setSchema(Arrays.asList("TABLE_CAT", "TABLE_SCHEM", "TABLE_NAME", "COLUMN_NAME", "KEY_SEQ", "PK_NAME" ),
-            Arrays.asList("STRING",    "STRING",      "STRING",     "STRING",       "INT",  "STRING"))
-            .build();
+    TGetPrimaryKeysResp getPKResp;
+    TGetPrimaryKeysReq getPKReq = new TGetPrimaryKeysReq(sessHandle);
+    getPKReq.setTableName(table);
+    getPKReq.setSchemaName(schema);
+    getPKReq.setCatalogName(catalog);
+    try {
+      getPKResp = client.GetPrimaryKeys(getPKReq);
+    } catch (TException e) {
+      throw new SQLException(e.getMessage(), "08S01", e);
+    }
+    Utils.verifySuccess(getPKResp.getStatus());
+
+    return new HiveQueryResultSet.Builder(connection)
+    .setClient(client)
+    .setSessionHandle(sessHandle)
+    .setStmtHandle(getPKResp.getOperationHandle())
+    .build();
   }
 
   public ResultSet getProcedureColumns(String catalog, String schemaPattern,
@@ -536,15 +573,15 @@ public class HiveDatabaseMetaData implements DatabaseMetaData {
   }
 
   public int getResultSetHoldability() throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public RowIdLifetime getRowIdLifetime() throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public String getSQLKeywords() throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public int getSQLStateType() throws SQLException {
@@ -597,12 +634,12 @@ public class HiveDatabaseMetaData implements DatabaseMetaData {
 
   public ResultSet getSuperTables(String catalog, String schemaPattern,
       String tableNamePattern) throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public ResultSet getSuperTypes(String catalog, String schemaPattern,
       String typeNamePattern) throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public String getSystemFunctions() throws SQLException {
@@ -611,7 +648,7 @@ public class HiveDatabaseMetaData implements DatabaseMetaData {
 
   public ResultSet getTablePrivileges(String catalog, String schemaPattern,
       String tableNamePattern) throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public ResultSet getTableTypes() throws SQLException {
@@ -646,9 +683,7 @@ public class HiveDatabaseMetaData implements DatabaseMetaData {
     if (types != null) {
       getTableReq.setTableTypes(Arrays.asList(types));
     }
-    if (schemaPattern != null) {
-      getTableReq.setSchemaName(schemaPattern);
-    }
+    getTableReq.setSchemaName(schemaPattern);
 
     try {
       getTableResp = client.GetTables(getTableReq);
@@ -694,6 +729,8 @@ public class HiveDatabaseMetaData implements DatabaseMetaData {
       return "VIEW";
     } else if (hivetabletype.equals(TableType.EXTERNAL_TABLE.toString())) {
       return "EXTERNAL TABLE";
+    } else if (hivetabletype.equals(TableType.MATERIALIZED_VIEW.toString())) {
+      return "MATERIALIZED VIEW";
     } else {
       return hivetabletype;
     }
@@ -735,123 +772,123 @@ public class HiveDatabaseMetaData implements DatabaseMetaData {
 
       public <T> T getObject(String columnLabel, Class<T> type) throws SQLException {
         // JDK 1.7
-        throw new SQLException("Method not supported");
+        throw new SQLFeatureNotSupportedException("Method not supported");
       }
 
       public <T> T getObject(int columnIndex, Class<T> type) throws SQLException {
         // JDK 1.7
-        throw new SQLException("Method not supported");
+        throw new SQLFeatureNotSupportedException("Method not supported");
         }
     };
   }
 
   public String getURL() throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public String getUserName() throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public ResultSet getVersionColumns(String catalog, String schema, String table)
       throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public boolean insertsAreDetected(int type) throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public boolean isCatalogAtStart() throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public boolean isReadOnly() throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public boolean locatorsUpdateCopy() throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public boolean nullPlusNonNullIsNull() throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public boolean nullsAreSortedAtEnd() throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public boolean nullsAreSortedAtStart() throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public boolean nullsAreSortedHigh() throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public boolean nullsAreSortedLow() throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public boolean othersDeletesAreVisible(int type) throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public boolean othersInsertsAreVisible(int type) throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public boolean othersUpdatesAreVisible(int type) throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public boolean ownDeletesAreVisible(int type) throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public boolean ownInsertsAreVisible(int type) throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public boolean ownUpdatesAreVisible(int type) throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public boolean storesLowerCaseIdentifiers() throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public boolean storesLowerCaseQuotedIdentifiers() throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public boolean storesMixedCaseIdentifiers() throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public boolean storesMixedCaseQuotedIdentifiers() throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public boolean storesUpperCaseIdentifiers() throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public boolean storesUpperCaseQuotedIdentifiers() throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public boolean supportsANSI92EntryLevelSQL() throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public boolean supportsANSI92FullSQL() throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public boolean supportsANSI92IntermediateSQL() throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public boolean supportsAlterTableWithAddColumn() throws SQLException {
@@ -891,40 +928,40 @@ public class HiveDatabaseMetaData implements DatabaseMetaData {
   }
 
   public boolean supportsConvert() throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public boolean supportsConvert(int fromType, int toType) throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public boolean supportsCoreSQLGrammar() throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public boolean supportsCorrelatedSubqueries() throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public boolean supportsDataDefinitionAndDataManipulationTransactions()
       throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public boolean supportsDataManipulationTransactionsOnly() throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public boolean supportsDifferentTableCorrelationNames() throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public boolean supportsExpressionsInOrderBy() throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public boolean supportsExtendedSQLGrammar() throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public boolean supportsFullOuterJoins() throws SQLException {
@@ -932,7 +969,7 @@ public class HiveDatabaseMetaData implements DatabaseMetaData {
   }
 
   public boolean supportsGetGeneratedKeys() throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public boolean supportsGroupBy() throws SQLException {
@@ -940,19 +977,19 @@ public class HiveDatabaseMetaData implements DatabaseMetaData {
   }
 
   public boolean supportsGroupByBeyondSelect() throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public boolean supportsGroupByUnrelated() throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public boolean supportsIntegrityEnhancementFacility() throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public boolean supportsLikeEscapeClause() throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public boolean supportsLimitedOuterJoins() throws SQLException {
@@ -960,19 +997,19 @@ public class HiveDatabaseMetaData implements DatabaseMetaData {
   }
 
   public boolean supportsMinimumSQLGrammar() throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public boolean supportsMixedCaseIdentifiers() throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public boolean supportsMixedCaseQuotedIdentifiers() throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public boolean supportsMultipleOpenResults() throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public boolean supportsMultipleResultSets() throws SQLException {
@@ -980,11 +1017,11 @@ public class HiveDatabaseMetaData implements DatabaseMetaData {
   }
 
   public boolean supportsMultipleTransactions() throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public boolean supportsNamedParameters() throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public boolean supportsNonNullableColumns() throws SQLException {
@@ -992,23 +1029,23 @@ public class HiveDatabaseMetaData implements DatabaseMetaData {
   }
 
   public boolean supportsOpenCursorsAcrossCommit() throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public boolean supportsOpenCursorsAcrossRollback() throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public boolean supportsOpenStatementsAcrossCommit() throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public boolean supportsOpenStatementsAcrossRollback() throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public boolean supportsOrderByUnrelated() throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public boolean supportsOuterJoins() throws SQLException {
@@ -1025,7 +1062,7 @@ public class HiveDatabaseMetaData implements DatabaseMetaData {
 
   public boolean supportsResultSetConcurrency(int type, int concurrency)
       throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public boolean supportsResultSetHoldability(int holdability)
@@ -1066,11 +1103,11 @@ public class HiveDatabaseMetaData implements DatabaseMetaData {
   }
 
   public boolean supportsStatementPooling() throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public boolean supportsStoredFunctionsUsingCallSyntax() throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public boolean supportsStoredProcedures() throws SQLException {
@@ -1078,28 +1115,28 @@ public class HiveDatabaseMetaData implements DatabaseMetaData {
   }
 
   public boolean supportsSubqueriesInComparisons() throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public boolean supportsSubqueriesInExists() throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public boolean supportsSubqueriesInIns() throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public boolean supportsSubqueriesInQuantifieds() throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public boolean supportsTableCorrelationNames() throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public boolean supportsTransactionIsolationLevel(int level)
       throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public boolean supportsTransactions() throws SQLException {
@@ -1115,23 +1152,23 @@ public class HiveDatabaseMetaData implements DatabaseMetaData {
   }
 
   public boolean updatesAreDetected(int type) throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public boolean usesLocalFilePerTable() throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public boolean usesLocalFiles() throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public boolean isWrapperFor(Class<?> iface) throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public <T> T unwrap(Class<T> iface) throws SQLException {
-    throw new SQLException("Method not supported");
+    throw new SQLFeatureNotSupportedException("Method not supported");
   }
 
   public static void main(String[] args) throws SQLException {

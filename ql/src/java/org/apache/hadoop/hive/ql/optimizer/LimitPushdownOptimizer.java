@@ -41,6 +41,9 @@ import org.apache.hadoop.hive.ql.lib.Rule;
 import org.apache.hadoop.hive.ql.lib.RuleRegExp;
 import org.apache.hadoop.hive.ql.parse.ParseContext;
 import org.apache.hadoop.hive.ql.parse.SemanticException;
+import org.apache.hadoop.hive.ql.plan.ExprNodeDesc;
+import org.apache.hadoop.hive.ql.plan.ExprNodeDescUtils;
+import org.apache.hadoop.hive.ql.plan.LimitDesc;
 
 /**
  * Make RS calculate top-K selection for limit clause.
@@ -85,7 +88,7 @@ import org.apache.hadoop.hive.ql.parse.SemanticException;
  * REDUCER : 10(b,d)-20(l)-30(c,k,o)-40(j,m)-50(n)
  * LIMIT 3 : 10(b,d)-20(l)
  */
-public class LimitPushdownOptimizer implements Transform {
+public class LimitPushdownOptimizer extends Transform {
 
   @Override
   public ParseContext transform(ParseContext pctx) throws SemanticException {
@@ -95,6 +98,11 @@ public class LimitPushdownOptimizer implements Transform {
         ".*" +
         LimitOperator.getOperatorName() + "%"),
         new TopNReducer());
+    opRules.put(new RuleRegExp("R2",
+        ReduceSinkOperator.getOperatorName() + "%" +
+        ".*" +
+        ReduceSinkOperator.getOperatorName() + "%"),
+        new TopNPropagator());
 
     LimitPushdownContext context = new LimitPushdownContext(pctx.getConf());
     Dispatcher disp = new DefaultRuleDispatcher(null, opRules, context);
@@ -130,10 +138,89 @@ public class LimitPushdownOptimizer implements Transform {
           return false;
         }
         LimitOperator limit = (LimitOperator) nd;
-        rs.getConf().setTopN(limit.getConf().getLimit());
+        LimitDesc limitDesc = limit.getConf();
+        Integer offset = limitDesc.getOffset();
+        rs.getConf().setTopN(limitDesc.getLimit() + ((offset == null) ? 0 : offset));
         rs.getConf().setTopNMemoryUsage(((LimitPushdownContext) procCtx).threshold);
         if (rs.getNumChild() == 1 && rs.getChildren().get(0) instanceof GroupByOperator) {
           rs.getConf().setMapGroupBy(true);
+        }
+      }
+      return true;
+    }
+  }
+
+  private static class TopNPropagator implements NodeProcessor {
+
+    @Override
+    public Object process(Node nd, Stack<Node> stack,
+        NodeProcessorCtx procCtx, Object... nodeOutputs) throws SemanticException {
+      ReduceSinkOperator cRS = (ReduceSinkOperator) nd;
+      if (cRS.getConf().getTopN() == -1) {
+        // No limit, nothing to propagate, we just bail out
+        return false;
+      }
+      ReduceSinkOperator pRS = null;
+      for (int i = stack.size() - 2 ; i >= 0; i--) {
+        Operator<?> operator = (Operator<?>) stack.get(i);
+        if (operator.getNumChild() != 1) {
+          return false; // multi-GBY single-RS (TODO)
+        }
+        if (operator instanceof ReduceSinkOperator) {
+          pRS = (ReduceSinkOperator) operator;
+          break;
+        }
+        if (!operator.acceptLimitPushdown()) {
+          return false;
+        }
+      }
+      if (pRS != null) {
+        if (OperatorUtils.findOperators(pRS, GroupByOperator.class).size() > 1){
+          // Not safe to continue for RS-GBY-GBY-LIM kind of pipelines. See HIVE-10607 for more.
+          return false;
+        }
+        List<ExprNodeDesc> cKeys = cRS.getConf().getKeyCols();
+        List<ExprNodeDesc> pKeys = pRS.getConf().getKeyCols();
+        if (pRS.getChildren().get(0) instanceof GroupByOperator &&
+                pRS.getChildren().get(0).getChildren().get(0) == cRS) {
+          // RS-GB-RS
+          GroupByOperator gBy = (GroupByOperator) pRS.getChildren().get(0);
+          List<ExprNodeDesc> gKeys = gBy.getConf().getKeys();
+          if (!ExprNodeDescUtils.checkPrefixKeysUpstream(cKeys, pKeys, cRS, pRS)) {
+            // We might still be able to push the limit
+            if (!ExprNodeDescUtils.checkPrefixKeys(cKeys, gKeys, cRS, gBy) ||
+                    !ExprNodeDescUtils.checkPrefixKeys(gKeys, pKeys, gBy, pRS)) {
+              // We cannot push limit; bail out
+              return false;
+            }
+          }
+        } else {
+          if (!ExprNodeDescUtils.checkPrefixKeysUpstream(cKeys, pKeys, cRS, pRS)) {
+            // We cannot push limit; bail out
+            return false;
+          }
+        }
+        // Copy order
+        StringBuilder order;
+        StringBuilder orderNull;
+        if (pRS.getConf().getOrder().length() > cRS.getConf().getOrder().length()) {
+          order = new StringBuilder(cRS.getConf().getOrder());
+          orderNull = new StringBuilder(cRS.getConf().getNullOrder());
+          order.append(pRS.getConf().getOrder().substring(order.length()));
+          orderNull.append(pRS.getConf().getNullOrder().substring(orderNull.length()));
+        } else {
+          order = new StringBuilder(cRS.getConf().getOrder().substring(
+                  0, pRS.getConf().getOrder().length()));
+          orderNull = new StringBuilder(cRS.getConf().getNullOrder().substring(
+                  0, pRS.getConf().getNullOrder().length()));
+        }
+        pRS.getConf().setOrder(order.toString());
+        pRS.getConf().setNullOrder(orderNull.toString());
+        // Copy limit
+        pRS.getConf().setTopN(cRS.getConf().getTopN());
+        pRS.getConf().setTopNMemoryUsage(cRS.getConf().getTopNMemoryUsage());
+        if (pRS.getNumChild() == 1 && pRS.getChildren().get(0) instanceof GroupByOperator) {
+          pRS.getConf().setMapGroupBy(true);
         }
       }
       return true;

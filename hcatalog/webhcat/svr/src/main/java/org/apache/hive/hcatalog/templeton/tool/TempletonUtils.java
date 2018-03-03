@@ -42,13 +42,13 @@ import java.util.regex.Pattern;
 
 import javax.ws.rs.core.UriBuilder;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.hive.common.LogUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.hive.shims.ShimLoader;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.util.Shell;
 import org.apache.hadoop.util.StringUtils;
@@ -59,7 +59,7 @@ import org.apache.hive.hcatalog.templeton.BadParam;
  * General utility methods.
  */
 public class TempletonUtils {
-  private static final Log LOG = LogFactory.getLog(TempletonUtils.class);
+  private static final Logger LOG = LoggerFactory.getLogger(TempletonUtils.class);
 
   /**
    * Is the object non-empty?
@@ -104,21 +104,31 @@ public class TempletonUtils {
   public static final Pattern HIVE_COMPLETE = Pattern.compile(" map = (\\d+%),\\s+reduce = (\\d+%).*$");
   /**
    * Hive on Tez produces progress report that looks like this
-   * Map 1: -/-	Reducer 2: 0/1	
-   * Map 1: -/-	Reducer 2: 0(+1)/1	
+   * Map 1: -/-	Reducer 2: 0/1
+   * Map 1: -/-	Reducer 2: 0(+1)/1
    * Map 1: -/-	Reducer 2: 1/1
-   * 
+   *
    * -/- means there are no tasks (yet)
    * 0/1 means 1 total tasks, 0 completed
    * 1(+2)/3 means 3 total, 1 completed and 2 running
-   * 
+   *
    * HIVE-8495, in particular https://issues.apache.org/jira/secure/attachment/12675504/Screen%20Shot%202014-10-16%20at%209.35.26%20PM.png
    * has more examples.
    * To report progress, we'll assume all tasks are equal size and compute "completed" as percent of "total"
    * "(Map|Reducer) (\\d+:) ((-/-)|(\\d+(\\(\\+\\d+\\))?/\\d+))" is the complete pattern but we'll drop "-/-" to exclude
    * groups that don't add information such as "Map 1: -/-"
    */
-  public static final Pattern TEZ_COMPLETE = Pattern.compile("(Map|Reducer) (\\d+:) (\\d+(\\(\\+\\d+\\))?/\\d+)");
+  public static final Pattern HIVE_TEZ_COMPLETE = Pattern.compile("(Map|Reducer) (\\d+:) (\\d+(\\(\\+\\d+\\))?/\\d+)");
+  /**
+   * Pig on Tez produces progress report that looks like this
+   * DAG Status: status=RUNNING, progress=TotalTasks: 3 Succeeded: 0 Running: 0 Failed: 0 Killed: 0
+   *
+   * Use Succeeded/TotalTasks to report progress
+   * There is a hole as Pig might launch more than one DAGs. If this happens, user might
+   * see progress rewind since the percentage is for the new DAG. To fix this, We need to fix
+   * Pig print total number of DAGs on console, and track complete DAGs in WebHCat.
+   */
+  public static final Pattern PIG_TEZ_COMPLETE = Pattern.compile("progress=TotalTasks: (\\d+) Succeeded: (\\d+)");
   public static final Pattern TEZ_COUNTERS = Pattern.compile("\\d+");
 
   /**
@@ -132,19 +142,19 @@ public class TempletonUtils {
     Matcher pig = PIG_COMPLETE.matcher(line);
     if (pig.find())
       return pig.group().trim();
-    
+
     Matcher hive = HIVE_COMPLETE.matcher(line);
     if(hive.find()) {
       return "map " + hive.group(1) + " reduce " + hive.group(2);
     }
-    Matcher tez = TEZ_COMPLETE.matcher(line);
-    if(tez.find()) {
+    Matcher hiveTez = HIVE_TEZ_COMPLETE.matcher(line);
+    if(hiveTez.find()) {
       int totalTasks = 0;
       int completedTasks = 0;
       do {
         //here each group looks something like "Map 2: 2/4" "Reducer 3: 1(+2)/4"
         //just parse the numbers and ignore one from "Map 2" and from "(+2)" if it's there
-        Matcher counts = TEZ_COUNTERS.matcher(tez.group());
+        Matcher counts = TEZ_COUNTERS.matcher(hiveTez.group());
         List<String> items = new ArrayList<String>(4);
         while(counts.find()) {
           items.add(counts.group());
@@ -156,11 +166,20 @@ public class TempletonUtils {
         else {
           totalTasks += Integer.parseInt(items.get(3));
         }
-      } while(tez.find());
+      } while(hiveTez.find());
       if(totalTasks == 0) {
         return "0% complete (0 total tasks)";
       }
       return completedTasks * 100 / totalTasks + "% complete";
+    }
+    Matcher pigTez = PIG_TEZ_COMPLETE.matcher(line);
+    if(pigTez.find()) {
+      int totalTasks = Integer.parseInt(pigTez.group(1));
+      int completedTasks = Integer.parseInt(pigTez.group(2));
+      if(totalTasks == 0) {
+          return "0% complete (0 total tasks)";
+        }
+        return completedTasks * 100 / totalTasks + "% complete";
     }
     return null;
   }
@@ -274,7 +293,7 @@ public class TempletonUtils {
     if(!fs.exists(p)) {
       return Collections.emptyList();
     }
-    List<FileStatus> children = ShimLoader.getHadoopShims().listLocatedStatus(fs, p, null);
+    FileStatus[] children = fs.listStatus(p);
     if(!isset(children)) {
       return Collections.emptyList();
     }
@@ -327,9 +346,10 @@ public class TempletonUtils {
     }
     final String finalFName = new String(fname);
 
-    final FileSystem defaultFs = 
+    final FileSystem defaultFs =
         ugi.doAs(new PrivilegedExceptionAction<FileSystem>() {
-          public FileSystem run() 
+          @Override
+          public FileSystem run()
             throws URISyntaxException, IOException, InterruptedException {
             return FileSystem.get(new URI(finalFName), conf);
           }
@@ -379,48 +399,6 @@ public class TempletonUtils {
     }
 
     return env;
-  }
-
-  // Add double quotes around the given input parameter if it is not already
-  // quoted. Quotes are not allowed in the middle of the parameter, and
-  // BadParam exception is thrown if this is the case.
-  //
-  // This method should be used to escape parameters before they get passed to
-  // Windows cmd scripts (specifically, special characters like a comma or an
-  // equal sign might be lost as part of the cmd script processing if not
-  // under quotes).
-  public static String quoteForWindows(String param) throws BadParam {
-    if (Shell.WINDOWS) {
-      if (param != null && param.length() > 0) {
-        String nonQuotedPart = param;
-        boolean addQuotes = true;
-        if (param.charAt(0) == '\"' && param.charAt(param.length() - 1) == '\"') {
-          if (param.length() < 2)
-            throw new BadParam("Passed in parameter is incorrectly quoted: " + param);
-
-          addQuotes = false;
-          nonQuotedPart = param.substring(1, param.length() - 1);
-        }
-
-        // If we have any quotes other then the outside quotes, throw
-        if (nonQuotedPart.contains("\"")) {
-          throw new BadParam("Passed in parameter is incorrectly quoted: " + param);
-        }
-
-        if (addQuotes) {
-          param = '\"' + param + '\"';
-        }
-      }
-    }
-    return param;
-  }
-
-  public static void addCmdForWindows(ArrayList<String> args) {
-    if(Shell.WINDOWS){
-      args.add("cmd");
-      args.add("/c");
-      args.add("call");
-    }
   }
 
   /**
@@ -483,7 +461,8 @@ public class TempletonUtils {
         }
       }
       else {
-        sb.append(propKey).append('=').append(map.get(propKey)).append('\n');
+        sb.append(propKey).append('=').append(LogUtils.maskIfPassword(propKey, map.get(propKey)));
+        sb.append('\n');
       }
     }
     return sb.append("END").append(header).append('\n');

@@ -1,5 +1,5 @@
 DROP TABLE hbase_table_1;
-CREATE TABLE hbase_table_1(key int, value string) 
+CREATE TABLE hbase_table_1(key int comment 'It is a column key', value string comment 'It is the column string value')
 STORED BY 'org.apache.hadoop.hive.hbase.HBaseStorageHandler'
 WITH SERDEPROPERTIES ("hbase.columns.mapping" = "cf:string")
 TBLPROPERTIES ("hbase.table.name" = "hbase_table_0");
@@ -148,9 +148,51 @@ FROM src WHERE key=98 OR key=100;
 
 SELECT * FROM hbase_table_8 ORDER BY key;
 
+DROP TABLE IF EXISTS hbase_table_3_like;
+CREATE TABLE hbase_table_3_like LIKE hbase_table_3;
+DESCRIBE EXTENDED hbase_table_3_like;
+
+INSERT OVERWRITE TABLE hbase_table_3_like SELECT * FROM hbase_table_3;
+SELECT * FROM hbase_table_3_like ORDER BY key, value LIMIT 5;
+
+DROP TABLE IF EXISTS hbase_table_1_like;
+CREATE EXTERNAL TABLE hbase_table_1_like LIKE hbase_table_1;
+DESCRIBE EXTENDED hbase_table_1_like;
+
+INSERT OVERWRITE TABLE hbase_table_1_like SELECT * FROM hbase_table_1;
+SELECT COUNT(*) FROM hbase_table_1_like;
+
+SHOW CREATE TABLE hbase_table_1_like;
+
+DROP TABLE IF EXISTS hbase_table_9;
+CREATE TABLE hbase_table_9 (id bigint, data map<string, string>, str string)
+stored by 'org.apache.hadoop.hive.hbase.HBaseStorageHandler'
+with serdeproperties ("hbase.columns.mapping" = ":key,cf:map_col#s:s,cf:str_col");
+
+insert overwrite table hbase_table_9 select 1 as id, map('abcd', null) as data , null as str from src limit 1;
+insert into table hbase_table_9 select 2 as id, map('efgh', null) as data , '1234' as str from src limit 1;
+insert into table hbase_table_9 select 3 as id, map('hij', '') as data , '1234' as str from src limit 1;
+insert into table hbase_table_9 select 4 as id, map('klm', 'avalue') as data , '1234' as str from src limit 1;
+insert into table hbase_table_9 select 5 as id, map('key1',null, 'key2', 'avalue') as data , '1234' as str from src limit 1;
+select * from hbase_table_9;
+
+DROP TABLE IF EXISTS hbase_table_10;
+CREATE TABLE hbase_table_10 (id bigint, data map<int, int>, str string)
+stored by 'org.apache.hadoop.hive.hbase.HBaseStorageHandler'
+with serdeproperties ("hbase.columns.mapping" = ":key,cf:map_col2,cf:str2_col");
+insert overwrite table hbase_table_10 select 1 as id, map(10, cast(null as int)) as data , null as str from src limit 1;
+insert into table hbase_table_10 select 2 as id, map(20, cast(null as int)) as data , '1234' as str from src limit 1;
+insert into table hbase_table_10 select 3 as id, map(30, 31) as data , '1234' as str from src limit 1;
+insert into table hbase_table_10 select 4 as id, map(40, cast(null as int), 45, cast(null as int)) as data , '1234' as str from src limit 1;
+insert into table hbase_table_10 select 5 as id, map(50,cast(null as int), 55, 58) as data , '1234' as str from src limit 1;
+select * from hbase_table_10;
+
+
 DROP TABLE hbase_table_1;
+DROP TABLE hbase_table_1_like;
 DROP TABLE hbase_table_2;
 DROP TABLE hbase_table_3;
+DROP TABLE hbase_table_3_like;
 DROP TABLE hbase_table_4;
 DROP TABLE hbase_table_5;
 DROP TABLE hbase_table_6;
@@ -158,3 +200,5 @@ DROP TABLE hbase_table_7;
 DROP TABLE hbase_table_8;
 DROP TABLE empty_hbase_table;
 DROP TABLE empty_normal_table;
+DROP TABLE hbase_table_9;
+DROP TABLE hbase_table_10;

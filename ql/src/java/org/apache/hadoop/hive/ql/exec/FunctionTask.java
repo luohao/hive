@@ -25,8 +25,9 @@ import java.util.List;
 
 import com.google.common.collect.HashMultimap;
 import com.google.common.collect.Multimap;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.metastore.api.Function;
@@ -34,8 +35,10 @@ import org.apache.hadoop.hive.metastore.api.PrincipalType;
 import org.apache.hadoop.hive.metastore.api.ResourceType;
 import org.apache.hadoop.hive.metastore.api.ResourceUri;
 import org.apache.hadoop.hive.ql.exec.FunctionInfo.FunctionResource;
+import org.apache.hadoop.hive.ql.CompilationOpContext;
 import org.apache.hadoop.hive.ql.DriverContext;
 import org.apache.hadoop.hive.ql.QueryPlan;
+import org.apache.hadoop.hive.ql.QueryState;
 import org.apache.hadoop.hive.ql.metadata.Hive;
 import org.apache.hadoop.hive.ql.metadata.HiveException;
 import org.apache.hadoop.hive.ql.plan.CreateFunctionDesc;
@@ -45,6 +48,7 @@ import org.apache.hadoop.hive.ql.plan.DropMacroDesc;
 import org.apache.hadoop.hive.ql.plan.FunctionWork;
 import org.apache.hadoop.hive.ql.plan.api.StageType;
 import org.apache.hadoop.hive.ql.session.SessionState;
+import org.apache.hadoop.hive.ql.util.ResourceDownloader;
 import org.apache.hadoop.util.StringUtils;
 
 /**
@@ -53,15 +57,16 @@ import org.apache.hadoop.util.StringUtils;
  */
 public class FunctionTask extends Task<FunctionWork> {
   private static final long serialVersionUID = 1L;
-  private static transient final Log LOG = LogFactory.getLog(FunctionTask.class);
+  private static transient final Logger LOG = LoggerFactory.getLogger(FunctionTask.class);
 
   public FunctionTask() {
     super();
   }
 
   @Override
-  public void initialize(HiveConf conf, QueryPlan queryPlan, DriverContext ctx) {
-    super.initialize(conf, queryPlan, ctx);
+  public void initialize(QueryState queryState, QueryPlan queryPlan, DriverContext ctx,
+      CompilationOpContext opContext) {
+    super.initialize(queryState, queryPlan, ctx, opContext);
   }
 
   @Override
@@ -98,7 +103,7 @@ public class FunctionTask extends Task<FunctionWork> {
 
     if (work.getReloadFunctionDesc() != null) {
       try {
-        Hive.reloadFunctions();
+        Hive.get().reloadFunctions();
       } catch (Exception e) {
         setException(e);
         LOG.error(stringifyException(e));
@@ -133,8 +138,16 @@ public class FunctionTask extends Task<FunctionWork> {
     // For permanent functions, check for any resources from local filesystem.
     checkLocalFunctionResources(db, createFunctionDesc.getResources());
 
-    FunctionInfo registered = FunctionRegistry.registerPermanentFunction(
+    FunctionInfo registered = null;
+    try {
+      registered = FunctionRegistry.registerPermanentFunction(
         registeredName, className, true, toFunctionResource(resources));
+    } catch (RuntimeException ex) {
+      Throwable t = ex;
+      while (t.getCause() != null) {
+        t = t.getCause();
+      }
+    }
     if (registered == null) {
       console.printError("Failed to register " + registeredName
           + " using class " + createFunctionDesc.getClassName());
@@ -237,7 +250,7 @@ public class FunctionTask extends Task<FunctionWork> {
       throws HiveException {
     // If this is a non-local warehouse, then adding resources from the local filesystem
     // may mean that other clients will not be able to access the resources.
-    // So disallow resources from local filesystem in this case. 
+    // So disallow resources from local filesystem in this case.
     if (resources != null && resources.size() > 0) {
       try {
         String localFsScheme = FileSystem.getLocal(db.getConf()).getUri().getScheme();
@@ -249,7 +262,7 @@ public class FunctionTask extends Task<FunctionWork> {
 
         for (ResourceUri res : resources) {
           String resUri = res.getUri();
-          if (!SessionState.canDownloadResource(resUri)) {
+          if (ResourceDownloader.isFileUri(resUri)) {
             throw new HiveException("Hive warehouse is non-local, but "
                 + res.getUri() + " specifies file on local filesystem. "
                 + "Resources on non-local warehouse should specify a non-local scheme/path");
@@ -258,7 +271,7 @@ public class FunctionTask extends Task<FunctionWork> {
       } catch (HiveException e) {
         throw e;
       } catch (Exception e) {
-        LOG.error(e);
+        LOG.error("Exception caught in checkLocalFunctionResources", e);
         throw new HiveException(e);
       }
     }
@@ -278,7 +291,7 @@ public class FunctionTask extends Task<FunctionWork> {
     return converted;
   }
 
-  private static SessionState.ResourceType getResourceType(ResourceType rt) throws HiveException {
+  public static SessionState.ResourceType getResourceType(ResourceType rt) {
     switch (rt) {
       case JAR:
         return SessionState.ResourceType.JAR;
@@ -287,7 +300,7 @@ public class FunctionTask extends Task<FunctionWork> {
       case ARCHIVE:
         return SessionState.ResourceType.ARCHIVE;
       default:
-        throw new HiveException("Unexpected resource type " + rt);
+        throw new AssertionError("Unexpected resource type " + rt);
     }
   }
 

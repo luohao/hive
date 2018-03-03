@@ -68,6 +68,10 @@ public class ParquetHiveArrayInspector implements SettableListObjectInspector {
       }
     }
 
+    if (data instanceof List) {
+      return ((List)data).get(index);
+    }
+
     throw new UnsupportedOperationException("Cannot inspect " + data.getClass().getCanonicalName());
   }
 
@@ -79,11 +83,15 @@ public class ParquetHiveArrayInspector implements SettableListObjectInspector {
 
     if (data instanceof ArrayWritable) {
       final Writable[] array = ((ArrayWritable) data).get();
-      if (array == null || array.length == 0) {
+      if (array == null) {
         return -1;
       }
 
       return array.length;
+    }
+
+    if (data instanceof List) {
+      return ((List)data).size();
     }
 
     throw new UnsupportedOperationException("Cannot inspect " + data.getClass().getCanonicalName());
@@ -97,7 +105,7 @@ public class ParquetHiveArrayInspector implements SettableListObjectInspector {
 
     if (data instanceof ArrayWritable) {
       final Writable[] array = ((ArrayWritable) data).get();
-      if (array == null || array.length == 0) {
+      if (array == null) {
         return null;
       }
 
@@ -107,6 +115,10 @@ public class ParquetHiveArrayInspector implements SettableListObjectInspector {
       }
 
       return list;
+    }
+
+    if (data instanceof List) {
+      return (List<?>)data;
     }
 
     throw new UnsupportedOperationException("Cannot inspect " + data.getClass().getCanonicalName());

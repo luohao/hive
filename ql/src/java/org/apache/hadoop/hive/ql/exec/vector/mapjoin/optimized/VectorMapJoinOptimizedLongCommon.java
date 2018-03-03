@@ -20,8 +20,8 @@ package org.apache.hadoop.hive.ql.exec.vector.mapjoin.optimized;
 
 import java.io.IOException;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.hive.ql.exec.vector.mapjoin.optimized.VectorMapJoinOptimizedHashTable.SerializedBytes;
 import org.apache.hadoop.hive.ql.plan.VectorMapJoinDesc.HashTableKeyType;
 import org.apache.hadoop.hive.serde2.ByteStream.Output;
@@ -35,7 +35,7 @@ import org.apache.hadoop.hive.serde2.binarysortable.fast.BinarySortableSerialize
  */
 public class VectorMapJoinOptimizedLongCommon {
 
-  private static final Log LOG = LogFactory.getLog(VectorMapJoinOptimizedLongCommon.class.getName());
+  private static final Logger LOG = LoggerFactory.getLogger(VectorMapJoinOptimizedLongCommon.class.getName());
 
   private boolean isOuterJoin;
 
@@ -64,62 +64,6 @@ public class VectorMapJoinOptimizedLongCommon {
   public long max() {
     return max;
   }
-
-  /*
-   * For now, just use MapJoinBytesTableContainer / HybridHashTableContainer directly.
-
-  public void adaptPutRow(VectorMapJoinOptimizedHashTable hashTable,
-      BytesWritable currentKey, BytesWritable currentValue)
-      throws SerDeException, HiveException, IOException {
-
-    if (useMinMax) {
-      // Peek at the BinarySortable key to extract the long so we can determine min and max.
-      byte[] keyBytes = currentKey.getBytes();
-      int keyLength = currentKey.getLength();
-      keyBinarySortableDeserializeRead.set(keyBytes, 0, keyLength);
-      if (keyBinarySortableDeserializeRead.readCheckNull()) {
-        if (isOuterJoin) {
-          return;
-        } else {
-          // For inner join, we expect all NULL values to have been filtered out before now.
-          throw new HiveException("Unexpected NULL");
-        }
-      }
-      long key = 0;
-      switch (hashTableKeyType) {
-      case BOOLEAN:
-        key = (keyBinarySortableDeserializeRead.readBoolean() ? 1 : 0);
-        break;
-      case BYTE:
-        key = (long) keyBinarySortableDeserializeRead.readByte();
-        break;
-      case SHORT:
-        key = (long) keyBinarySortableDeserializeRead.readShort();
-        break;
-      case INT:
-        key = (long) keyBinarySortableDeserializeRead.readInt();
-        break;
-      case LONG:
-        key = keyBinarySortableDeserializeRead.readLong();
-        break;
-      default:
-        throw new RuntimeException("Unexpected hash table key type " + hashTableKeyType.name());
-      }
-      if (key < min) {
-        min = key;
-      }
-      if (key > max) {
-        max = key;
-      }
-
-      // byte[] bytes = Arrays.copyOf(currentKey.get(), currentKey.getLength());
-      // LOG.debug("VectorMapJoinOptimizedLongCommon adaptPutRow key " + key + " min " + min + " max " + max + " hashTableKeyType " + hashTableKeyType.name() + " hex " + Hex.encodeHexString(bytes));
-
-    }
-
-    hashTable.putRowInternal(currentKey, currentValue);
-  }
-  */
 
   public SerializedBytes serialize(long key) throws IOException {
     keyBinarySortableSerializeWrite.reset();
@@ -161,8 +105,6 @@ public class VectorMapJoinOptimizedLongCommon {
     min = Long.MAX_VALUE;
     max = Long.MIN_VALUE;
     this.hashTableKeyType = hashTableKeyType;
-    // PrimitiveTypeInfo[] primitiveTypeInfos = { TypeInfoFactory.longTypeInfo };
-    // keyBinarySortableDeserializeRead = new BinarySortableDeserializeRead(primitiveTypeInfos);
     keyBinarySortableSerializeWrite = new BinarySortableSerializeWrite(1);
     output = new Output();
     keyBinarySortableSerializeWrite.set(output);

@@ -28,8 +28,8 @@ import java.util.SortedMap;
 import java.util.TreeMap;
 
 import org.apache.commons.lang.NotImplementedException;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
@@ -50,6 +50,7 @@ import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.mapred.JobConf;
 import org.apache.hadoop.mapreduce.Job;
 import org.apache.hadoop.mapreduce.JobContext;
+import org.apache.hadoop.mapreduce.lib.output.FileOutputCommitter;
 import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat;
 import org.apache.hadoop.util.Progressable;
 
@@ -64,7 +65,7 @@ public class HiveHFileOutputFormat extends
 
   public static final String HFILE_FAMILY_PATH = "hfile.family.path";
 
-  static final Log LOG = LogFactory.getLog(HiveHFileOutputFormat.class.getName());
+  static final Logger LOG = LoggerFactory.getLogger(HiveHFileOutputFormat.class.getName());
 
   private
   org.apache.hadoop.mapreduce.RecordWriter<ImmutableBytesWritable, KeyValue>
@@ -115,6 +116,7 @@ public class HiveHFileOutputFormat extends
           job.getConfiguration(), progressable);
 
     final Path outputdir = FileOutputFormat.getOutputPath(tac);
+    final Path taskAttemptOutputdir = new FileOutputCommitter(outputdir, tac).getWorkPath();
     final org.apache.hadoop.mapreduce.RecordWriter<
       ImmutableBytesWritable, KeyValue> fileWriter = getFileWriter(tac);
 
@@ -148,7 +150,7 @@ public class HiveHFileOutputFormat extends
           // location specified by the user.
           FileSystem fs = outputdir.getFileSystem(jc);
           fs.mkdirs(columnFamilyPath);
-          Path srcDir = outputdir;
+          Path srcDir = taskAttemptOutputdir;
           for (;;) {
             FileStatus [] files = fs.listStatus(srcDir, FileUtils.STAGING_DIR_PATH_FILTER);
             if ((files == null) || (files.length == 0)) {
@@ -161,6 +163,11 @@ public class HiveHFileOutputFormat extends
             if (srcDir.getName().equals(columnFamilyName)) {
               break;
             }
+            if (files[0].isFile()) {
+              throw new IOException("No family directories found in " + taskAttemptOutputdir + ". "
+                  + "The last component in hfile path should match column family name "
+                  + columnFamilyName);
+            }
           }
           for (FileStatus regionFile : fs.listStatus(srcDir, FileUtils.STAGING_DIR_PATH_FILTER)) {
             fs.rename(
@@ -171,8 +178,8 @@ public class HiveHFileOutputFormat extends
           }
           // Hive actually wants a file as task output (not a directory), so
           // replace the empty directory with an empty file to keep it happy.
-          fs.delete(outputdir, true);
-          fs.createNewFile(outputdir);
+          fs.delete(taskAttemptOutputdir, true);
+          fs.createNewFile(taskAttemptOutputdir);
         } catch (InterruptedException ex) {
           throw new IOException(ex);
         }

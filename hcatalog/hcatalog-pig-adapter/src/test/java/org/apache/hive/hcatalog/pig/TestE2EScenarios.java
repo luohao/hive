@@ -62,7 +62,7 @@ import org.junit.Test;
 
 public class TestE2EScenarios {
   private static final String TEST_DATA_DIR = System.getProperty("java.io.tmpdir") + File.separator
-      + TestHCatLoader.class.getCanonicalName() + "-" + System.currentTimeMillis();
+      + TestE2EScenarios.class.getCanonicalName() + "-" + System.currentTimeMillis();
   private static final String TEST_WAREHOUSE_DIR = TEST_DATA_DIR + "/warehouse";
 
   private static final String TEXTFILE_LOCN = TEST_DATA_DIR + "/textfile";
@@ -88,6 +88,9 @@ public class TestE2EScenarios {
     hiveConf.set(HiveConf.ConfVars.POSTEXECHOOKS.varname, "");
     hiveConf.set(HiveConf.ConfVars.HIVE_SUPPORT_CONCURRENCY.varname, "false");
     hiveConf.set(HiveConf.ConfVars.METASTOREWAREHOUSE.varname, TEST_WAREHOUSE_DIR);
+    hiveConf
+    .setVar(HiveConf.ConfVars.HIVE_AUTHORIZATION_MANAGER,
+        "org.apache.hadoop.hive.ql.security.authorization.plugin.sqlstd.SQLStdHiveAuthorizerFactory");
     driver = new Driver(hiveConf);
     SessionState.start(new CliSessionState(hiveConf));
 

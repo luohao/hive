@@ -19,14 +19,14 @@
 package org.apache.hadoop.hive.ql.exec.vector;
 
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hive.ql.CompilationOpContext;
 import org.apache.hadoop.hive.ql.exec.SparkHashTableSinkOperator;
 import org.apache.hadoop.hive.ql.metadata.HiveException;
 import org.apache.hadoop.hive.ql.plan.OperatorDesc;
 import org.apache.hadoop.hive.ql.plan.SparkHashTableSinkDesc;
 import org.apache.hadoop.hive.serde2.objectinspector.StructObjectInspector;
 
-import java.util.Collection;
-import java.util.concurrent.Future;
+import com.google.common.annotations.VisibleForTesting;
 
 /**
  * Vectorized version of SparkHashTableSinkOperator
@@ -46,30 +46,35 @@ public class VectorSparkHashTableSinkOperator extends SparkHashTableSinkOperator
 
   private transient boolean firstBatch;
 
-  private transient VectorExtractRowDynBatch vectorExtractRowDynBatch;
+  private transient VectorExtractRow vectorExtractRow;
 
   protected transient Object[] singleRow;
 
+  /** Kryo ctor. */
+  @VisibleForTesting
   public VectorSparkHashTableSinkOperator() {
+    super();
   }
 
-  public VectorSparkHashTableSinkOperator(VectorizationContext vContext, OperatorDesc conf) {
-    super();
+  public VectorSparkHashTableSinkOperator(CompilationOpContext ctx) {
+    super(ctx);
+  }
+
+  public VectorSparkHashTableSinkOperator(
+      CompilationOpContext ctx, VectorizationContext vContext, OperatorDesc conf) {
+    this(ctx);
     this.vContext = vContext;
     this.conf = (SparkHashTableSinkDesc) conf;
   }
 
   @Override
-  protected Collection<Future<?>> initializeOp(Configuration hconf) throws HiveException {
+  protected void initializeOp(Configuration hconf) throws HiveException {
     inputObjInspectors[0] =
         VectorizedBatchUtil.convertToStandardStructObjectInspector((StructObjectInspector) inputObjInspectors[0]);
 
-    Collection<Future<?>> result = super.initializeOp(hconf);
-    assert result.isEmpty();
+    super.initializeOp(hconf);
 
     firstBatch = true;
-
-    return result;
   }
 
   @Override
@@ -77,28 +82,26 @@ public class VectorSparkHashTableSinkOperator extends SparkHashTableSinkOperator
     VectorizedRowBatch batch = (VectorizedRowBatch) row;
 
     if (firstBatch) {
-      vectorExtractRowDynBatch = new VectorExtractRowDynBatch();
-      vectorExtractRowDynBatch.init((StructObjectInspector) inputObjInspectors[0], vContext.getProjectedColumns());
+      vectorExtractRow = new VectorExtractRow();
+      vectorExtractRow.init((StructObjectInspector) inputObjInspectors[0], vContext.getProjectedColumns());
 
-      singleRow = new Object[vectorExtractRowDynBatch.getCount()];
+      singleRow = new Object[vectorExtractRow.getCount()];
 
       firstBatch = false;
     }
-    vectorExtractRowDynBatch.setBatchOnEntry(batch);
+
     if (batch.selectedInUse) {
       int selected[] = batch.selected;
       for (int logical = 0 ; logical < batch.size; logical++) {
         int batchIndex = selected[logical];
-        vectorExtractRowDynBatch.extractRow(batchIndex, singleRow);
+        vectorExtractRow.extractRow(batch, batchIndex, singleRow);
         super.process(singleRow, tag);
       }
     } else {
       for (int batchIndex = 0 ; batchIndex < batch.size; batchIndex++) {
-        vectorExtractRowDynBatch.extractRow(batchIndex, singleRow);
+        vectorExtractRow.extractRow(batch, batchIndex, singleRow);
         super.process(singleRow, tag);
       }
     }
-
-    vectorExtractRowDynBatch.forgetBatchOnExit();
   }
 }

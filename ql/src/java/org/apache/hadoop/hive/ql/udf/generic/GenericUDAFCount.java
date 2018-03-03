@@ -17,12 +17,17 @@
  */
 package org.apache.hadoop.hive.ql.udf.generic;
 
+import java.util.HashSet;
+
 import org.apache.hadoop.hive.ql.exec.Description;
 import org.apache.hadoop.hive.ql.exec.UDFArgumentException;
 import org.apache.hadoop.hive.ql.metadata.HiveException;
 import org.apache.hadoop.hive.ql.parse.SemanticException;
 import org.apache.hadoop.hive.ql.util.JavaDataModel;
 import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspector;
+import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspectorUtils;
+import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspectorUtils.ObjectInspectorCopyOption;
+import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspectorUtils.ObjectInspectorObject;
 import org.apache.hadoop.hive.serde2.objectinspector.primitive.LongObjectInspector;
 import org.apache.hadoop.hive.serde2.objectinspector.primitive.PrimitiveObjectInspectorFactory;
 import org.apache.hadoop.hive.serde2.typeinfo.TypeInfo;
@@ -67,8 +72,12 @@ public class GenericUDAFCount implements GenericUDAFResolver2 {
       assert !paramInfo.isAllColumns() : "* not supported in expression list";
     }
 
-    return new GenericUDAFCountEvaluator().setCountAllColumns(
-        paramInfo.isAllColumns());
+    GenericUDAFCountEvaluator countEvaluator = new GenericUDAFCountEvaluator();
+    countEvaluator.setWindowing(paramInfo.isWindowing());
+    countEvaluator.setCountAllColumns(paramInfo.isAllColumns());
+    countEvaluator.setCountDistinct(paramInfo.isDistinct());
+
+    return countEvaluator;
   }
 
   /**
@@ -76,8 +85,11 @@ public class GenericUDAFCount implements GenericUDAFResolver2 {
    *
    */
   public static class GenericUDAFCountEvaluator extends GenericUDAFEvaluator {
+    private boolean isWindowing = false;
     private boolean countAllColumns = false;
+    private boolean countDistinct = false;
     private LongObjectInspector partialCountAggOI;
+    private ObjectInspector[] inputOI, outputOI;
     private LongWritable result;
 
     @Override
@@ -86,19 +98,36 @@ public class GenericUDAFCount implements GenericUDAFResolver2 {
       super.init(m, parameters);
       if (mode == Mode.PARTIAL2 || mode == Mode.FINAL) {
         partialCountAggOI = (LongObjectInspector)parameters[0];
+      } else {
+        inputOI = parameters;
+        outputOI = ObjectInspectorUtils.getStandardObjectInspector(inputOI,
+            ObjectInspectorCopyOption.JAVA);
       }
       result = new LongWritable(0);
+
       return PrimitiveObjectInspectorFactory.writableLongObjectInspector;
     }
 
-    private GenericUDAFCountEvaluator setCountAllColumns(boolean countAllCols) {
+    public void setWindowing(boolean isWindowing) {
+      this.isWindowing = isWindowing;
+    }
+
+    private void setCountAllColumns(boolean countAllCols) {
       countAllColumns = countAllCols;
-      return this;
+    }
+
+    private void setCountDistinct(boolean countDistinct) {
+      this.countDistinct = countDistinct;
+    }
+
+    private boolean isWindowingDistinct() {
+      return isWindowing && countDistinct;
     }
 
     /** class for storing count value. */
     @AggregationType(estimable = true)
     static class CountAgg extends AbstractAggregationBuffer {
+      HashSet<ObjectInspectorObject> uniqueObjects; // Unique rows
       long value;
       @Override
       public int estimate() { return JavaDataModel.PRIMITIVES2; }
@@ -114,6 +143,7 @@ public class GenericUDAFCount implements GenericUDAFResolver2 {
     @Override
     public void reset(AggregationBuffer agg) throws HiveException {
       ((CountAgg) agg).value = 0;
+      ((CountAgg) agg).uniqueObjects = new HashSet<ObjectInspectorObject>();
     }
 
     @Override
@@ -134,6 +164,20 @@ public class GenericUDAFCount implements GenericUDAFResolver2 {
             break;
           }
         }
+
+        // Skip the counting if the values are the same for windowing COUNT(DISTINCT) case
+        if (countThisRow && isWindowingDistinct()) {
+          HashSet<ObjectInspectorObject> uniqueObjs = ((CountAgg) agg).uniqueObjects;
+          ObjectInspectorObject obj = new ObjectInspectorObject(
+              ObjectInspectorUtils.copyToStandardObject(parameters, inputOI, ObjectInspectorCopyOption.JAVA),
+              outputOI);
+          if (!uniqueObjs.contains(obj)) {
+            uniqueObjs.add(obj);
+          } else {
+            countThisRow = false;
+          }
+        }
+
         if (countThisRow) {
           ((CountAgg) agg).value++;
         }
@@ -144,8 +188,14 @@ public class GenericUDAFCount implements GenericUDAFResolver2 {
     public void merge(AggregationBuffer agg, Object partial)
       throws HiveException {
       if (partial != null) {
-        long p = partialCountAggOI.get(partial);
-        ((CountAgg) agg).value += p;
+        CountAgg countAgg = (CountAgg) agg;
+
+        if (isWindowingDistinct()) {
+          throw new HiveException("Distinct windowing UDAF doesn't support merge and terminatePartial");
+        } else {
+          long p = partialCountAggOI.get(partial);
+          countAgg.value += p;
+        }
       }
     }
 
@@ -157,7 +207,11 @@ public class GenericUDAFCount implements GenericUDAFResolver2 {
 
     @Override
     public Object terminatePartial(AggregationBuffer agg) throws HiveException {
-      return terminate(agg);
+      if (isWindowingDistinct()) {
+        throw new HiveException("Distinct windowing UDAF doesn't support merge and terminatePartial");
+      } else {
+        return terminate(agg);
+      }
     }
   }
 }

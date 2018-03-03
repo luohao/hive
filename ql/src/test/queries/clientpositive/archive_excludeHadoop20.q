@@ -1,7 +1,7 @@
+set hive.mapred.mode=nonstrict;
 set hive.archive.enabled = true;
-set hive.enforce.bucketing = true;
-set hive.exec.submitviachild=true;
-set hive.exec.submit.local.task.via.child=true;
+set hive.exec.submitviachild=false;
+set hive.exec.submit.local.task.via.child=false;
 
 drop table tstsrc;
 drop table tstsrcpart;

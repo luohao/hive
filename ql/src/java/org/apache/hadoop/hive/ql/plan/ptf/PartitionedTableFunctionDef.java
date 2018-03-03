@@ -122,8 +122,16 @@ public class PartitionedTableFunctionDef extends PTFInputDef {
         builder.append(", ");
       }
       builder.append(expression.getExprNode().getExprString());
-      if (expression.getOrder() == PTFInvocationSpec.Order.DESC) {
-        builder.append("(DESC)");
+      builder.append(" ");
+      if (expression.getOrder() == PTFInvocationSpec.Order.ASC) {
+        builder.append("ASC ");
+      } else {
+        builder.append("DESC ");
+      }
+      if (expression.getNullOrder() == PTFInvocationSpec.NullOrder.NULLS_FIRST) {
+        builder.append("NULLS FIRST");
+      } else {
+        builder.append("NULLS LAST");
       }
     }
     return builder.toString();
@@ -145,7 +153,7 @@ public class PartitionedTableFunctionDef extends PTFInputDef {
     this.args = args;
   }
 
-  @Explain(displayName = "arguments", explainLevels = { Level.USER, Level.DEFAULT, Level.EXTENDED })
+  @Explain(displayName = "arguments")
   public String getArgsExplain() {
     if (args == null) {
       return null;
@@ -189,7 +197,7 @@ public class PartitionedTableFunctionDef extends PTFInputDef {
     this.resolverClassName = resolverClassName;
   }
 
-  @Explain(displayName = "referenced columns", explainLevels = { Level.USER, Level.DEFAULT, Level.EXTENDED })
+  @Explain(displayName = "referenced columns")
   public List<String> getReferencedColumns() {
     return referencedColumns;
   }

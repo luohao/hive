@@ -21,8 +21,8 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.hive.ql.exec.CommonJoinOperator;
 import org.apache.hadoop.hive.ql.exec.FilterOperator;
 import org.apache.hadoop.hive.ql.exec.LateralViewForwardOperator;
@@ -61,8 +61,8 @@ import org.apache.hadoop.hive.ql.parse.SemanticException;
  * the join is unnecessarily processing these rows. With predicate pushdown,
  * these two predicates will be processed before the join.
  *
- * Predicate pushdown is enabled by setting hive.optimize.ppd to true. It is
- * disable by default.
+ * Predicate pushdown is disabled by setting hive.optimize.ppd to false. It is
+ * enabled by default.
  *
  * The high-level algorithm is describe here - An operator is processed after
  * all its children have been processed - An operator processes its own
@@ -79,9 +79,9 @@ import org.apache.hadoop.hive.ql.parse.SemanticException;
  * etc) change the columns as data flows through them. In such cases the column
  * references are replaced by the corresponding expression in the input data.
  */
-public class PredicatePushDown implements Transform {
+public class PredicatePushDown extends Transform {
 
-  private static final Log LOG = LogFactory.getLog(PredicatePushDown.class);
+  private static final Logger LOG = LoggerFactory.getLogger(PredicatePushDown.class);
   private ParseContext pGraphContext;
 
   @Override

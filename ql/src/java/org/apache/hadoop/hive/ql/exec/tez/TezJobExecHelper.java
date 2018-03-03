@@ -18,9 +18,10 @@
 
 package org.apache.hadoop.hive.ql.exec.tez;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.lang.reflect.Method;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 
 /**
  * TezJobExecHelper is a utility to safely call Tez functionality from
@@ -29,21 +30,38 @@ import org.apache.commons.logging.LogFactory;
  */
 public class TezJobExecHelper {
 
-  private static final Log LOG = LogFactory.getLog(TezJobExecHelper.class.getName());
+  private static final Logger LOG = LoggerFactory.getLogger(TezJobExecHelper.class.getName());
 
-  public static void killRunningJobs() {
+  private static final Method KILL_RUNNING_TEZ_JOBS;
+
+  static {
+    Method method = null;
     try {
       Class.forName("org.apache.tez.dag.api.DAG");
 
       // we have tez installed
       ClassLoader classLoader = TezJobExecHelper.class.getClassLoader();
-      Method method = classLoader.loadClass("org.apache.hadoop.hive.ql.exec.tez.TezJobMonitor")
-        .getMethod("killRunningJobs");
-      method.invoke(null, null);
+
+      method = classLoader
+          .loadClass("org.apache.hadoop.hive.ql.exec.tez.monitoring.TezJobMonitor")
+          .getDeclaredMethod("killRunningJobs");
+      method.setAccessible(true);
+    } catch (Exception e) {
+      LOG.error("Error getting tez method", e);
     }
-    catch (Exception e) {
+    KILL_RUNNING_TEZ_JOBS = method;
+  }
+
+  public static void killRunningJobs() {
+    try {
+      if (KILL_RUNNING_TEZ_JOBS != null) {
+        KILL_RUNNING_TEZ_JOBS.invoke(null, null);
+      } else {
+        LOG.warn("Unable to find tez method for killing jobs");
+      }
+    } catch (Exception e) {
       // It is not available do nothing
-      LOG.debug("Could not stop tez dags: ", e);
+      LOG.error("Could not stop tez dags: ", e);
     }
   }
 }

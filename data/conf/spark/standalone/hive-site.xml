@@ -45,15 +45,19 @@
 </property>
 
 <property>
-  <name>javax.jdo.option.ConnectionURL</name>
-  <value>jdbc:derby:;databaseName=${test.tmp.dir}/junit_metastore_db;create=true</value>
+  <name>datanucleus.schema.autoCreateAll</name>
+  <value>true</value>
 </property>
 
 <property>
-  <name>hive.stats.dbconnectionstring</name>
-  <value>jdbc:derby:;databaseName=${test.tmp.dir}/TempStatsStore;create=true</value>
+  <name>hive.metastore.schema.verification</name>
+  <value>false</value>
 </property>
 
+<property>
+  <name>javax.jdo.option.ConnectionURL</name>
+  <value>jdbc:derby:;databaseName=${test.tmp.dir}/junit_metastore_db;create=true</value>
+</property>
 
 <property>
   <name>javax.jdo.option.ConnectionDriverName</name>
@@ -186,7 +190,7 @@
 <property>
   <name>hive.stats.dbclass</name>
   <value>fs</value>
-  <description>The default storatge that stores temporary hive statistics. Currently, jdbc, hbase and counter type is supported</description>
+  <description>The default storatge that stores temporary hive statistics. Currently, fs type is supported</description>
 </property>
 
 <property>
@@ -217,7 +221,7 @@
 
 <property>
   <name>spark.driver.extraClassPath</name>
-  <value>${maven.local.repository}/org/apache/hive/hive-it-util/${hive.version}/hive-it-util-${hive.version}.jar:${maven.local.repository}/org/apache/hive/hive-exec/${hive.version}/hive-exec-${hive.version}.jar</value>
+  <value>${maven.local.repository}/org/apache/hive/hive-it-util/${hive.version}/hive-it-util-${hive.version}.jar:${maven.local.repository}/org/apache/hive/hive-exec/${hive.version}/hive-exec-${hive.version}.jar:${maven.local.repository}/org/antlr/antlr-runtime/${antlr.version}/antlr-runtime-${antlr.version}.jar</value>
 </property>
 
 <property>

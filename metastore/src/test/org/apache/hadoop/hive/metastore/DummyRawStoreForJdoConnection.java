@@ -18,6 +18,7 @@
 
 package org.apache.hadoop.hive.metastore;
 
+import java.nio.ByteBuffer;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -26,10 +27,12 @@ import junit.framework.Assert;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hive.conf.HiveConf;
+import org.apache.hadoop.hive.metastore.TableType;
 import org.apache.hadoop.hive.metastore.api.AggrStats;
 import org.apache.hadoop.hive.metastore.api.ColumnStatistics;
 import org.apache.hadoop.hive.metastore.api.CurrentNotificationEventId;
 import org.apache.hadoop.hive.metastore.api.Database;
+import org.apache.hadoop.hive.metastore.api.FileMetadataExprType;
 import org.apache.hadoop.hive.metastore.api.Function;
 import org.apache.hadoop.hive.metastore.api.HiveObjectPrivilege;
 import org.apache.hadoop.hive.metastore.api.Index;
@@ -47,18 +50,15 @@ import org.apache.hadoop.hive.metastore.api.PrincipalPrivilegeSet;
 import org.apache.hadoop.hive.metastore.api.PrincipalType;
 import org.apache.hadoop.hive.metastore.api.PrivilegeBag;
 import org.apache.hadoop.hive.metastore.api.Role;
+import org.apache.hadoop.hive.metastore.api.RolePrincipalGrant;
+import org.apache.hadoop.hive.metastore.api.SQLForeignKey;
+import org.apache.hadoop.hive.metastore.api.SQLPrimaryKey;
 import org.apache.hadoop.hive.metastore.api.Table;
+import org.apache.hadoop.hive.metastore.api.TableMeta;
 import org.apache.hadoop.hive.metastore.api.Type;
 import org.apache.hadoop.hive.metastore.api.UnknownDBException;
 import org.apache.hadoop.hive.metastore.api.UnknownPartitionException;
 import org.apache.hadoop.hive.metastore.api.UnknownTableException;
-import org.apache.hadoop.hive.metastore.model.MDBPrivilege;
-import org.apache.hadoop.hive.metastore.model.MGlobalPrivilege;
-import org.apache.hadoop.hive.metastore.model.MPartitionColumnPrivilege;
-import org.apache.hadoop.hive.metastore.model.MPartitionPrivilege;
-import org.apache.hadoop.hive.metastore.model.MRoleMap;
-import org.apache.hadoop.hive.metastore.model.MTableColumnPrivilege;
-import org.apache.hadoop.hive.metastore.model.MTablePrivilege;
 import org.apache.hadoop.hive.metastore.partition.spec.PartitionSpecProxy;
 import org.apache.thrift.TException;
 
@@ -105,6 +105,11 @@ public class DummyRawStoreForJdoConnection implements RawStore {
   @Override
   public boolean commitTransaction() {
 
+    return false;
+  }
+
+  @Override
+  public boolean isActiveTransaction() {
     return false;
   }
 
@@ -228,6 +233,17 @@ public class DummyRawStoreForJdoConnection implements RawStore {
   }
 
   @Override
+  public List<String> getTables(String dbName, String pattern, TableType tableType) throws MetaException {
+    return Collections.emptyList();
+  }
+
+  @Override
+  public List<TableMeta> getTableMeta(String dbNames, String tableNames, List<String> tableTypes)
+      throws MetaException {
+    return Collections.emptyList();
+  }
+
+  @Override
   public List<Table> getTableObjectsByName(String dbname, List<String> tableNames)
       throws MetaException, UnknownDBException {
 
@@ -338,6 +354,18 @@ public class DummyRawStoreForJdoConnection implements RawStore {
   }
 
   @Override
+  public int getNumPartitionsByFilter(String dbName, String tblName, String filter)
+    throws MetaException, NoSuchObjectException {
+    return -1;
+  }
+
+  @Override
+  public int getNumPartitionsByExpr(String dbName, String tblName, byte[] expr)
+      throws MetaException, NoSuchObjectException {
+    return -1;
+  }
+
+  @Override
   public Table markPartitionForEvent(String dbName, String tblName, Map<String, String> partVals,
       PartitionEventType evtType) throws MetaException, UnknownTableException,
       InvalidPartitionException, UnknownPartitionException {
@@ -419,44 +447,45 @@ public class DummyRawStoreForJdoConnection implements RawStore {
   }
 
   @Override
-  public List<MGlobalPrivilege> listPrincipalGlobalGrants(String principalName,
+  public List<HiveObjectPrivilege> listPrincipalGlobalGrants(String principalName,
       PrincipalType principalType) {
 
     return Collections.emptyList();
   }
 
   @Override
-  public List<MDBPrivilege> listPrincipalDBGrants(String principalName,
+  public List<HiveObjectPrivilege> listPrincipalDBGrants(String principalName,
       PrincipalType principalType, String dbName) {
 
     return Collections.emptyList();
   }
 
   @Override
-  public List<MTablePrivilege> listAllTableGrants(String principalName,
+  public List<HiveObjectPrivilege> listAllTableGrants(String principalName,
       PrincipalType principalType, String dbName, String tableName) {
 
     return Collections.emptyList();
   }
 
   @Override
-  public List<MPartitionPrivilege> listPrincipalPartitionGrants(String principalName,
-      PrincipalType principalType, String dbName, String tableName, String partName) {
+  public List<HiveObjectPrivilege> listPrincipalPartitionGrants(String principalName,
+      PrincipalType principalType, String dbName, String tableName, List<String> partValues,
+      String partName) {
 
     return Collections.emptyList();
   }
 
   @Override
-  public List<MTableColumnPrivilege> listPrincipalTableColumnGrants(String principalName,
+  public List<HiveObjectPrivilege> listPrincipalTableColumnGrants(String principalName,
       PrincipalType principalType, String dbName, String tableName, String columnName) {
 
     return Collections.emptyList();
   }
 
   @Override
-  public List<MPartitionColumnPrivilege> listPrincipalPartitionColumnGrants(String principalName,
-      PrincipalType principalType, String dbName, String tableName, String partName,
-      String columnName) {
+  public List<HiveObjectPrivilege> listPrincipalPartitionColumnGrants(String principalName,
+      PrincipalType principalType, String dbName, String tableName, List<String> partVals,
+      String partName, String columnName) {
 
     return Collections.emptyList();
   }
@@ -488,14 +517,20 @@ public class DummyRawStoreForJdoConnection implements RawStore {
   }
 
   @Override
-  public List<MRoleMap> listRoles(String principalName, PrincipalType principalType) {
+  public List<Role> listRoles(String principalName, PrincipalType principalType) {
 
     return Collections.emptyList();
   }
 
   @Override
-  public List<MRoleMap> listRoleMembers(String roleName) {
+  public List<RolePrincipalGrant> listRolesWithGrants(String principalName,
+                                                      PrincipalType principalType) {
     return Collections.emptyList();
+  }
+
+  @Override
+  public List<RolePrincipalGrant> listRoleMembers(String roleName) {
+    return null;
   }
 
   @Override
@@ -772,6 +807,89 @@ public class DummyRawStoreForJdoConnection implements RawStore {
   }
 
 
+  public void flushCache() {
+
+  }
+
+  @Override
+  public ByteBuffer[] getFileMetadata(List<Long> fileIds) {
+    return null;
+  }
+
+  @Override
+  public void putFileMetadata(
+      List<Long> fileIds, List<ByteBuffer> metadata, FileMetadataExprType type) {
+  }
+
+  @Override
+  public boolean isFileMetadataSupported() {
+    return false;
+  }
+
+  @Override
+  public void getFileMetadataByExpr(List<Long> fileIds, FileMetadataExprType type, byte[] expr,
+      ByteBuffer[] metadatas, ByteBuffer[] stripeBitsets, boolean[] eliminated) {
+  }
+
+  @Override
+  public int getTableCount() throws MetaException {
+    return 0;
+  }
+
+  @Override
+  public int getPartitionCount() throws MetaException {
+    return 0;
+  }
+
+  @Override
+  public int getDatabaseCount() throws MetaException {
+    return 0;
+  }
+
+  @Override
+  public FileMetadataHandler getFileMetadataHandler(FileMetadataExprType type) {
+    return null;
+  }
+
+  @Override
+  public List<SQLPrimaryKey> getPrimaryKeys(String db_name, String tbl_name)
+    throws MetaException {
+    // TODO Auto-generated method stub
+    return null;
+  }
+
+  @Override
+  public List<SQLForeignKey> getForeignKeys(String parent_db_name,
+    String parent_tbl_name, String foreign_db_name, String foreign_tbl_name)
+    throws MetaException {
+    // TODO Auto-generated method stub
+    return null;
+  }
+
+  @Override
+  public void createTableWithConstraints(Table tbl,
+    List<SQLPrimaryKey> primaryKeys, List<SQLForeignKey> foreignKeys)
+    throws InvalidObjectException, MetaException {
+    // TODO Auto-generated method stub
+  }
+
+  @Override
+  public void dropConstraint(String dbName, String tableName,
+  String constraintName) throws NoSuchObjectException {
+    // TODO Auto-generated method stub
+  }
+
+  @Override
+  public void addPrimaryKeys(List<SQLPrimaryKey> pks)
+    throws InvalidObjectException, MetaException {
+    // TODO Auto-generated method stub
+  }
+
+  @Override
+  public void addForeignKeys(List<SQLForeignKey> fks)
+    throws InvalidObjectException, MetaException {
+    // TODO Auto-generated method stub
+  }
 }
 
 

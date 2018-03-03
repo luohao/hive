@@ -21,18 +21,15 @@ package org.apache.hadoop.hive.ql.exec.persistence;
 import java.io.IOException;
 import java.io.ObjectOutputStream;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.hive.ql.exec.vector.VectorHashKeyWrapper;
 import org.apache.hadoop.hive.ql.exec.vector.VectorHashKeyWrapperBatch;
 import org.apache.hadoop.hive.ql.exec.vector.expressions.VectorExpressionWriter;
 import org.apache.hadoop.hive.ql.metadata.HiveException;
 import org.apache.hadoop.hive.serde2.ByteStream.Output;
-import org.apache.hadoop.hive.serde2.SerDe;
+import org.apache.hadoop.hive.serde2.AbstractSerDe;
 import org.apache.hadoop.hive.serde2.SerDeException;
 import org.apache.hadoop.hive.serde2.binarysortable.BinarySortableSerDe;
 import org.apache.hadoop.hive.serde2.lazybinary.LazyBinarySerDe;
@@ -40,8 +37,6 @@ import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspector;
 import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspector.Category;
 import org.apache.hadoop.hive.serde2.objectinspector.PrimitiveObjectInspector;
 import org.apache.hadoop.hive.serde2.objectinspector.PrimitiveObjectInspector.PrimitiveCategory;
-import org.apache.hadoop.hive.serde2.objectinspector.StructField;
-import org.apache.hadoop.hive.serde2.objectinspector.StructObjectInspector;
 import org.apache.hadoop.hive.serde2.typeinfo.PrimitiveTypeInfo;
 import org.apache.hadoop.hive.serde2.typeinfo.TypeInfo;
 import org.apache.hadoop.hive.serde2.typeinfo.TypeInfoUtils;
@@ -53,7 +48,6 @@ import org.apache.hadoop.io.Writable;
  */
 public abstract class MapJoinKey {
   private static final byte[] EMPTY_BYTE_ARRAY = new byte[0];
-
   public abstract void write(MapJoinObjectSerDeContext context, ObjectOutputStream out)
       throws IOException, SerDeException;
 
@@ -62,7 +56,7 @@ public abstract class MapJoinKey {
   @SuppressWarnings("deprecation")
   public static MapJoinKey read(Output output, MapJoinObjectSerDeContext context,
       Writable writable) throws SerDeException, HiveException {
-    SerDe serde = context.getSerDe();
+    AbstractSerDe serde = context.getSerDe();
     Object obj = serde.deserialize(writable);
     MapJoinKeyObject result = new MapJoinKeyObject();
     result.read(serde.getObjectInspector(), obj);
@@ -99,14 +93,17 @@ public abstract class MapJoinKey {
     return true;
   }
 
-  public static boolean isSupportedField(String typeName) {
-    TypeInfo typeInfo = TypeInfoUtils.getTypeInfoFromTypeString(typeName);
-
+  public static boolean isSupportedField(TypeInfo typeInfo) {
     if (typeInfo.getCategory() != Category.PRIMITIVE) return false; // not supported
     PrimitiveTypeInfo primitiveTypeInfo = (PrimitiveTypeInfo) typeInfo;
     PrimitiveCategory pc = primitiveTypeInfo.getPrimitiveCategory();
     if (!SUPPORTED_PRIMITIVES.contains(pc)) return false; // not supported
     return true;
+  }
+
+  public static boolean isSupportedField(String typeName) {
+    TypeInfo typeInfo = TypeInfoUtils.getTypeInfoFromTypeString(typeName);
+    return isSupportedField(typeInfo);
   }
 
 
@@ -123,7 +120,8 @@ public abstract class MapJoinKey {
    */
   public static Output serializeVector(Output byteStream, VectorHashKeyWrapper kw,
       VectorExpressionWriter[] keyOutputWriters, VectorHashKeyWrapperBatch keyWrapperBatch,
-      boolean[] nulls, boolean[] sortableSortOrders) throws HiveException, SerDeException {
+      boolean[] nulls, boolean[] sortableSortOrders, byte[] nullMarkers, byte[] notNullMarkers)
+              throws HiveException, SerDeException {
     Object[] fieldData = new Object[keyOutputWriters.length];
     List<ObjectInspector> fieldOis = new ArrayList<ObjectInspector>();
     for (int i = 0; i < keyOutputWriters.length; ++i) {
@@ -136,7 +134,8 @@ public abstract class MapJoinKey {
         nulls[i] = (fieldData[i] == null);
       }
     }
-    return serializeRow(byteStream, fieldData, fieldOis, sortableSortOrders);
+    return serializeRow(byteStream, fieldData, fieldOis, sortableSortOrders,
+            nullMarkers, notNullMarkers);
   }
 
   public static MapJoinKey readFromRow(Output output, MapJoinKey key, Object[] keyObject,
@@ -151,7 +150,8 @@ public abstract class MapJoinKey {
    * @param byteStream Output to reuse. Can be null, in that case a new one would be created.
    */
   public static Output serializeRow(Output byteStream, Object[] fieldData,
-      List<ObjectInspector> fieldOis, boolean[] sortableSortOrders) throws HiveException {
+      List<ObjectInspector> fieldOis, boolean[] sortableSortOrders,
+      byte[] nullMarkers, byte[] notNullMarkers) throws HiveException {
     if (byteStream == null) {
       byteStream = new Output();
     } else {
@@ -163,7 +163,8 @@ public abstract class MapJoinKey {
       } else if (sortableSortOrders == null) {
         LazyBinarySerDe.serializeStruct(byteStream, fieldData, fieldOis);
       } else {
-        BinarySortableSerDe.serializeStruct(byteStream, fieldData, fieldOis, sortableSortOrders);
+        BinarySortableSerDe.serializeStruct(byteStream, fieldData, fieldOis, sortableSortOrders,
+                nullMarkers, notNullMarkers);
       }
     } catch (SerDeException e) {
       throw new HiveException("Serialization error", e);

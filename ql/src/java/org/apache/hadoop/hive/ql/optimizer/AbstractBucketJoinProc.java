@@ -30,8 +30,6 @@ import java.util.Map.Entry;
 import java.util.Set;
 import java.util.Stack;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -60,8 +58,6 @@ import org.apache.hadoop.hive.ql.plan.OperatorDesc;
  * this transformation does bucket map join optimization.
  */
 abstract public class AbstractBucketJoinProc implements NodeProcessor {
-  private static final Log LOG =
-      LogFactory.getLog(AbstractBucketJoinProc.class.getName());
 
   protected ParseContext pGraphContext;
 
@@ -198,7 +194,7 @@ abstract public class AbstractBucketJoinProc implements NodeProcessor {
     LinkedHashMap<String, List<List<String>>> tblAliasToBucketedFilePathsInEachPartition =
         new LinkedHashMap<String, List<List<String>>>();
 
-    HashMap<String, Operator<? extends OperatorDesc>> topOps = pGraphContext.getTopOps();
+    HashMap<String, TableScanOperator> topOps = pGraphContext.getTopOps();
 
     HashMap<String, String> aliasToNewAliasMap = new HashMap<String, String>();
 
@@ -232,7 +228,7 @@ abstract public class AbstractBucketJoinProc implements NodeProcessor {
 
       // For nested sub-queries, the alias mapping is not maintained in QB currently.
       if (topOps.containsValue(tso)) {
-        for (Map.Entry<String, Operator<? extends OperatorDesc>> topOpEntry : topOps.entrySet()) {
+        for (Map.Entry<String, TableScanOperator> topOpEntry : topOps.entrySet()) {
           if (topOpEntry.getValue() == tso) {
             String newAlias = topOpEntry.getKey();
             if (!newAlias.equals(alias)) {

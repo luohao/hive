@@ -21,13 +21,10 @@ package org.apache.hadoop.hive.ql.exec;
 import java.io.Serializable;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collection;
 import java.util.List;
-import java.util.concurrent.Future;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hive.ql.CompilationOpContext;
 import org.apache.hadoop.hive.ql.metadata.HiveException;
 import org.apache.hadoop.hive.ql.plan.ExprNodeDesc;
 import org.apache.hadoop.hive.ql.plan.MuxDesc;
@@ -35,6 +32,8 @@ import org.apache.hadoop.hive.ql.plan.OperatorDesc;
 import org.apache.hadoop.hive.ql.plan.api.OperatorType;
 import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspector;
 import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspectorFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * MuxOperator is used in the Reduce side of MapReduce jobs optimized by Correlation Optimizer.
@@ -72,7 +71,7 @@ import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspectorFactory;
 public class MuxOperator extends Operator<MuxDesc> implements Serializable{
 
   private static final long serialVersionUID = 1L;
-  protected static final Log LOG = LogFactory.getLog(MuxOperator.class.getName());
+  protected static final Logger LOG = LoggerFactory.getLogger(MuxOperator.class.getName());
 
   /**
    * Handler is used to construct the key-value structure.
@@ -170,9 +169,18 @@ public class MuxOperator extends Operator<MuxDesc> implements Serializable{
   private transient long[] cntrs;
   private transient long[] nextCntrs;
 
+  /** Kryo ctor. */
+  protected MuxOperator() {
+    super();
+  }
+
+  public MuxOperator(CompilationOpContext ctx) {
+    super(ctx);
+  }
+
   @Override
-  protected Collection<Future<?>> initializeOp(Configuration hconf) throws HiveException {
-    Collection<Future<?>> result = super.initializeOp(hconf);
+  protected void initializeOp(Configuration hconf) throws HiveException {
+    super.initializeOp(hconf);
 
     // A MuxOperator should only have a single child
     if (childOperatorsArray.length != 1) {
@@ -208,7 +216,6 @@ public class MuxOperator extends Operator<MuxDesc> implements Serializable{
       cntrs[i] = 0;
       nextCntrs[i] = 1;
     }
-    return result;
   }
 
   /**
@@ -322,7 +329,7 @@ public class MuxOperator extends Operator<MuxDesc> implements Serializable{
    */
   @Override
   public String getName() {
-    return getOperatorName();
+    return MuxOperator.getOperatorName();
   }
 
   static public String getOperatorName() {

@@ -66,12 +66,13 @@ public class VectorMapJoinOptimizedHashMap
 
     @Override
     public boolean isCappedCountAvailable() {
-      return false;
+      return true;
     }
 
     @Override
     public int cappedCount() {
-      return 0;
+      // the return values are capped to return ==0, ==1 and >= 2
+      return hasRows() ? (isSingleRow() ? 1 : 2) : 0;
     }
 
     @Override
@@ -88,11 +89,6 @@ public class VectorMapJoinOptimizedHashMap
     }
 
     @Override
-    public boolean isEof() {
-      return bytesBytesMultiHashMapResult.isEof();
-    }
-
-    @Override
     public void forget() {
       bytesBytesMultiHashMapResult.forget();
       super.forget();
@@ -104,6 +100,11 @@ public class VectorMapJoinOptimizedHashMap
       sb.append("(" + super.toString() + ", ");
       sb.append("isSingleRow " + (joinResult() == JoinUtil.JoinResult.MATCH ? isSingleRow() : "<none>") + ")");
       return sb.toString();
+    }
+
+    @Override
+    public String getDetailedHashMapResultPositionString() {
+      return "(Not supported yet)";
     }
  }
 

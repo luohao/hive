@@ -13,8 +13,8 @@
  */
 package org.apache.hadoop.hive.ql.io.parquet.write;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.hive.common.type.HiveDecimal;
 import org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe;
 import org.apache.hadoop.hive.ql.io.parquet.timestamp.NanoTimeUtils;
@@ -59,7 +59,7 @@ import java.util.Map;
  * This class is only used through DataWritableWriteSupport class.
  */
 public class DataWritableWriter {
-  private static final Log LOG = LogFactory.getLog(DataWritableWriter.class);
+  private static final Logger LOG = LoggerFactory.getLogger(DataWritableWriter.class);
   protected final RecordConsumer recordConsumer;
   private final GroupType schema;
 
@@ -259,21 +259,24 @@ public class DataWritableWriter {
     @Override
     public void write(Object value) {
       recordConsumer.startGroup();
-      recordConsumer.startField(repeatedGroupName, 0);
-
       int listLength = inspector.getListLength(value);
-      for (int i = 0; i < listLength; i++) {
-        Object element = inspector.getListElement(value, i);
-        recordConsumer.startGroup();
-        if (element != null) {
-          recordConsumer.startField(elementName, 0);
-          elementWriter.write(element);
-          recordConsumer.endField(elementName, 0);
-        }
-        recordConsumer.endGroup();
-      }
 
-      recordConsumer.endField(repeatedGroupName, 0);
+      if (listLength > 0) {
+        recordConsumer.startField(repeatedGroupName, 0);
+
+        for (int i = 0; i < listLength; i++) {
+          Object element = inspector.getListElement(value, i);
+          recordConsumer.startGroup();
+          if (element != null) {
+            recordConsumer.startField(elementName, 0);
+            elementWriter.write(element);
+            recordConsumer.endField(elementName, 0);
+          }
+          recordConsumer.endGroup();
+        }
+
+        recordConsumer.endField(repeatedGroupName, 0);
+      }
       recordConsumer.endGroup();
     }
   }
@@ -307,30 +310,32 @@ public class DataWritableWriter {
     @Override
     public void write(Object value) {
       recordConsumer.startGroup();
-      recordConsumer.startField(repeatedGroupName, 0);
 
       Map<?, ?> mapValues = inspector.getMap(value);
-      for (Map.Entry<?, ?> keyValue : mapValues.entrySet()) {
-        recordConsumer.startGroup();
-        if (keyValue != null) {
-          // write key element
-          Object keyElement = keyValue.getKey();
-          recordConsumer.startField(keyName, 0);
-          keyWriter.write(keyElement);
-          recordConsumer.endField(keyName, 0);
+      if (mapValues != null && mapValues.size() > 0) {
+        recordConsumer.startField(repeatedGroupName, 0);
+        for (Map.Entry<?, ?> keyValue : mapValues.entrySet()) {
+          recordConsumer.startGroup();
+          if (keyValue != null) {
+            // write key element
+            Object keyElement = keyValue.getKey();
+            recordConsumer.startField(keyName, 0);
+            keyWriter.write(keyElement);
+            recordConsumer.endField(keyName, 0);
 
-          // write value element
-          Object valueElement = keyValue.getValue();
-          if (valueElement != null) {
-            recordConsumer.startField(valueName, 1);
-            valueWriter.write(valueElement);
-            recordConsumer.endField(valueName, 1);
+            // write value element
+            Object valueElement = keyValue.getValue();
+            if (valueElement != null) {
+              recordConsumer.startField(valueName, 1);
+              valueWriter.write(valueElement);
+              recordConsumer.endField(valueName, 1);
+            }
           }
+          recordConsumer.endGroup();
         }
-        recordConsumer.endGroup();
-      }
 
-      recordConsumer.endField(repeatedGroupName, 0);
+        recordConsumer.endField(repeatedGroupName, 0);
+      }
       recordConsumer.endGroup();
     }
   }
@@ -512,7 +517,8 @@ public class DataWritableWriter {
     private Binary decimalToBinary(final HiveDecimal hiveDecimal, final DecimalTypeInfo decimalTypeInfo) {
       int prec = decimalTypeInfo.precision();
       int scale = decimalTypeInfo.scale();
-      byte[] decimalBytes = hiveDecimal.setScale(scale).unscaledValue().toByteArray();
+
+      byte[] decimalBytes = hiveDecimal.bigIntegerBytesScaled(scale);
 
       // Estimated number of bytes needed.
       int precToBytes = ParquetHiveSerDe.PRECISION_TO_BYTE_COUNT[prec - 1];

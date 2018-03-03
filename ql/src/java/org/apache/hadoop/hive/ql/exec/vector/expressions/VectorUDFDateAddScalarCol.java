@@ -18,19 +18,16 @@
 
 package org.apache.hadoop.hive.ql.exec.vector.expressions;
 
-import org.apache.hadoop.hive.ql.exec.vector.BytesColumnVector;
 import org.apache.hadoop.hive.ql.exec.vector.LongColumnVector;
 import org.apache.hadoop.hive.ql.exec.vector.VectorExpressionDescriptor;
 import org.apache.hadoop.hive.ql.exec.vector.VectorizedRowBatch;
 import org.apache.hadoop.hive.serde2.io.DateWritable;
-import org.apache.hadoop.io.Text;
+import org.apache.hive.common.util.DateParser;
 
-import java.io.UnsupportedEncodingException;
-import java.text.ParseException;
-import java.text.SimpleDateFormat;
-import java.util.Arrays;
-import java.util.Calendar;
-import java.util.Date;
+import java.nio.charset.StandardCharsets;
+import java.sql.Date;
+import java.sql.Timestamp;
+
 
 public class VectorUDFDateAddScalarCol extends VectorExpression {
   private static final long serialVersionUID = 1L;
@@ -38,12 +35,11 @@ public class VectorUDFDateAddScalarCol extends VectorExpression {
   private int colNum;
   private int outputColumn;
   private long longValue = 0;
+  private Timestamp timestampValue = null;
   private byte[] stringValue = null;
   protected boolean isPositive = true;
-  private transient final Calendar calendar = Calendar.getInstance();
-  private transient SimpleDateFormat formatter = new SimpleDateFormat("yyyy-MM-dd");
-  private transient final Text text = new Text();
-  private transient Date baseDate = new Date();
+  private transient final DateParser dateParser = new DateParser();
+  private transient final Date baseDate = new Date(0);
 
   public VectorUDFDateAddScalarCol() {
     super();
@@ -56,8 +52,12 @@ public class VectorUDFDateAddScalarCol extends VectorExpression {
 
     if (object instanceof Long) {
       this.longValue = (Long) object;
+    } else if (object instanceof Timestamp) {
+        this.timestampValue = (Timestamp) object;
     } else if (object instanceof byte []) {
       this.stringValue = (byte[]) object;
+    } else {
+      throw new RuntimeException("Unexpected scalar object " + object.getClass().getName() + " " + object.toString());
     }
   }
 
@@ -72,7 +72,8 @@ public class VectorUDFDateAddScalarCol extends VectorExpression {
     /* every line below this is identical for evaluateLong & evaluateString */
     final int n = inputCol.isRepeating ? 1 : batch.size;
     int[] sel = batch.selected;
-    BytesColumnVector outV = (BytesColumnVector) batch.cols[outputColumn];
+    final boolean selectedInUse = (inputCol.isRepeating == false) && batch.selectedInUse;
+    LongColumnVector outV = (LongColumnVector) batch.cols[outputColumn];
 
     switch (inputTypes[0]) {
       case DATE:
@@ -80,18 +81,16 @@ public class VectorUDFDateAddScalarCol extends VectorExpression {
         break;
 
       case TIMESTAMP:
-        baseDate.setTime(longValue / 1000000);
+        baseDate.setTime(timestampValue.getTime());
         break;
 
       case STRING:
       case CHAR:
       case VARCHAR:
-        try {
-          baseDate = formatter.parse(new String(stringValue, "UTF-8"));
-          break;
-        } catch (Exception e) {
+        boolean parsed = dateParser.parseDate(new String(stringValue, StandardCharsets.UTF_8), baseDate);
+        if (!parsed) {
           outV.noNulls = false;
-          if (batch.selectedInUse) {
+          if (selectedInUse) {
             for(int j=0; j < n; j++) {
               int i = sel[j];
               outV.isNull[i] = true;
@@ -103,6 +102,7 @@ public class VectorUDFDateAddScalarCol extends VectorExpression {
           }
           return;
         }
+        break;
       default:
         throw new Error("Unsupported input type " + inputTypes[0].name());
     }
@@ -115,55 +115,50 @@ public class VectorUDFDateAddScalarCol extends VectorExpression {
     /* true for all algebraic UDFs with no state */
     outV.isRepeating = inputCol.isRepeating;
 
+    long baseDateDays = DateWritable.millisToDays(baseDate.getTime());
     if (inputCol.noNulls) {
       outV.noNulls = true;
-      if (batch.selectedInUse) {
+      if (selectedInUse) {
         for(int j=0; j < n; j++) {
           int i = sel[j];
-          evaluate(baseDate, inputCol.vector[i], outV, i);
+          evaluate(baseDateDays, inputCol.vector[i], outV, i);
         }
       } else {
         for(int i = 0; i < n; i++) {
-          evaluate(baseDate, inputCol.vector[i], outV, i);
+          evaluate(baseDateDays, inputCol.vector[i], outV, i);
         }
       }
     } else {
       // Handle case with nulls. Don't do function if the value is null, to save time,
       // because calling the function can be expensive.
       outV.noNulls = false;
-      if (batch.selectedInUse) {
+      if (selectedInUse) {
         for(int j = 0; j < n; j++) {
           int i = sel[j];
           outV.isNull[i] = inputCol.isNull[i];
           if (!inputCol.isNull[i]) {
-            evaluate(baseDate, inputCol.vector[i], outV, i);
+            evaluate(baseDateDays, inputCol.vector[i], outV, i);
           }
         }
       } else {
         for(int i = 0; i < n; i++) {
           outV.isNull[i] = inputCol.isNull[i];
           if (!inputCol.isNull[i]) {
-            evaluate(baseDate, inputCol.vector[i], outV, i);
+            evaluate(baseDateDays, inputCol.vector[i], outV, i);
           }
         }
       }
     }
   }
 
-  private void evaluate(Date baseDate, long numDays, BytesColumnVector output, int i) {
-    calendar.setTime(baseDate);
-
+  private void evaluate(long baseDateDays, long numDays, LongColumnVector output, int i) {
+    long result = baseDateDays;
     if (isPositive) {
-      calendar.add(Calendar.DATE, (int) numDays);
+      result += numDays;
     } else {
-      calendar.add(Calendar.DATE, -(int) numDays);
+      result -= numDays;
     }
-    Date newDate = calendar.getTime();
-    text.set(formatter.format(newDate));
-    int size = text.getLength();
-    output.vector[i] = Arrays.copyOf(text.getBytes(), size);
-    output.start[i] = 0;
-    output.length[i] = size;
+    output.vector[i] = result;
   }
 
   @Override
@@ -173,7 +168,7 @@ public class VectorUDFDateAddScalarCol extends VectorExpression {
 
   @Override
   public String getOutputType() {
-    return "string";
+    return "date";
   }
 
   public int getColNum() {
@@ -210,6 +205,11 @@ public class VectorUDFDateAddScalarCol extends VectorExpression {
 
   public void setPositive(boolean isPositive) {
     this.isPositive = isPositive;
+  }
+
+  @Override
+  public String vectorExpressionParameters() {
+    return "val " + stringValue + ", col " + colNum;
   }
 
   public VectorExpressionDescriptor.Descriptor getDescriptor() {

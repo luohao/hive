@@ -39,7 +39,6 @@ public class QueryProperties {
   boolean noScanAnalyzeCommand;
   boolean analyzeRewrite;
   boolean ctas;
-  boolean insertToTable;
   int outerQueryLimit;
 
   boolean hasJoin = false;
@@ -66,6 +65,8 @@ public class QueryProperties {
   private boolean multiDestQuery;
   private boolean filterWithSubQuery;
 
+  // True if this statement creates or replaces a materialized view
+  private boolean isMaterializedView;
 
   public boolean isQuery() {
     return query;
@@ -113,14 +114,6 @@ public class QueryProperties {
 
   public void setCTAS(boolean ctas) {
     this.ctas = ctas;
-  }
-
-  public boolean isInsertToTable() {
-    return insertToTable;
-  }
-
-  public void setInsertToTable(boolean insertToTable) {
-    this.insertToTable = insertToTable;
   }
 
   public int getOuterQueryLimit() {
@@ -269,6 +262,19 @@ public class QueryProperties {
     return this.filterWithSubQuery;
   }
 
+  /**
+   * True indicates this statement create or replaces a materialized view, not that it is a query
+   * against a materialized view.
+   * @return
+   */
+  public boolean isMaterializedView() {
+    return isMaterializedView;
+  }
+
+  public void setMaterializedView(boolean isMaterializedView) {
+    this.isMaterializedView = isMaterializedView;
+  }
+
   public void clear() {
     query = false;
     analyzeCommand = false;
@@ -276,7 +282,6 @@ public class QueryProperties {
     noScanAnalyzeCommand = false;
     analyzeRewrite = false;
     ctas = false;
-    insertToTable = false;
     outerQueryLimit = -1;
 
     hasJoin = false;

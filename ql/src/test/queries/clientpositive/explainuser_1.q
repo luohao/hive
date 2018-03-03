@@ -1,3 +1,6 @@
+set hive.strict.checks.bucketing=false;
+
+set hive.mapred.mode=nonstrict;
 set hive.explain.user=true;
 
 explain create table src_orc_merge_test_part(key int, value string) partitioned by (ds string, ts string) stored as orc;
@@ -293,7 +296,7 @@ create table if not exists nzhang_ctas3 as select key, value from src sort by ke
 
 set hive.support.concurrency=true;
 set hive.txn.manager=org.apache.hadoop.hive.ql.lockmgr.DbTxnManager;
-set hive.enforce.bucketing=true;
+
 
 explain create temporary table acid_dtt(a int, b varchar(128)) clustered by (a) into 2 buckets stored as orc TBLPROPERTIES ('transactional'='true');
 create temporary table acid_dtt(a int, b varchar(128)) clustered by (a) into 2 buckets stored as orc TBLPROPERTIES ('transactional'='true');
@@ -334,8 +337,8 @@ CREATE TABLE smb_input(key int, value int);
 LOAD DATA LOCAL INPATH '../../data/files/in4.txt' into table smb_input;
 LOAD DATA LOCAL INPATH '../../data/files/in5.txt' into table smb_input;
 
-set hive.enforce.sorting = true;
-set hive.enforce.bucketing = true;
+
+;
 
 CREATE TABLE smb_input1(key int, value int) CLUSTERED BY (key) SORTED BY (key) INTO 2 BUCKETS;
 CREATE TABLE smb_input2(key int, value int) CLUSTERED BY (value) SORTED BY (value) INTO 2 BUCKETS;
@@ -347,6 +350,8 @@ insert overwrite table smb_input2 select *;
 SET hive.optimize.bucketmapjoin = true;
 SET hive.optimize.bucketmapjoin.sortedmerge = true;
 SET hive.input.format = org.apache.hadoop.hive.ql.io.BucketizedHiveInputFormat;
+
+analyze table smb_input1 compute statistics;
 
 explain select /*+ MAPJOIN(a) */ * FROM smb_input1 a JOIN smb_input1 b ON a.key <=> b.key;
 explain select /*+ MAPJOIN(a) */ * FROM smb_input1 a JOIN smb_input1 b ON a.key <=> b.key AND a.value <=> b.value;
@@ -377,8 +382,7 @@ drop table things;
 set hive.auto.convert.join=true;
 set hive.auto.convert.join.noconditionaltask=true;
 set hive.auto.convert.join.noconditionaltask.size=10000;
-
-explain select srcpart.key from srcpart join src on (srcpart.value=src.value) join src1 on (srcpart.key=src1.key) where srcpart.value > 'val_450';
+set hive.stats.fetch.column.stats=false;
  
 set hive.mapjoin.optimized.hashtable=false;
 
@@ -387,7 +391,7 @@ explain select srcpart.key from srcpart join src on (srcpart.value=src.value) jo
 set hive.mapjoin.optimized.hashtable=true;
 
 explain select srcpart.key from srcpart join src on (srcpart.value=src.value) join src1 on (srcpart.key=src1.key) where srcpart.value > 'val_450';
-
+set hive.stats.fetch.column.stats=true;
 explain
 select p_mfgr, p_name, p_size,
 rank() over (partition by p_mfgr order by p_name) as r,

@@ -46,6 +46,8 @@ POSTHOOK: type: CREATETABLE_AS_SELECT
 POSTHOOK: Input: default@staging
 POSTHOOK: Output: database:default
 POSTHOOK: Output: default@parquet_jointable1
+POSTHOOK: Lineage: parquet_jointable1.key SIMPLE [(staging)staging.FieldSchema(name:key, type:int, comment:null), ]
+POSTHOOK: Lineage: parquet_jointable1.value SIMPLE [(staging)staging.FieldSchema(name:value, type:string, comment:null), ]
 PREHOOK: query: create table parquet_jointable2 stored as parquet as select key,key+1,concat(value,"value") as myvalue from staging
 PREHOOK: type: CREATETABLE_AS_SELECT
 PREHOOK: Input: default@staging
@@ -56,17 +58,12 @@ POSTHOOK: type: CREATETABLE_AS_SELECT
 POSTHOOK: Input: default@staging
 POSTHOOK: Output: database:default
 POSTHOOK: Output: default@parquet_jointable2
-PREHOOK: query: -- SORT_QUERY_RESULTS
-
--- MR join
-
-explain select p2.myvalue from parquet_jointable1 p1 join parquet_jointable2 p2 on p1.key=p2.key
+POSTHOOK: Lineage: parquet_jointable2._c1 EXPRESSION [(staging)staging.FieldSchema(name:key, type:int, comment:null), ]
+POSTHOOK: Lineage: parquet_jointable2.key SIMPLE [(staging)staging.FieldSchema(name:key, type:int, comment:null), ]
+POSTHOOK: Lineage: parquet_jointable2.myvalue EXPRESSION [(staging)staging.FieldSchema(name:value, type:string, comment:null), ]
+PREHOOK: query: explain select p2.myvalue from parquet_jointable1 p1 join parquet_jointable2 p2 on p1.key=p2.key
 PREHOOK: type: QUERY
-POSTHOOK: query: -- SORT_QUERY_RESULTS
-
--- MR join
-
-explain select p2.myvalue from parquet_jointable1 p1 join parquet_jointable2 p2 on p1.key=p2.key
+POSTHOOK: query: explain select p2.myvalue from parquet_jointable1 p1 join parquet_jointable2 p2 on p1.key=p2.key
 POSTHOOK: type: QUERY
 STAGE DEPENDENCIES:
   Stage-1 is a root stage
@@ -81,43 +78,51 @@ STAGE PLANS:
             Statistics: Num rows: 2 Data size: 4 Basic stats: COMPLETE Column stats: NONE
             Filter Operator
               predicate: key is not null (type: boolean)
-              Statistics: Num rows: 1 Data size: 2 Basic stats: COMPLETE Column stats: NONE
-              Reduce Output Operator
-                key expressions: key (type: int)
-                sort order: +
-                Map-reduce partition columns: key (type: int)
-                Statistics: Num rows: 1 Data size: 2 Basic stats: COMPLETE Column stats: NONE
+              Statistics: Num rows: 2 Data size: 4 Basic stats: COMPLETE Column stats: NONE
+              Select Operator
+                expressions: key (type: int)
+                outputColumnNames: _col0
+                Statistics: Num rows: 2 Data size: 4 Basic stats: COMPLETE Column stats: NONE
+                Reduce Output Operator
+                  key expressions: _col0 (type: int)
+                  sort order: +
+                  Map-reduce partition columns: _col0 (type: int)
+                  Statistics: Num rows: 2 Data size: 4 Basic stats: COMPLETE Column stats: NONE
           TableScan
             alias: p2
             Statistics: Num rows: 2 Data size: 6 Basic stats: COMPLETE Column stats: NONE
             Filter Operator
               predicate: key is not null (type: boolean)
-              Statistics: Num rows: 1 Data size: 3 Basic stats: COMPLETE Column stats: NONE
-              Reduce Output Operator
-                key expressions: key (type: int)
-                sort order: +
-                Map-reduce partition columns: key (type: int)
-                Statistics: Num rows: 1 Data size: 3 Basic stats: COMPLETE Column stats: NONE
-                value expressions: myvalue (type: string)
+              Statistics: Num rows: 2 Data size: 6 Basic stats: COMPLETE Column stats: NONE
+              Select Operator
+                expressions: key (type: int), myvalue (type: string)
+                outputColumnNames: _col0, _col1
+                Statistics: Num rows: 2 Data size: 6 Basic stats: COMPLETE Column stats: NONE
+                Reduce Output Operator
+                  key expressions: _col0 (type: int)
+                  sort order: +
+                  Map-reduce partition columns: _col0 (type: int)
+                  Statistics: Num rows: 2 Data size: 6 Basic stats: COMPLETE Column stats: NONE
+                  value expressions: _col1 (type: string)
       Reduce Operator Tree:
         Join Operator
           condition map:
                Inner Join 0 to 1
           keys:
-            0 key (type: int)
-            1 key (type: int)
-          outputColumnNames: _col7
-          Statistics: Num rows: 1 Data size: 2 Basic stats: COMPLETE Column stats: NONE
+            0 _col0 (type: int)
+            1 _col0 (type: int)
+          outputColumnNames: _col2
+          Statistics: Num rows: 2 Data size: 4 Basic stats: COMPLETE Column stats: NONE
           Select Operator
-            expressions: _col7 (type: string)
+            expressions: _col2 (type: string)
             outputColumnNames: _col0
-            Statistics: Num rows: 1 Data size: 2 Basic stats: COMPLETE Column stats: NONE
+            Statistics: Num rows: 2 Data size: 4 Basic stats: COMPLETE Column stats: NONE
             File Output Operator
               compressed: false
-              Statistics: Num rows: 1 Data size: 2 Basic stats: COMPLETE Column stats: NONE
+              Statistics: Num rows: 2 Data size: 4 Basic stats: COMPLETE Column stats: NONE
               table:
-                  input format: org.apache.hadoop.mapred.TextInputFormat
-                  output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
+                  input format: org.apache.hadoop.mapred.SequenceFileInputFormat
+                  output format: org.apache.hadoop.hive.ql.io.HiveSequenceFileOutputFormat
                   serde: org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe
 
   Stage: Stage-0
@@ -138,21 +143,9 @@ POSTHOOK: Input: default@parquet_jointable2
 #### A masked pattern was here ####
 val_0value
 val_10value
-PREHOOK: query: -- The two tables involved in the join have differing number of columns(table1-2,table2-3). In case of Map and SMB join,
--- when the second table is loaded, the column indices in hive.io.file.readcolumn.ids refer to columns of both the first and the second table
--- and hence the parquet schema/types passed to ParquetInputSplit should contain only the column indexes belonging to second/current table
-
--- Map join
-
-explain select p2.myvalue from parquet_jointable1 p1 join parquet_jointable2 p2 on p1.key=p2.key
+PREHOOK: query: explain select p2.myvalue from parquet_jointable1 p1 join parquet_jointable2 p2 on p1.key=p2.key
 PREHOOK: type: QUERY
-POSTHOOK: query: -- The two tables involved in the join have differing number of columns(table1-2,table2-3). In case of Map and SMB join,
--- when the second table is loaded, the column indices in hive.io.file.readcolumn.ids refer to columns of both the first and the second table
--- and hence the parquet schema/types passed to ParquetInputSplit should contain only the column indexes belonging to second/current table
-
--- Map join
-
-explain select p2.myvalue from parquet_jointable1 p1 join parquet_jointable2 p2 on p1.key=p2.key
+POSTHOOK: query: explain select p2.myvalue from parquet_jointable1 p1 join parquet_jointable2 p2 on p1.key=p2.key
 POSTHOOK: type: QUERY
 STAGE DEPENDENCIES:
   Stage-4 is a root stage
@@ -163,21 +156,25 @@ STAGE PLANS:
   Stage: Stage-4
     Map Reduce Local Work
       Alias -> Map Local Tables:
-        p1 
+        $hdt$_0:p1 
           Fetch Operator
             limit: -1
       Alias -> Map Local Operator Tree:
-        p1 
+        $hdt$_0:p1 
           TableScan
             alias: p1
             Statistics: Num rows: 2 Data size: 4 Basic stats: COMPLETE Column stats: NONE
             Filter Operator
               predicate: key is not null (type: boolean)
-              Statistics: Num rows: 1 Data size: 2 Basic stats: COMPLETE Column stats: NONE
-              HashTable Sink Operator
-                keys:
-                  0 key (type: int)
-                  1 key (type: int)
+              Statistics: Num rows: 2 Data size: 4 Basic stats: COMPLETE Column stats: NONE
+              Select Operator
+                expressions: key (type: int)
+                outputColumnNames: _col0
+                Statistics: Num rows: 2 Data size: 4 Basic stats: COMPLETE Column stats: NONE
+                HashTable Sink Operator
+                  keys:
+                    0 _col0 (type: int)
+                    1 _col0 (type: int)
 
   Stage: Stage-3
     Map Reduce
@@ -187,26 +184,30 @@ STAGE PLANS:
             Statistics: Num rows: 2 Data size: 6 Basic stats: COMPLETE Column stats: NONE
             Filter Operator
               predicate: key is not null (type: boolean)
-              Statistics: Num rows: 1 Data size: 3 Basic stats: COMPLETE Column stats: NONE
-              Map Join Operator
-                condition map:
-                     Inner Join 0 to 1
-                keys:
-                  0 key (type: int)
-                  1 key (type: int)
-                outputColumnNames: _col7
-                Statistics: Num rows: 1 Data size: 2 Basic stats: COMPLETE Column stats: NONE
-                Select Operator
-                  expressions: _col7 (type: string)
-                  outputColumnNames: _col0
-                  Statistics: Num rows: 1 Data size: 2 Basic stats: COMPLETE Column stats: NONE
-                  File Output Operator
-                    compressed: false
-                    Statistics: Num rows: 1 Data size: 2 Basic stats: COMPLETE Column stats: NONE
-                    table:
-                        input format: org.apache.hadoop.mapred.TextInputFormat
-                        output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
-                        serde: org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe
+              Statistics: Num rows: 2 Data size: 6 Basic stats: COMPLETE Column stats: NONE
+              Select Operator
+                expressions: key (type: int), myvalue (type: string)
+                outputColumnNames: _col0, _col1
+                Statistics: Num rows: 2 Data size: 6 Basic stats: COMPLETE Column stats: NONE
+                Map Join Operator
+                  condition map:
+                       Inner Join 0 to 1
+                  keys:
+                    0 _col0 (type: int)
+                    1 _col0 (type: int)
+                  outputColumnNames: _col2
+                  Statistics: Num rows: 2 Data size: 4 Basic stats: COMPLETE Column stats: NONE
+                  Select Operator
+                    expressions: _col2 (type: string)
+                    outputColumnNames: _col0
+                    Statistics: Num rows: 2 Data size: 4 Basic stats: COMPLETE Column stats: NONE
+                    File Output Operator
+                      compressed: false
+                      Statistics: Num rows: 2 Data size: 4 Basic stats: COMPLETE Column stats: NONE
+                      table:
+                          input format: org.apache.hadoop.mapred.SequenceFileInputFormat
+                          output format: org.apache.hadoop.hive.ql.io.HiveSequenceFileOutputFormat
+                          serde: org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe
       Local Work:
         Map Reduce Local Work
 
@@ -228,15 +229,11 @@ POSTHOOK: Input: default@parquet_jointable2
 #### A masked pattern was here ####
 val_0value
 val_10value
-PREHOOK: query: -- SMB join
-
-create table parquet_jointable1_bucketed_sorted (key int,value string) clustered by (key) sorted by (key ASC) INTO 1 BUCKETS stored as parquet
+PREHOOK: query: create table parquet_jointable1_bucketed_sorted (key int,value string) clustered by (key) sorted by (key ASC) INTO 1 BUCKETS stored as parquet
 PREHOOK: type: CREATETABLE
 PREHOOK: Output: database:default
 PREHOOK: Output: default@parquet_jointable1_bucketed_sorted
-POSTHOOK: query: -- SMB join
-
-create table parquet_jointable1_bucketed_sorted (key int,value string) clustered by (key) sorted by (key ASC) INTO 1 BUCKETS stored as parquet
+POSTHOOK: query: create table parquet_jointable1_bucketed_sorted (key int,value string) clustered by (key) sorted by (key ASC) INTO 1 BUCKETS stored as parquet
 POSTHOOK: type: CREATETABLE
 POSTHOOK: Output: database:default
 POSTHOOK: Output: default@parquet_jointable1_bucketed_sorted
@@ -286,23 +283,27 @@ STAGE PLANS:
             Statistics: Num rows: 2 Data size: 6 Basic stats: COMPLETE Column stats: NONE
             Filter Operator
               predicate: key is not null (type: boolean)
-              Statistics: Num rows: 1 Data size: 3 Basic stats: COMPLETE Column stats: NONE
-              Sorted Merge Bucket Map Join Operator
-                condition map:
-                     Inner Join 0 to 1
-                keys:
-                  0 key (type: int)
-                  1 key (type: int)
-                outputColumnNames: _col1, _col7
-                Select Operator
-                  expressions: _col1 (type: string), _col7 (type: string)
-                  outputColumnNames: _col0, _col1
-                  File Output Operator
-                    compressed: false
-                    table:
-                        input format: org.apache.hadoop.mapred.TextInputFormat
-                        output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
-                        serde: org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe
+              Statistics: Num rows: 2 Data size: 6 Basic stats: COMPLETE Column stats: NONE
+              Select Operator
+                expressions: key (type: int), value2 (type: string)
+                outputColumnNames: _col0, _col1
+                Statistics: Num rows: 2 Data size: 6 Basic stats: COMPLETE Column stats: NONE
+                Sorted Merge Bucket Map Join Operator
+                  condition map:
+                       Inner Join 0 to 1
+                  keys:
+                    0 _col0 (type: int)
+                    1 _col0 (type: int)
+                  outputColumnNames: _col1, _col3
+                  Select Operator
+                    expressions: _col1 (type: string), _col3 (type: string)
+                    outputColumnNames: _col0, _col1
+                    File Output Operator
+                      compressed: false
+                      table:
+                          input format: org.apache.hadoop.mapred.SequenceFileInputFormat
+                          output format: org.apache.hadoop.hive.ql.io.HiveSequenceFileOutputFormat
+                          serde: org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe
 
   Stage: Stage-0
     Fetch Operator

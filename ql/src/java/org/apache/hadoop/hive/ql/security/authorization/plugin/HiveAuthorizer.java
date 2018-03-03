@@ -23,13 +23,19 @@ import org.apache.hadoop.hive.common.classification.InterfaceAudience.LimitedPri
 import org.apache.hadoop.hive.common.classification.InterfaceStability.Evolving;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.ql.metadata.HiveException;
-import org.apache.hadoop.hive.ql.plan.PrincipalDesc;
-import org.apache.hadoop.hive.ql.plan.PrivilegeDesc;
-import org.apache.hadoop.hive.ql.plan.PrivilegeObjectDesc;
+import org.apache.hadoop.hive.ql.parse.SemanticException;
+import org.apache.hadoop.hive.ql.security.HiveAuthenticationProvider;
 import org.apache.hadoop.hive.ql.security.authorization.HiveAuthorizationProvider;
 
 /**
- * Interface for hive authorization plugins.
+ * Interface for hive authorization plugins. Plugins will be better shielded from changes
+ * to this interface by extending AbstractHiveAuthorizer instead of extending this
+ * interface directly.
+ *
+ * Note that this interface is for limited use by specific apache projects, including
+ * Apache Ranger (formerly known as Argus), and Apache Sentry, and is subject to
+ * change across releases.
+ *
  * Used by the DDLTasks for access control statement,
  * and for checking authorization from Driver.doAuthorization()
  *
@@ -212,14 +218,62 @@ public interface HiveAuthorizer {
    * @param hiveConf
    * @throws HiveAuthzPluginException
    */
-  public void applyAuthorizationConfigPolicy(HiveConf hiveConf) throws HiveAuthzPluginException;
+  void applyAuthorizationConfigPolicy(HiveConf hiveConf) throws HiveAuthzPluginException;
 
-  public List<HivePrincipal> getHivePrincipals(List<PrincipalDesc> principals)
-      throws HiveException;
+  /**
+   * Get a {@link HiveAuthorizationTranslator} implementation. See
+   * {@link HiveAuthorizationTranslator} for details. Return null if no
+   * customization is needed. Most implementations are expected to return null.
+   *
+   * The java signature of the method makes it necessary to only return Object
+   * type so that older implementations can extend the interface to build
+   * against older versions of Hive that don't include this additional method
+   * and HiveAuthorizationTranslator class. However, if a non null value is
+   * returned, the Object has to be of type HiveAuthorizationTranslator
+   *
+   * @return
+   * @throws HiveException
+   */
+  Object getHiveAuthorizationTranslator() throws HiveAuthzPluginException;
 
-  public List<HivePrivilege> getHivePrivileges(List<PrivilegeDesc> privileges);
+  /**
+   * TableMaskingPolicy defines how users can access base tables. It defines a
+   * policy on what columns and rows are hidden, masked or redacted based on
+   * user, role or location.
+   */
+  /**
+   * applyRowFilterAndColumnMasking is called once for each table in a query. 
+   * (part 1) It expects a valid filter condition to be returned. Null indicates no filtering is
+   * required.
+   *
+   * Example: table foo(c int) -> "c > 0 && c % 2 = 0"
+   *
+   * (part 2) It expects a valid expression as used in a select clause. Null
+   * is NOT a valid option. If no transformation is needed simply return the
+   * column name.
+   *
+   * Example: column a -> "a" (no transform)
+   *
+   * Example: column a -> "reverse(a)" (call the reverse function on a)
+   *
+   * Example: column a -> "5" (replace column a with the constant 5)
+   *
+   * @return List<HivePrivilegeObject>
+   * please return the list of HivePrivilegeObjects that need to be rewritten.
+   *
+   * @throws SemanticException
+   */
+  public List<HivePrivilegeObject> applyRowFilterAndColumnMasking(HiveAuthzContext context,
+      List<HivePrivilegeObject> privObjs) throws SemanticException;
 
-  public HivePrivilegeObject getHivePrivilegeObject(PrivilegeObjectDesc privSubjectDesc)
-      throws HiveException;
+  /**
+   * needTransform() is called once per user in a query. 
+   * Returning false short-circuits the generation of row/column transforms.
+   *
+   * @return
+   * @throws SemanticException
+   */
+  public boolean needTransform();
+
 }
 

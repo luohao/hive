@@ -42,8 +42,8 @@ import org.apache.avro.io.BinaryEncoder;
 import org.apache.avro.io.DecoderFactory;
 import org.apache.avro.io.EncoderFactory;
 import org.apache.avro.UnresolvedUnionException;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.hive.common.type.HiveChar;
 import org.apache.hadoop.hive.common.type.HiveDecimal;
 import org.apache.hadoop.hive.common.type.HiveVarchar;
@@ -61,7 +61,7 @@ import org.apache.hadoop.hive.serde2.typeinfo.UnionTypeInfo;
 import org.apache.hadoop.io.Writable;
 
 class AvroDeserializer {
-  private static final Log LOG = LogFactory.getLog(AvroDeserializer.class);
+  private static final Logger LOG = LoggerFactory.getLogger(AvroDeserializer.class);
   /**
    * Set of already seen and valid record readers IDs which doesn't need re-encoding
    */
@@ -75,7 +75,7 @@ class AvroDeserializer {
    * Flag to print the re-encoding warning message only once. Avoid excessive logging for each
    * record encoding.
    */
-  private static boolean warnedOnce = false;
+  private boolean warnedOnce = false;
   /**
    * When encountering a record with an older schema than the one we're trying
    * to read, it is necessary to re-encode with a reader against the newer schema.
@@ -163,7 +163,7 @@ class AvroDeserializer {
         reEncoder = new SchemaReEncoder(r.getSchema(), readerSchema);
         reEncoderCache.put(recordReaderId, reEncoder);
       } else{
-        LOG.info("Adding new valid RRID :" +  recordReaderId);
+        LOG.debug("Adding new valid RRID :" +  recordReaderId);
         noEncodingNeeded.add(recordReaderId);
       }
       if(reEncoder != null) {
@@ -244,7 +244,7 @@ class AvroDeserializer {
 
       int scale = 0;
       try {
-        scale = fileSchema.getJsonProp(AvroSerDe.AVRO_PROP_SCALE).getIntValue();
+        scale = fileSchema.getJsonProp(AvroSerDe.AVRO_PROP_SCALE).asInt();
       } catch(Exception ex) {
         throw new AvroSerdeException("Failed to obtain scale value from file schema: " + fileSchema, ex);
       }
@@ -306,9 +306,28 @@ class AvroDeserializer {
    */
   private Object deserializeNullableUnion(Object datum, Schema fileSchema, Schema recordSchema)
                                             throws AvroSerdeException {
+    if (recordSchema.getTypes().size() == 2) {
+      // A type like [NULL, T]
+      return deserializeSingleItemNullableUnion(datum, fileSchema, recordSchema);
+    } else {
+      // Types like [NULL, T1, T2, ...]
+      if (datum == null) {
+        return null;
+      } else {
+        Schema newRecordSchema = AvroSerdeUtils.getOtherTypeFromNullableType(recordSchema);
+        return worker(datum, fileSchema, newRecordSchema,
+            SchemaToTypeInfo.generateTypeInfo(newRecordSchema, null));
+      }
+    }
+  }
+
+  private Object deserializeSingleItemNullableUnion(Object datum,
+                                                    Schema fileSchema,
+                                                    Schema recordSchema)
+      throws AvroSerdeException {
     int tag = GenericData.get().resolveUnion(recordSchema, datum); // Determine index of value
     Schema schema = recordSchema.getTypes().get(tag);
-    if (schema.getType().equals(Schema.Type.NULL)) {
+    if (schema.getType().equals(Type.NULL)) {
       return null;
     }
 
@@ -344,7 +363,6 @@ class AvroDeserializer {
     }
     return worker(datum, currentFileSchema, schema,
       SchemaToTypeInfo.generateTypeInfo(schema, null));
-
   }
 
   private Object deserializeStruct(GenericData.Record datum, Schema fileSchema, StructTypeInfo columnType)

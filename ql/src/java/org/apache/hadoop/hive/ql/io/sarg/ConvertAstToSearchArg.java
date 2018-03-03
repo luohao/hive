@@ -21,16 +21,22 @@ package org.apache.hadoop.hive.ql.io.sarg;
 import java.sql.Date;
 import java.sql.Timestamp;
 import java.util.List;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutionException;
 
+import com.google.common.cache.Cache;
+import com.google.common.cache.CacheBuilder;
+import com.google.common.cache.Weigher;
 import org.apache.commons.codec.binary.Base64;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hive.common.type.HiveChar;
-import org.apache.hadoop.hive.ql.exec.Utilities;
+import org.apache.hadoop.hive.common.type.HiveDecimal;
+import org.apache.hadoop.hive.conf.HiveConf;
+import org.apache.hadoop.hive.ql.exec.SerializationUtilities;
 import org.apache.hadoop.hive.ql.plan.ExprNodeColumnDesc;
 import org.apache.hadoop.hive.ql.plan.ExprNodeConstantDesc;
 import org.apache.hadoop.hive.ql.plan.ExprNodeDesc;
+import org.apache.hadoop.hive.ql.plan.ExprNodeDynamicValueDesc;
 import org.apache.hadoop.hive.ql.plan.ExprNodeGenericFuncDesc;
 import org.apache.hadoop.hive.ql.plan.TableScanDesc;
 import org.apache.hadoop.hive.ql.udf.generic.GenericUDFBetween;
@@ -51,20 +57,24 @@ import org.apache.hadoop.hive.serde2.io.HiveDecimalWritable;
 import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspector;
 import org.apache.hadoop.hive.serde2.typeinfo.PrimitiveTypeInfo;
 import org.apache.hadoop.hive.serde2.typeinfo.TypeInfo;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import com.esotericsoftware.kryo.Kryo;
 import com.esotericsoftware.kryo.io.Input;
 
 public class ConvertAstToSearchArg {
-  private static final Log LOG = LogFactory.getLog(ConvertAstToSearchArg.class);
-  private final SearchArgument.Builder builder =
-      SearchArgumentFactory.newBuilder();
+  private static final Logger LOG = LoggerFactory.getLogger(ConvertAstToSearchArg.class);
+  private final SearchArgument.Builder builder;
+  private final Configuration conf;
 
   /**
    * Builds the expression and leaf list from the original predicate.
    * @param expression the expression to translate.
    */
-  ConvertAstToSearchArg(ExprNodeGenericFuncDesc expression) {
+  ConvertAstToSearchArg(Configuration conf, ExprNodeGenericFuncDesc expression) {
+    this.conf = conf;
+    builder = SearchArgumentFactory.newBuilder(conf);
     parse(expression);
   }
 
@@ -139,6 +149,13 @@ public class ConvertAstToSearchArg {
     }
     switch (type) {
       case LONG:
+        if (lit instanceof HiveDecimal) {
+          HiveDecimal dec = (HiveDecimal) lit;
+          if (!dec.isLong()) {
+            throw new ArithmeticException("Overflow");
+          }
+          return dec.longValue();
+        }
         return ((Number) lit).longValue();
       case STRING:
         if (lit instanceof HiveChar) {
@@ -149,10 +166,9 @@ public class ConvertAstToSearchArg {
           return lit.toString();
         }
       case FLOAT:
-        if (lit instanceof Float) {
-          // converting a float directly to a double causes annoying conversion
-          // problems
-          return Double.parseDouble(lit.toString());
+        if (lit instanceof HiveDecimal) {
+          // HiveDecimal -> Float -> Number -> Double
+          return ((Number)((HiveDecimal) lit).floatValue()).doubleValue();
         } else {
           return ((Number) lit).doubleValue();
         }
@@ -161,7 +177,6 @@ public class ConvertAstToSearchArg {
       case DATE:
         return Date.valueOf(lit.toString());
       case DECIMAL:
-        LOG.warn("boxing " + lit);
         return new HiveDecimalWritable(lit.toString());
       case BOOLEAN:
         return lit;
@@ -176,7 +191,7 @@ public class ConvertAstToSearchArg {
    * @param type the type of the expression
    * @return the literal boxed if found or null
    */
-  private static Object findLiteral(ExprNodeGenericFuncDesc expr,
+  private static Object findLiteral(Configuration conf, ExprNodeGenericFuncDesc expr,
                                     PredicateLeaf.Type type) {
     List<ExprNodeDesc> children = expr.getChildren();
     if (children.size() != 2) {
@@ -184,14 +199,27 @@ public class ConvertAstToSearchArg {
     }
     Object result = null;
     for(ExprNodeDesc child: children) {
-      if (child instanceof ExprNodeConstantDesc) {
+      Object currentResult = getLiteral(conf, child, type);
+      if (currentResult != null) {
+        // Both children in the expression should not be literal
         if (result != null) {
           return null;
         }
-        result = boxLiteral((ExprNodeConstantDesc) child, type);
+        result = currentResult;
       }
     }
     return result;
+  }
+
+  private static Object getLiteral(Configuration conf, ExprNodeDesc child, PredicateLeaf.Type type) {
+    if (child instanceof ExprNodeConstantDesc) {
+      return boxLiteral((ExprNodeConstantDesc) child, type);
+    } else if (child instanceof ExprNodeDynamicValueDesc) {
+      LiteralDelegate value = ((ExprNodeDynamicValueDesc) child).getDynamicValue();
+      value.setConf(conf);
+      return value;
+    }
+    return null;
   }
 
   /**
@@ -201,15 +229,12 @@ public class ConvertAstToSearchArg {
    * @param position the child position to check
    * @return the boxed literal if found otherwise null
    */
-  private static Object getLiteral(ExprNodeGenericFuncDesc expr,
+  private static Object getLiteral(Configuration conf, ExprNodeGenericFuncDesc expr,
                                    PredicateLeaf.Type type,
                                    int position) {
     List<ExprNodeDesc> children = expr.getChildren();
-    Object child = children.get(position);
-    if (child instanceof ExprNodeConstantDesc) {
-      return boxLiteral((ExprNodeConstantDesc) child, type);
-    }
-    return null;
+    ExprNodeDesc child = children.get(position);
+    return getLiteral(conf, child, type);
   }
 
   private static Object[] getLiteralList(ExprNodeGenericFuncDesc expr,
@@ -260,31 +285,37 @@ public class ConvertAstToSearchArg {
       builder.startNot();
     }
 
-    switch (operator) {
-      case IS_NULL:
-        builder.isNull(columnName, type);
-        break;
-      case EQUALS:
-        builder.equals(columnName, type, findLiteral(expression, type));
-        break;
-      case NULL_SAFE_EQUALS:
-        builder.nullSafeEquals(columnName, type, findLiteral(expression, type));
-        break;
-      case LESS_THAN:
-        builder.lessThan(columnName, type, findLiteral(expression, type));
-        break;
-      case LESS_THAN_EQUALS:
-        builder.lessThanEquals(columnName, type, findLiteral(expression, type));
-        break;
-      case IN:
-        builder.in(columnName, type,
-            getLiteralList(expression, type, variable + 1));
-        break;
-      case BETWEEN:
-        builder.between(columnName, type,
-            getLiteral(expression, type, variable + 1),
-            getLiteral(expression, type, variable + 2));
-        break;
+    try {
+      switch (operator) {
+        case IS_NULL:
+          builder.isNull(columnName, type);
+          break;
+        case EQUALS:
+          builder.equals(columnName, type, findLiteral(conf, expression, type));
+          break;
+        case NULL_SAFE_EQUALS:
+          builder.nullSafeEquals(columnName, type, findLiteral(conf, expression, type));
+          break;
+        case LESS_THAN:
+          builder.lessThan(columnName, type, findLiteral(conf, expression, type));
+          break;
+        case LESS_THAN_EQUALS:
+          builder.lessThanEquals(columnName, type, findLiteral(conf, expression, type));
+          break;
+        case IN:
+          builder.in(columnName, type,
+              getLiteralList(expression, type, variable + 1));
+          break;
+        case BETWEEN:
+          builder.between(columnName, type,
+              getLiteral(conf, expression, type, variable + 1),
+              getLiteral(conf, expression, type, variable + 2));
+          break;
+      }
+    } catch (Exception e) {
+      LOG.warn("Exception thrown during SARG creation. Returning YES_NO_NULL." +
+          " Exception: " + e.getMessage());
+      builder.literal(SearchArgument.TruthValue.YES_NO_NULL);
     }
 
     if (needSwap) {
@@ -410,27 +441,99 @@ public class ConvertAstToSearchArg {
     }
   }
 
-
   public static final String SARG_PUSHDOWN = "sarg.pushdown";
 
-  public static SearchArgument create(ExprNodeGenericFuncDesc expression) {
-    return new ConvertAstToSearchArg(expression).buildSearchArgument();
+  private static volatile Cache<String, SearchArgument> sargsCache = null;
+
+  private static synchronized Cache<String, SearchArgument> initializeAndGetSargsCache(Configuration conf) {
+    if (sargsCache == null) {
+      sargsCache = CacheBuilder.newBuilder()
+            .weigher(new Weigher<String, SearchArgument>() {
+              @Override
+              public int weigh(String key, SearchArgument value) {
+                return key.length();
+              }
+            })
+            .maximumWeight(
+                HiveConf.getIntVar(conf,
+                                   HiveConf.ConfVars.HIVE_IO_SARG_CACHE_MAX_WEIGHT_MB) * 1024 *1024
+            )
+            .build(); // Can't use CacheLoader because SearchArguments may be built either from Kryo strings,
+                      // or from expressions.
+    }
+    return sargsCache;
   }
 
+  private static Cache<String, SearchArgument> getSargsCache(Configuration conf) {
+    return sargsCache == null? initializeAndGetSargsCache(conf) : sargsCache;
+  }
+
+  private static boolean isSargsCacheEnabled(Configuration conf) {
+    return HiveConf.getIntVar(conf, HiveConf.ConfVars.HIVE_IO_SARG_CACHE_MAX_WEIGHT_MB) > 0;
+  }
+
+  private static SearchArgument getSearchArgumentFromString(Configuration conf, final String sargString) {
+
+    try {
+      return isSargsCacheEnabled(conf)?
+          getSargsCache(conf).get(sargString, new Callable<SearchArgument>() {
+            @Override
+            public SearchArgument call() {
+              return create(sargString);
+            }
+          })
+          : create(sargString);
+    }
+    catch (ExecutionException exception) {
+      throw new RuntimeException(exception);
+    }
+  }
+
+  private static SearchArgument getSearchArgumentFromExpression(final Configuration conf, final String sargString) {
+
+    try {
+      return isSargsCacheEnabled(conf)?
+              getSargsCache(conf).get(sargString, new Callable<SearchArgument>() {
+                @Override
+                public SearchArgument call() {
+                  return create(conf, SerializationUtilities.deserializeExpression(sargString));
+                }
+              })
+              : create(conf, SerializationUtilities.deserializeExpression(sargString));
+    }
+    catch (ExecutionException exception) {
+      throw new RuntimeException(exception);
+    }
+  }
+
+  public static SearchArgument create(Configuration conf, ExprNodeGenericFuncDesc expression) {
+    return new ConvertAstToSearchArg(conf, expression).buildSearchArgument();
+  }
+
+  private final static ThreadLocal<Kryo> kryo = new ThreadLocal<Kryo>() {
+    protected Kryo initialValue() { return new Kryo(); }
+  };
 
   public static SearchArgument create(String kryo) {
-    Input input = new Input(Base64.decodeBase64(kryo));
-    return new Kryo().readObject(input, SearchArgumentImpl.class);
+    return create(Base64.decodeBase64(kryo));
+  }
+
+  public static SearchArgument create(byte[] kryoBytes) {
+    return kryo.get().readObject(new Input(kryoBytes), SearchArgumentImpl.class);
   }
 
   public static SearchArgument createFromConf(Configuration conf) {
     String sargString;
     if ((sargString = conf.get(TableScanDesc.FILTER_EXPR_CONF_STR)) != null) {
-      return create(Utilities.deserializeExpression(sargString));
+      return getSearchArgumentFromExpression(conf, sargString);
     } else if ((sargString = conf.get(SARG_PUSHDOWN)) != null) {
-      return create(sargString);
+      return getSearchArgumentFromString(conf, sargString);
     }
     return null;
+  }
+
+  public static boolean canCreateFromConf(Configuration conf) {
+    return conf.get(TableScanDesc.FILTER_EXPR_CONF_STR) != null || conf.get(SARG_PUSHDOWN) != null;
   }
 
 }

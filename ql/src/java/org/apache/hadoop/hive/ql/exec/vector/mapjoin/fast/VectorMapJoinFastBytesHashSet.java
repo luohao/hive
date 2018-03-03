@@ -18,21 +18,24 @@
 
 package org.apache.hadoop.hive.ql.exec.vector.mapjoin.fast;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.hive.ql.exec.JoinUtil;
 import org.apache.hadoop.hive.ql.exec.vector.mapjoin.hashtable.VectorMapJoinBytesHashSet;
 import org.apache.hadoop.hive.ql.exec.vector.mapjoin.hashtable.VectorMapJoinHashSetResult;
 import org.apache.hadoop.io.BytesWritable;
+import org.apache.hive.common.util.HashCodeUtil;
 
 /*
- * An single byte array value hash multi-set optimized for vector map join.
+ * An bytes key hash set optimized for vector map join.
+ *
+ * This is the abstract base for the multi-key and string bytes key hash set implementations.
  */
 public abstract class VectorMapJoinFastBytesHashSet
         extends VectorMapJoinFastBytesHashTable
         implements VectorMapJoinBytesHashSet {
 
-  private static final Log LOG = LogFactory.getLog(VectorMapJoinFastBytesHashSet.class);
+  private static final Logger LOG = LoggerFactory.getLogger(VectorMapJoinFastBytesHashSet.class);
 
   @Override
   public VectorMapJoinHashSetResult createHashSetResult() {
@@ -49,7 +52,6 @@ public abstract class VectorMapJoinFastBytesHashSet
       slotTriples[tripleIndex] = keyStore.add(keyBytes, keyStart, keyLength);
       slotTriples[tripleIndex + 1] = hashCode;
       slotTriples[tripleIndex + 2] = 1;    // Existence
-      keysAssigned++;
     }
   }
 
@@ -62,8 +64,8 @@ public abstract class VectorMapJoinFastBytesHashSet
 
     optimizedHashSetResult.forget();
 
-    long hashCode = VectorMapJoinFastBytesHashUtil.hashKey(keyBytes, keyStart, keyLength);
-    long existance = findReadSlot(keyBytes, keyStart, keyLength, hashCode);
+    long hashCode = HashCodeUtil.murmurHash(keyBytes, keyStart, keyLength);
+    long existance = findReadSlot(keyBytes, keyStart, keyLength, hashCode, hashSetResult.getReadPos());
     JoinUtil.JoinResult joinResult;
     if (existance == -1) {
       joinResult = JoinUtil.JoinResult.NOMATCH;
@@ -77,8 +79,8 @@ public abstract class VectorMapJoinFastBytesHashSet
   }
 
   public VectorMapJoinFastBytesHashSet(
-      int initialCapacity, float loadFactor, int writeBuffersSize) {
-    super(initialCapacity, loadFactor, writeBuffersSize);
+      int initialCapacity, float loadFactor, int writeBuffersSize, long estimatedKeyCount) {
+    super(initialCapacity, loadFactor, writeBuffersSize, estimatedKeyCount);
 
     keyStore = new VectorMapJoinFastKeyStore(writeBuffersSize);
   }

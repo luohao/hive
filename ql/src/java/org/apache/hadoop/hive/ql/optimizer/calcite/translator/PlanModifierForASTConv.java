@@ -20,6 +20,7 @@ package org.apache.hadoop.hive.ql.optimizer.calcite.translator;
 import java.util.ArrayList;
 import java.util.List;
 
+import org.apache.calcite.adapter.druid.DruidQuery;
 import org.apache.calcite.plan.RelOptUtil;
 import org.apache.calcite.plan.hep.HepRelVertex;
 import org.apache.calcite.plan.volcano.RelSubset;
@@ -32,31 +33,35 @@ import org.apache.calcite.rel.core.Join;
 import org.apache.calcite.rel.core.Project;
 import org.apache.calcite.rel.core.SetOp;
 import org.apache.calcite.rel.core.Sort;
+import org.apache.calcite.rel.core.Window.RexWinAggCall;
 import org.apache.calcite.rel.rules.MultiJoin;
 import org.apache.calcite.rel.type.RelDataType;
 import org.apache.calcite.rel.type.RelDataTypeFactory;
 import org.apache.calcite.rex.RexNode;
+import org.apache.calcite.rex.RexOver;
 import org.apache.calcite.sql.SqlAggFunction;
 import org.apache.calcite.util.Pair;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.hive.metastore.api.FieldSchema;
 import org.apache.hadoop.hive.ql.optimizer.calcite.CalciteSemanticException;
 import org.apache.hadoop.hive.ql.optimizer.calcite.HiveCalciteUtil;
+import org.apache.hadoop.hive.ql.optimizer.calcite.HiveRelFactories;
 import org.apache.hadoop.hive.ql.optimizer.calcite.reloperators.HiveAggregate;
 import org.apache.hadoop.hive.ql.optimizer.calcite.reloperators.HiveProject;
-import org.apache.hadoop.hive.ql.optimizer.calcite.reloperators.HiveSort;
+import org.apache.hadoop.hive.ql.optimizer.calcite.reloperators.HiveSortLimit;
 import org.apache.hadoop.hive.ql.optimizer.calcite.reloperators.HiveTableScan;
+import org.apache.hadoop.hive.ql.optimizer.calcite.rules.HiveRelColumnsAlignment;
 import org.apache.hadoop.hive.serde2.typeinfo.TypeInfoFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import com.google.common.collect.ImmutableList;
 
 public class PlanModifierForASTConv {
 
-  private static final Log LOG = LogFactory.getLog(PlanModifierForASTConv.class);
+  private static final Logger LOG = LoggerFactory.getLogger(PlanModifierForASTConv.class);
 
 
-  public static RelNode convertOpTree(RelNode rel, List<FieldSchema> resultSchema)
+  public static RelNode convertOpTree(RelNode rel, List<FieldSchema> resultSchema, boolean alignColumns)
       throws CalciteSemanticException {
     RelNode newTopNode = rel;
     if (LOG.isDebugEnabled()) {
@@ -74,6 +79,15 @@ public class PlanModifierForASTConv {
     convertOpTree(newTopNode, (RelNode) null);
     if (LOG.isDebugEnabled()) {
       LOG.debug("Plan after nested convertOpTree\n " + RelOptUtil.toString(newTopNode));
+    }
+
+    if (alignColumns) {
+      HiveRelColumnsAlignment propagator = new HiveRelColumnsAlignment(
+          HiveRelFactories.HIVE_BUILDER.create(newTopNode.getCluster(), null));
+      newTopNode = propagator.align(newTopNode);
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("Plan after propagating order\n " + RelOptUtil.toString(newTopNode));
+      }
     }
 
     Pair<RelNode, RelNode> topSelparentPair = HiveCalciteUtil.getTopLevelSelect(newTopNode);
@@ -97,6 +111,10 @@ public class PlanModifierForASTConv {
     }
     if (rel instanceof HiveTableScan) {
       return ((HiveTableScan)rel).getTableAlias();
+    }
+    if (rel instanceof DruidQuery) {
+      DruidQuery dq = (DruidQuery) rel;
+      return ((HiveTableScan) dq.getTableScan()).getTableAlias();
     }
     if (rel instanceof Project) {
       return null;
@@ -141,12 +159,12 @@ public class PlanModifierForASTConv {
         if (!validFilterParent(rel, parent)) {
           introduceDerivedTable(rel, parent);
         }
-      } else if (rel instanceof HiveSort) {
+      } else if (rel instanceof HiveSortLimit) {
         if (!validSortParent(rel, parent)) {
           introduceDerivedTable(rel, parent);
         }
-        if (!validSortChild((HiveSort) rel)) {
-          introduceDerivedTable(((HiveSort) rel).getInput(), rel);
+        if (!validSortChild((HiveSortLimit) rel)) {
+          introduceDerivedTable(((HiveSortLimit) rel).getInput(), rel);
         }
       } else if (rel instanceof HiveAggregate) {
         RelNode newParent = parent;
@@ -188,9 +206,7 @@ public class PlanModifierForASTConv {
     String colAlias;
     for (int i = 0; i < rootChildExps.size(); i++) {
       colAlias = resultSchema.get(i).getName();
-      if (colAlias.startsWith("_")) {
-        colAlias = colAlias.substring(1);
-      }
+      colAlias = getNewColAlias(newSelAliases, colAlias);
       newSelAliases.add(colAlias);
     }
 
@@ -203,6 +219,16 @@ public class PlanModifierForASTConv {
       parentOforiginalProjRel.replaceInput(0, replacementProjectRel);
       return rootRel;
     }
+  }
+
+  private static String getNewColAlias(List<String> newSelAliases, String colAlias) {
+    int index = 1;
+    String newColAlias = colAlias;
+    while (newSelAliases.contains(newColAlias)) {
+      //This means that the derived colAlias collides with existing ones.
+      newColAlias = colAlias + "_" + (index++);
+    }
+    return newColAlias;
   }
 
   private static RelNode introduceDerivedTable(final RelNode rel) {
@@ -265,8 +291,8 @@ public class PlanModifierForASTConv {
 
     // TODO: Verify GB having is not a separate filter (if so we shouldn't
     // introduce derived table)
-    if (parent instanceof Filter || parent instanceof Join
-        || parent instanceof SetOp) {
+    if (parent instanceof Filter || parent instanceof Join || parent instanceof SetOp ||
+       (parent instanceof Aggregate && filterNode.getInputs().get(0) instanceof Aggregate)) {
       validParent = false;
     }
 
@@ -284,25 +310,38 @@ public class PlanModifierForASTConv {
       validParent = false;
     }
 
+    if (parent instanceof Project) {
+      for (RexNode child : parent.getChildExps()) {
+        if (child instanceof RexOver || child instanceof RexWinAggCall) {
+          // Hive can't handle select rank() over(order by sum(c1)/sum(c2)) from t1 group by c3
+          // but can handle    select rank() over (order by c4) from
+          // (select sum(c1)/sum(c2)  as c4 from t1 group by c3) t2;
+          // so introduce a project on top of this gby.
+          return false;
+        }
+      }
+    }
+
     return validParent;
   }
 
   private static boolean validSortParent(RelNode sortNode, RelNode parent) {
     boolean validParent = true;
 
-    if (parent != null && !(parent instanceof Project)
-        && !((parent instanceof Sort) || HiveCalciteUtil.orderRelNode(parent)))
+    if (parent != null && !(parent instanceof Project) &&
+        !(HiveCalciteUtil.pureLimitRelNode(parent) && HiveCalciteUtil.pureOrderRelNode(sortNode))) {
       validParent = false;
+    }
 
     return validParent;
   }
 
-  private static boolean validSortChild(HiveSort sortNode) {
+  private static boolean validSortChild(HiveSortLimit sortNode) {
     boolean validChild = true;
     RelNode child = sortNode.getInput();
 
-    if (!(HiveCalciteUtil.limitRelNode(sortNode) && HiveCalciteUtil.orderRelNode(child))
-        && !(child instanceof Project)) {
+    if (!(child instanceof Project) &&
+        !(HiveCalciteUtil.pureLimitRelNode(sortNode) && HiveCalciteUtil.pureOrderRelNode(child))) {
       validChild = false;
     }
 
@@ -353,7 +392,7 @@ public class PlanModifierForASTConv {
     RelDataType longType = TypeConverter.convert(TypeInfoFactory.longTypeInfo, typeFactory);
     RelDataType intType = TypeConverter.convert(TypeInfoFactory.intTypeInfo, typeFactory);
     // Create the dummy aggregation.
-    SqlAggFunction countFn = SqlFunctionConverter.getCalciteAggFn("count",
+    SqlAggFunction countFn = SqlFunctionConverter.getCalciteAggFn("count", false,
         ImmutableList.of(intType), longType);
     // TODO: Using 0 might be wrong; might need to walk down to find the
     // proper index of a dummy.

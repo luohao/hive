@@ -27,6 +27,7 @@ import org.apache.hadoop.hive.ql.exec.vector.expressions.gen.FuncSignLongToDoubl
 import org.apache.hadoop.hive.serde2.io.DoubleWritable;
 import org.apache.hadoop.hive.serde2.io.HiveDecimalWritable;
 import org.apache.hadoop.io.IntWritable;
+import org.apache.hadoop.io.LongWritable;
 
 @Description(name = "sign",
              value = "_FUNC_(x) - returns the sign of x )",
@@ -57,6 +58,20 @@ public class UDFSign extends UDF {
     return result;
   }
 
+  public DoubleWritable evaluate(LongWritable a) {
+    if (a == null) {
+      return null;
+    }
+    if (a.get() == 0) {
+      result.set(0);
+    } else if (a.get() > 0) {
+      result.set(1);
+    } else {
+      result.set(-1);
+    }
+    return result;
+  }
+
   /**
    * Get the sign of the decimal input
    *
@@ -64,12 +79,12 @@ public class UDFSign extends UDF {
    *
    * @return -1, 0, or 1 representing the sign of the input decimal
    */
-  public IntWritable evaluate(HiveDecimalWritable dec) {
-    if (dec == null || dec.getHiveDecimal() == null) {
+  public IntWritable evaluate(HiveDecimalWritable decWritable) {
+    if (decWritable == null || !decWritable.isSet()) {
       return null;
     }
 
-    intWritable.set(dec.getHiveDecimal().signum());
+    intWritable.set(decWritable.signum());
     return intWritable;
   }
 

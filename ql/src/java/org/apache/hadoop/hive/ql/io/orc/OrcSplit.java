@@ -18,100 +18,117 @@
 
 package org.apache.hadoop.hive.ql.io.orc;
 
+import java.io.ByteArrayOutputStream;
 import java.io.DataInput;
 import java.io.DataOutput;
+import java.io.DataOutputStream;
 import java.io.IOException;
-import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hive.ql.io.AcidInputFormat;
-import org.apache.hadoop.hive.ql.io.AcidUtils;
-import org.apache.hadoop.io.Text;
+import org.apache.hadoop.hive.ql.io.ColumnarSplit;
+import org.apache.hadoop.hive.ql.io.LlapAwareSplit;
+import org.apache.hadoop.hive.ql.io.SyntheticFileId;
+import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.io.WritableUtils;
 import org.apache.hadoop.mapred.FileSplit;
-
+import org.apache.orc.OrcProto;
+import org.apache.orc.impl.OrcTail;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 
 /**
  * OrcFileSplit. Holds file meta info
  *
  */
-public class OrcSplit extends FileSplit {
-  private static final Log LOG = LogFactory.getLog(OrcSplit.class);
-
-  private ReaderImpl.FileMetaInfo fileMetaInfo;
+public class OrcSplit extends FileSplit implements ColumnarSplit, LlapAwareSplit {
+  private static final Logger LOG = LoggerFactory.getLogger(OrcSplit.class);
+  private OrcTail orcTail;
   private boolean hasFooter;
   private boolean isOriginal;
   private boolean hasBase;
   private final List<AcidInputFormat.DeltaMetaData> deltas = new ArrayList<>();
-  private OrcFile.WriterVersion writerVersion;
   private long projColsUncompressedSize;
-  private transient Long fileId;
+  private transient Object fileKey;
+  private long fileLen;
 
-  static final int HAS_FILEID_FLAG = 8;
+  static final int HAS_SYNTHETIC_FILEID_FLAG = 16;
+  static final int HAS_LONG_FILEID_FLAG = 8;
   static final int BASE_FLAG = 4;
   static final int ORIGINAL_FLAG = 2;
   static final int FOOTER_FLAG = 1;
 
-  protected OrcSplit(){
+  protected OrcSplit() {
     //The FileSplit() constructor in hadoop 0.20 and 1.x is package private so can't use it.
     //This constructor is used to create the object and then call readFields()
     // so just pass nulls to this super constructor.
     super(null, 0, 0, (String[]) null);
   }
 
-  public OrcSplit(Path path, Long fileId, long offset, long length, String[] hosts,
-      ReaderImpl.FileMetaInfo fileMetaInfo, boolean isOriginal, boolean hasBase,
-      List<AcidInputFormat.DeltaMetaData> deltas, long projectedDataSize) {
+  public OrcSplit(Path path, Object fileId, long offset, long length, String[] hosts,
+      OrcTail orcTail, boolean isOriginal, boolean hasBase,
+      List<AcidInputFormat.DeltaMetaData> deltas, long projectedDataSize, long fileLen) {
     super(path, offset, length, hosts);
-    // We could avoid serializing file ID and just replace the path with inode-based path.
-    // However, that breaks bunch of stuff because Hive later looks up things by split path.
-    this.fileId = fileId;
-    this.fileMetaInfo = fileMetaInfo;
-    hasFooter = this.fileMetaInfo != null;
+    // For HDFS, we could avoid serializing file ID and just replace the path with inode-based
+    // path. However, that breaks bunch of stuff because Hive later looks up things by split path.
+    this.fileKey = fileId;
+    this.orcTail = orcTail;
+    hasFooter = this.orcTail != null;
     this.isOriginal = isOriginal;
     this.hasBase = hasBase;
     this.deltas.addAll(deltas);
-    this.projColsUncompressedSize = projectedDataSize;
+    this.projColsUncompressedSize = projectedDataSize <= 0 ? length : projectedDataSize;
+    // setting file length to Long.MAX_VALUE will let orc reader read file length from file system
+    this.fileLen = fileLen <= 0 ? Long.MAX_VALUE : fileLen;
   }
 
   @Override
   public void write(DataOutput out) throws IOException {
-    //serialize path, offset, length using FileSplit
-    super.write(out);
+    ByteArrayOutputStream bos = new ByteArrayOutputStream();
+    DataOutputStream dos = new DataOutputStream(bos);
+    // serialize path, offset, length using FileSplit
+    super.write(dos);
+    int required = bos.size();
 
+    // write addition payload required for orc
+    writeAdditionalPayload(dos);
+    int additional = bos.size() - required;
+
+    out.write(bos.toByteArray());
+    if (LOG.isTraceEnabled()) {
+      LOG.trace("Writing additional {} bytes to OrcSplit as payload. Required {} bytes.",
+          additional, required);
+    }
+  }
+
+  private void writeAdditionalPayload(final DataOutputStream out) throws IOException {
+    boolean isFileIdLong = fileKey instanceof Long, isFileIdWritable = fileKey instanceof Writable;
     int flags = (hasBase ? BASE_FLAG : 0) |
         (isOriginal ? ORIGINAL_FLAG : 0) |
         (hasFooter ? FOOTER_FLAG : 0) |
-        (fileId != null ? HAS_FILEID_FLAG : 0);
+        (isFileIdLong ? HAS_LONG_FILEID_FLAG : 0) |
+        (isFileIdWritable ? HAS_SYNTHETIC_FILEID_FLAG : 0);
     out.writeByte(flags);
     out.writeInt(deltas.size());
     for(AcidInputFormat.DeltaMetaData delta: deltas) {
       delta.write(out);
     }
     if (hasFooter) {
-      // serialize FileMetaInfo fields
-      Text.writeString(out, fileMetaInfo.compressionType);
-      WritableUtils.writeVInt(out, fileMetaInfo.bufferSize);
-      WritableUtils.writeVInt(out, fileMetaInfo.metadataSize);
-
-      // serialize FileMetaInfo field footer
-      ByteBuffer footerBuff = fileMetaInfo.footerBuffer;
-      footerBuff.reset();
-
-      // write length of buffer
-      WritableUtils.writeVInt(out, footerBuff.limit() - footerBuff.position());
-      out.write(footerBuff.array(), footerBuff.position(),
-          footerBuff.limit() - footerBuff.position());
-      WritableUtils.writeVInt(out, fileMetaInfo.writerVersion.getId());
+      OrcProto.FileTail fileTail = orcTail.getMinimalFileTail();
+      byte[] tailBuffer = fileTail.toByteArray();
+      int tailLen = tailBuffer.length;
+      WritableUtils.writeVInt(out, tailLen);
+      out.write(tailBuffer);
     }
-    if (fileId != null) {
-      out.writeLong(fileId.longValue());
+    if (isFileIdLong) {
+      out.writeLong(((Long)fileKey).longValue());
+    } else if (isFileIdWritable) {
+      ((Writable)fileKey).write(out);
     }
+    out.writeLong(fileLen);
   }
 
   @Override
@@ -123,7 +140,11 @@ public class OrcSplit extends FileSplit {
     hasFooter = (FOOTER_FLAG & flags) != 0;
     isOriginal = (ORIGINAL_FLAG & flags) != 0;
     hasBase = (BASE_FLAG & flags) != 0;
-    boolean hasFileId = (HAS_FILEID_FLAG & flags) != 0;
+    boolean hasLongFileId = (HAS_LONG_FILEID_FLAG & flags) != 0,
+        hasWritableFileId = (HAS_SYNTHETIC_FILEID_FLAG & flags) != 0;
+    if (hasLongFileId && hasWritableFileId) {
+      throw new IOException("Invalid split - both file ID types present");
+    }
 
     deltas.clear();
     int numDeltas = in.readInt();
@@ -133,28 +154,24 @@ public class OrcSplit extends FileSplit {
       deltas.add(dmd);
     }
     if (hasFooter) {
-      // deserialize FileMetaInfo fields
-      String compressionType = Text.readString(in);
-      int bufferSize = WritableUtils.readVInt(in);
-      int metadataSize = WritableUtils.readVInt(in);
-
-      // deserialize FileMetaInfo field footer
-      int footerBuffSize = WritableUtils.readVInt(in);
-      ByteBuffer footerBuff = ByteBuffer.allocate(footerBuffSize);
-      in.readFully(footerBuff.array(), 0, footerBuffSize);
-      OrcFile.WriterVersion writerVersion =
-          ReaderImpl.getWriterVersion(WritableUtils.readVInt(in));
-
-      fileMetaInfo = new ReaderImpl.FileMetaInfo(compressionType, bufferSize,
-          metadataSize, footerBuff, writerVersion);
+      int tailLen = WritableUtils.readVInt(in);
+      byte[] tailBuffer = new byte[tailLen];
+      in.readFully(tailBuffer);
+      OrcProto.FileTail fileTail = OrcProto.FileTail.parseFrom(tailBuffer);
+      orcTail = new OrcTail(fileTail, null);
     }
-    if (hasFileId) {
-      fileId = in.readLong();
+    if (hasLongFileId) {
+      fileKey = in.readLong();
+    } else if (hasWritableFileId) {
+      SyntheticFileId fileId = new SyntheticFileId();
+      fileId.readFields(in);
+      this.fileKey = fileId;
     }
+    fileLen = in.readLong();
   }
 
-  ReaderImpl.FileMetaInfo getFileMetaInfo(){
-    return fileMetaInfo;
+  public OrcTail getOrcTail() {
+    return orcTail;
   }
 
   public boolean hasFooter() {
@@ -173,11 +190,41 @@ public class OrcSplit extends FileSplit {
     return deltas;
   }
 
+  public long getFileLength() {
+    return fileLen;
+  }
+
+  /**
+   * If this method returns true, then for sure it is ACID.
+   * However, if it returns false.. it could be ACID or non-ACID.
+   * @return
+   */
+  public boolean isAcid() {
+    return hasBase || deltas.size() > 0;
+  }
+
   public long getProjectedColumnsUncompressedSize() {
     return projColsUncompressedSize;
   }
 
-  public Long getFileId() {
-    return fileId;
+  public Object getFileKey() {
+    return fileKey;
+  }
+
+  @Override
+  public long getColumnarProjectionSize() {
+    return projColsUncompressedSize;
+  }
+
+  @Override
+  public boolean canUseLlapIo() {
+    return isOriginal && (deltas == null || deltas.isEmpty());
+  }
+
+  @Override
+  public String toString() {
+    return "OrcSplit [" + getPath() + ", start=" + getStart() + ", length=" + getLength()
+        + ", isOriginal=" + isOriginal + ", fileLength=" + fileLen + ", hasFooter=" + hasFooter +
+        ", hasBase=" + hasBase + ", deltas=" + deltas + "]";
   }
 }

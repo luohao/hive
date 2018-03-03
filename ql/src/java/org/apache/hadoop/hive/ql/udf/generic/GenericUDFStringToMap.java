@@ -42,9 +42,9 @@ import org.apache.hadoop.hive.serde2.typeinfo.TypeInfoUtils;
  */
 @Description(name = "str_to_map", value = "_FUNC_(text, delimiter1, delimiter2) - "
     + "Creates a map by parsing text ", extended = "Split text into key-value pairs"
-    + " using two delimiters. The first delimiter seperates pairs, and the"
+    + " using two delimiters. The first delimiter separates pairs, and the"
     + " second delimiter sperates key and value. If only one parameter is given, default"
-    + " delimiters are used: ',' as delimiter1 and '=' as delimiter2.")
+    + " delimiters are used: ',' as delimiter1 and ':' as delimiter2.")
 public class GenericUDFStringToMap extends GenericUDF {
   // Must be deterministic order map for consistent q-test output across Java versions - see HIVE-9161
   private final LinkedHashMap<Object, Object> ret = new LinkedHashMap<Object, Object>();
@@ -83,10 +83,22 @@ public class GenericUDFStringToMap extends GenericUDF {
   public Object evaluate(DeferredObject[] arguments) throws HiveException {
     ret.clear();
     String text = (String) soi_text.convert(arguments[0].get());
+    if (text == null) {
+      return ret;
+    }
+
     String delimiter1 = (soi_de1 == null) ?
       default_de1 : (String) soi_de1.convert(arguments[1].get());
     String delimiter2 = (soi_de2 == null) ?
       default_de2 : (String) soi_de2.convert(arguments[2].get());
+
+    if (delimiter1 == null) {
+      delimiter1 = default_de1;
+    }
+
+    if (delimiter2 == null) {
+      delimiter2 = default_de2;
+    }
 
     String[] keyValuePairs = text.split(delimiter1);
 

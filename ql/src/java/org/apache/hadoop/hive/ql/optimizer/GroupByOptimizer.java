@@ -28,8 +28,8 @@ import java.util.Map;
 import java.util.Set;
 import java.util.Stack;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.metastore.api.FieldSchema;
 import org.apache.hadoop.hive.ql.exec.ColumnInfo;
@@ -69,9 +69,9 @@ import org.apache.hadoop.hive.ql.udf.generic.GenericUDAFEvaluator.Mode;
  * of the bucketing and sorting keys of the underlying table in the same order, the
  * group by can be be performed on the map-side completely.
  */
-public class GroupByOptimizer implements Transform {
+public class GroupByOptimizer extends Transform {
 
-  private static final Log LOG = LogFactory.getLog(GroupByOptimizer.class
+  private static final Logger LOG = LoggerFactory.getLogger(GroupByOptimizer.class
       .getName());
 
   public GroupByOptimizer() {
@@ -212,11 +212,7 @@ public class GroupByOptimizer implements Transform {
         convertGroupByMapSideSortedGroupBy(hiveConf, groupByOp, depth);
       }
       else if (optimizeDistincts && !HiveConf.getBoolVar(hiveConf, HiveConf.ConfVars.HIVE_VECTORIZATION_ENABLED)) {
-        // In test mode, dont change the query plan. However, setup a query property
         pGraphContext.getQueryProperties().setHasMapGroupBy(true);
-        if (HiveConf.getBoolVar(hiveConf, HiveConf.ConfVars.HIVE_MAP_GROUPBY_SORT_TESTMODE)) {
-          return;
-        }
         ReduceSinkOperator reduceSinkOp =
             (ReduceSinkOperator)groupByOp.getChildOperators().get(0);
         GroupByDesc childGroupByDesc =
@@ -518,11 +514,7 @@ public class GroupByOptimizer implements Transform {
     // The operators specified by depth and removed from the tree.
     protected void convertGroupByMapSideSortedGroupBy(
         HiveConf conf, GroupByOperator groupByOp, int depth) {
-      // In test mode, dont change the query plan. However, setup a query property
       pGraphContext.getQueryProperties().setHasMapGroupBy(true);
-      if (HiveConf.getBoolVar(conf, HiveConf.ConfVars.HIVE_MAP_GROUPBY_SORT_TESTMODE)) {
-        return;
-      }
 
       if (removeChildren(groupByOp, depth)) {
         // Use bucketized hive input format - that makes sure that one mapper reads the entire file
@@ -579,8 +571,8 @@ public class GroupByOptimizer implements Transform {
         colName.add(cInfo.getInternalName());
         columnExprMap.put(cInfo.getInternalName(), column);
       }
-      return OperatorFactory.getAndMakeChild(new SelectDesc(columns, colName), new RowSchema(currOp
-          .getSchema().getSignature()), columnExprMap, parentOp);
+      return OperatorFactory.getAndMakeChild(new SelectDesc(columns, colName),
+          new RowSchema(currOp.getSchema().getSignature()), columnExprMap, parentOp);
     }
   }
 

@@ -23,9 +23,8 @@ import java.io.File;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 
-import junit.framework.TestCase;
-
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.hive.ql.CompilationOpContext;
 import org.apache.hadoop.hive.ql.parse.TypeCheckProcFactory;
 import org.apache.hadoop.hive.ql.plan.ExprNodeColumnDesc;
 import org.apache.hadoop.hive.ql.plan.ExprNodeDesc;
@@ -36,6 +35,8 @@ import org.apache.hadoop.hive.ql.plan.PartitionDesc;
 import org.apache.hadoop.hive.ql.plan.TableDesc;
 import org.apache.hadoop.hive.serde2.typeinfo.TypeInfoFactory;
 import org.apache.hadoop.mapred.JobConf;
+
+import junit.framework.TestCase;
 
 /**
  * TestPlan.
@@ -58,18 +59,18 @@ public class TestPlan extends TestCase {
           .getFuncExprNodeDesc("==", expr1, expr2);
 
       FilterDesc filterCtx = new FilterDesc(filterExpr, false);
-      Operator<FilterDesc> op = OperatorFactory.get(FilterDesc.class);
+      Operator<FilterDesc> op = OperatorFactory.get(new CompilationOpContext(), FilterDesc.class);
       op.setConf(filterCtx);
 
       ArrayList<String> aliasList = new ArrayList<String>();
       aliasList.add("a");
-      LinkedHashMap<String, ArrayList<String>> pa = new LinkedHashMap<String, ArrayList<String>>();
-      pa.put("/tmp/testfolder", aliasList);
+      LinkedHashMap<Path, ArrayList<String>> pa = new LinkedHashMap<>();
+      pa.put(new Path("/tmp/testfolder"), aliasList);
 
       TableDesc tblDesc = Utilities.defaultTd;
       PartitionDesc partDesc = new PartitionDesc(tblDesc, null);
-      LinkedHashMap<String, PartitionDesc> pt = new LinkedHashMap<String, PartitionDesc>();
-      pt.put("/tmp/testfolder", partDesc);
+      LinkedHashMap<Path, PartitionDesc> pt = new LinkedHashMap<>();
+      pt.put(new Path("/tmp/testfolder"), partDesc);
 
       LinkedHashMap<String, Operator<? extends OperatorDesc>> ao =
         new LinkedHashMap<String, Operator<? extends OperatorDesc>>();
@@ -83,7 +84,7 @@ public class TestPlan extends TestCase {
       JobConf job = new JobConf(TestPlan.class);
       // serialize the configuration once ..
       ByteArrayOutputStream baos = new ByteArrayOutputStream();
-      Utilities.serializePlan(mrwork, baos, job);
+      SerializationUtilities.serializePlan(mrwork, baos);
       baos.close();
       String v1 = baos.toString();
 
@@ -101,7 +102,7 @@ public class TestPlan extends TestCase {
 
       // serialize again
       baos.reset();
-      Utilities.serializePlan(mrwork2, baos, job);
+      SerializationUtilities.serializePlan(mrwork2, baos);
       baos.close();
 
       // verify that the two are equal

@@ -1,12 +1,8 @@
-PREHOOK: query: -- SORT_QUERY_RESULTS
-
-CREATE TABLE dest1(key INT, value STRING) STORED AS TEXTFILE
+PREHOOK: query: CREATE TABLE dest1(key INT, value STRING) STORED AS TEXTFILE
 PREHOOK: type: CREATETABLE
 PREHOOK: Output: database:default
 PREHOOK: Output: default@dest1
-POSTHOOK: query: -- SORT_QUERY_RESULTS
-
-CREATE TABLE dest1(key INT, value STRING) STORED AS TEXTFILE
+POSTHOOK: query: CREATE TABLE dest1(key INT, value STRING) STORED AS TEXTFILE
 POSTHOOK: type: CREATETABLE
 POSTHOOK: Output: database:default
 POSTHOOK: Output: default@dest1
@@ -43,6 +39,7 @@ STAGE PLANS:
                   Reduce Output Operator
                     sort order: 
                     Statistics: Num rows: 10 Data size: 100 Basic stats: COMPLETE Column stats: NONE
+                    TopN Hash Memory Usage: 0.1
                     value expressions: _col0 (type: string), _col1 (type: string)
       Reduce Operator Tree:
         Select Operator

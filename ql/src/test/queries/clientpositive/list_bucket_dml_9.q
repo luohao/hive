@@ -1,4 +1,4 @@
-set hive.mapred.supports.subdirectories=true;
+set hive.mapred.mode=nonstrict;
 set hive.exec.dynamic.partition=true;
 set hive.exec.dynamic.partition.mode=nonstrict;
 set hive.input.format=org.apache.hadoop.hive.ql.io.BucketizedHiveInputFormat;
@@ -9,7 +9,6 @@ set hive.merge.mapredfiles=false;
 
 -- INCLUDE_HADOOP_MAJOR_VERSIONS(0.23)
 -- SORT_QUERY_RESULTS
--- JAVA_VERSION_SPECIFIC_OUTPUT
 
 -- list bucketing DML: static partition. multiple skewed columns. merge.
 -- ds=2008-04-08/hr=11/HIVE_DEFAULT_LIST_BUCKETING_DIR_NAME:

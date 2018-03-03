@@ -18,6 +18,7 @@
 
 package org.apache.hadoop.hive.serde2;
 
+import java.util.Map;
 import java.util.Properties;
 
 import org.apache.hadoop.conf.Configuration;
@@ -31,7 +32,7 @@ import javax.annotation.Nullable;
  * new methods can be added in the underlying interface, SerDe, and only implementations
  * that need those methods overwrite it.
  */
-public abstract class AbstractSerDe implements SerDe {
+public abstract class AbstractSerDe implements Deserializer, Serializer {
 
   protected String configErrors;
 
@@ -114,5 +115,13 @@ public abstract class AbstractSerDe implements SerDe {
    */
   public String getConfigurationErrors() {
     return configErrors == null ? "" : configErrors;
+  }
+
+  /**
+   * @rturn Whether the SerDe that can store schema both inside and outside of metastore
+   *        does, in fact, store it inside metastore, based on table parameters.
+   */
+  public boolean shouldStoreFieldsInMetastore(Map<String, String> tableParams) {
+    return false; // The default, unless SerDe overrides it.
   }
 }

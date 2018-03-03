@@ -1,3 +1,6 @@
+set hive.strict.checks.bucketing=false;
+
+set hive.mapred.mode=nonstrict;
 set hive.explain.user=false;
 set hive.join.emit.interval=100000;
 set hive.optimize.ppd=true;
@@ -6,6 +9,8 @@ set hive.tez.dynamic.partition.pruning=true;
 set hive.optimize.metadataonly=false;
 set hive.optimize.index.filter=true;
 set hive.vectorized.execution.enabled=true;
+set hive.tez.min.bloom.filter.entries=1;
+set hive.tez.bigtable.minsize.semijoin.reduction=1;
 
 -- SORT_QUERY_RESULTS
 
@@ -27,8 +32,8 @@ load data local inpath '../../data/files/srcbucket21.txt' INTO TABLE srcbucket_m
 load data local inpath '../../data/files/srcbucket22.txt' INTO TABLE srcbucket_mapjoin_part partition(ds='2008-04-08');
 load data local inpath '../../data/files/srcbucket23.txt' INTO TABLE srcbucket_mapjoin_part partition(ds='2008-04-08');
 
-set hive.enforce.bucketing=true;
-set hive.enforce.sorting = true;
+
+
 set hive.optimize.bucketingsorting=false;
 insert overwrite table tab_part partition (ds='2008-04-08')
 select key,value from srcbucket_mapjoin_part;
@@ -120,6 +125,27 @@ full outer join
 
 select * from
 (select * from tab where tab.key = 0)a
+full outer join
+(select * from tab_part where tab_part.key = 98)b on a.key = b.key join tab_part c on b.key = c.key;
+
+select * from
+(select * from tab where tab.key = 0)a
 join
 (select * from tab_part where tab_part.key = 98)b full outer join tab_part c on a.key = b.key and b.key = c.key;
 
+select * from
+(select * from tab where tab.key = 0)a
+join
+(select * from tab_part where tab_part.key = 98)b on a.key = b.key full outer join tab_part c on b.key = c.key;
+
+set hive.cbo.enable = false;
+
+select * from
+(select * from tab where tab.key = 0)a
+full outer join
+(select * from tab_part where tab_part.key = 98)b join tab_part c on a.key = b.key and b.key = c.key;
+
+select * from
+(select * from tab where tab.key = 0)a
+join
+(select * from tab_part where tab_part.key = 98)b full outer join tab_part c on a.key = b.key and b.key = c.key;

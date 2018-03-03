@@ -19,10 +19,9 @@
 package org.apache.hadoop.hive.ql.exec;
 
 import java.io.Serializable;
-import java.util.Collection;
-import java.util.concurrent.Future;
 
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hive.ql.CompilationOpContext;
 import org.apache.hadoop.hive.ql.metadata.HiveException;
 import org.apache.hadoop.hive.ql.plan.LimitDesc;
 import org.apache.hadoop.hive.ql.plan.api.OperatorType;
@@ -34,24 +33,36 @@ public class LimitOperator extends Operator<LimitDesc> implements Serializable {
   private static final long serialVersionUID = 1L;
 
   protected transient int limit;
+  protected transient int offset;
   protected transient int leastRow;
   protected transient int currCount;
   protected transient boolean isMap;
 
+  /** Kryo ctor. */
+  protected LimitOperator() {
+    super();
+  }
+
+  public LimitOperator(CompilationOpContext ctx) {
+    super(ctx);
+  }
+
   @Override
-  protected Collection<Future<?>> initializeOp(Configuration hconf) throws HiveException {
-    Collection<Future<?>> result = super.initializeOp(hconf);
+  protected void initializeOp(Configuration hconf) throws HiveException {
+    super.initializeOp(hconf);
     limit = conf.getLimit();
     leastRow = conf.getLeastRows();
+    offset = (conf.getOffset() == null) ? 0 : conf.getOffset();
     currCount = 0;
     isMap = hconf.getBoolean("mapred.task.is.map", true);
-    return result;
   }
 
   @Override
   public void process(Object row, int tag) throws HiveException {
-    if (currCount < limit) {
+    if (offset <= currCount && currCount < (offset + limit)) {
       forward(row, inputObjInspectors[tag]);
+      currCount++;
+    } else if (offset > currCount) {
       currCount++;
     } else {
       setDone(true);
@@ -60,7 +71,7 @@ public class LimitOperator extends Operator<LimitDesc> implements Serializable {
 
   @Override
   public String getName() {
-    return getOperatorName();
+    return LimitOperator.getOperatorName();
   }
 
   static public String getOperatorName() {
@@ -77,6 +88,7 @@ public class LimitOperator extends Operator<LimitDesc> implements Serializable {
     if (!isMap && currCount < leastRow) {
       throw new HiveException("No sufficient row found");
     }
+    super.closeOp(abort);
   }
 
 }

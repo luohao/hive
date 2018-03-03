@@ -26,8 +26,8 @@ import java.util.Map;
 import java.util.Set;
 import java.util.Stack;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.hive.conf.HiveConf.ConfVars;
 import org.apache.hadoop.hive.ql.exec.CommonJoinOperator;
 import org.apache.hadoop.hive.ql.exec.FunctionRegistry;
@@ -60,9 +60,9 @@ import org.apache.hadoop.hive.ql.plan.OperatorDesc;
 /**
  * creates synthetic predicates that represent "IN (keylist other table)"
  */
-public class SyntheticJoinPredicate implements Transform {
+public class SyntheticJoinPredicate extends Transform {
 
-  private static transient Log LOG = LogFactory.getLog(SyntheticJoinPredicate.class.getName());
+  private static transient Logger LOG = LoggerFactory.getLogger(SyntheticJoinPredicate.class.getName());
 
   @Override
   public ParseContext transform(ParseContext pctx) throws SemanticException {
@@ -105,8 +105,10 @@ public class SyntheticJoinPredicate implements Transform {
   // insert filter operator between target(child) and input(parent)
   private static Operator<FilterDesc> createFilter(Operator<?> target, Operator<?> parent,
       RowSchema parentRS, ExprNodeDesc filterExpr) {
-    Operator<FilterDesc> filter = OperatorFactory.get(new FilterDesc(filterExpr, false),
-        new RowSchema(parentRS.getSignature()));
+    FilterDesc filterDesc = new FilterDesc(filterExpr, false);
+    filterDesc.setSyntheticJoinPredicate(true);
+    Operator<FilterDesc> filter = OperatorFactory.get(parent.getCompilationOpContext(),
+        filterDesc, new RowSchema(parentRS.getSignature()));
     filter.getParentOperators().add(parent);
     filter.getChildOperators().add(target);
     parent.replaceChild(target, filter);

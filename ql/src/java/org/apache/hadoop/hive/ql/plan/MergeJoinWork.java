@@ -19,6 +19,7 @@
 package org.apache.hadoop.hive.ql.plan;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
@@ -42,18 +43,23 @@ public class MergeJoinWork extends BaseWork {
   }
 
   @Override
-  public String getName() {
-    return super.getName();
-  }
-
-  @Override
   public void replaceRoots(Map<Operator<?>, Operator<?>> replacementMap) {
     getMainWork().replaceRoots(replacementMap);
   }
 
   @Override
   public Set<Operator<?>> getAllRootOperators() {
-    return getMainWork().getAllRootOperators();
+    Set<Operator<?>> set = new HashSet<>();
+    set.addAll(getMainWork().getAllRootOperators());
+    for (BaseWork w : mergeWorkList) {
+      set.addAll(w.getAllRootOperators());
+    }
+    return set;
+  }
+
+  @Override
+  public Operator<?> getAnyRootOperator() {
+    return getMainWork().getAnyRootOperator();
   }
 
   @Override
@@ -141,6 +147,35 @@ public class MergeJoinWork extends BaseWork {
   }
 
   @Override
+  public void setVectorMode(boolean vectorMode) {
+    getMainWork().setVectorMode(vectorMode);
+  }
+
+  @Override
+  public boolean getVectorMode() {
+    return getMainWork().getVectorMode();
+  }
+
+  @Override
+  public void setUberMode(boolean uberMode) {
+    getMainWork().setUberMode(uberMode);
+  }
+
+  @Override
+  public boolean getUberMode() {
+    return getMainWork().getUberMode();
+  }
+
+  @Override
+  public void setLlapMode(boolean llapMode) {
+    getMainWork().setLlapMode(llapMode);
+  }
+
+  @Override
+  public boolean getLlapMode() {
+    return getMainWork().getLlapMode();
+  }
+  
   public void addDummyOp(HashTableDummyOperator dummyOp) {
     getMainWork().addDummyOp(dummyOp);
   }

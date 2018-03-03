@@ -19,7 +19,6 @@ package org.apache.hadoop.hive.metastore;
 
 import java.io.BufferedReader;
 import java.io.File;
-import java.io.FileInputStream;
 import java.io.FileNotFoundException;
 import java.io.FileReader;
 import java.io.IOException;
@@ -27,21 +26,19 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
-import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hive.common.util.HiveVersionInfo;
 
 import com.google.common.collect.ImmutableMap;
 
 
 public class MetaStoreSchemaInfo {
-  private static String SQL_FILE_EXTENSION=".sql";
-  private static String UPGRADE_FILE_PREFIX="upgrade-";
-  private static String INIT_FILE_PREFIX="hive-schema-";
-  private static String VERSION_UPGRADE_LIST = "upgrade.order";
-  private static String PRE_UPGRADE_PREFIX = "pre-";
+  private static final String SQL_FILE_EXTENSION = ".sql";
+  private static final String UPGRADE_FILE_PREFIX = "upgrade-";
+  private static final String INIT_FILE_PREFIX = "hive-schema-";
+  private static final String VERSION_UPGRADE_LIST = "upgrade.order";
+  private static final String PRE_UPGRADE_PREFIX = "pre-";
   private final String dbType;
   private final String hiveSchemaVersions[];
-  private final HiveConf hiveConf;
   private final String hiveHome;
 
   // Some version upgrades often don't change schema. So they are equivalent to
@@ -55,10 +52,9 @@ public class MetaStoreSchemaInfo {
           "1.2.1", "1.2.0"
       );
 
-  public MetaStoreSchemaInfo(String hiveHome, HiveConf hiveConf, String dbType) throws HiveMetaException {
+  public MetaStoreSchemaInfo(String hiveHome, String dbType) throws HiveMetaException {
     this.hiveHome = hiveHome;
     this.dbType = dbType;
-    this.hiveConf = hiveConf;
     // load upgrade order for the given dbType
     List<String> upgradeOrderList = new ArrayList<String>();
     String upgradeListFile = getMetaStoreScriptDir() + File.separator +
@@ -151,6 +147,10 @@ public class MetaStoreSchemaInfo {
 
   public static String getHiveSchemaVersion() {
     String hiveVersion = HiveVersionInfo.getShortVersion();
+    return getEquivalentVersion(hiveVersion);
+  }
+
+  private static String getEquivalentVersion(String hiveVersion) {
     // if there is an equivalent version, return that, else return this version
     String equivalentVersion = EQUIVALENT_VERSIONS.get(hiveVersion);
     if (equivalentVersion != null) {
@@ -158,6 +158,49 @@ public class MetaStoreSchemaInfo {
     } else {
       return hiveVersion;
     }
+  }
+
+  /**
+   * A dbVersion is compatible with hive version if it is greater or equal to
+   * the hive version. This is result of the db schema upgrade design principles
+   * followed in hive project. The state where db schema version is ahead of 
+   * hive software version is often seen when a 'rolling upgrade' or 
+   * 'rolling downgrade' is happening. This is a state where hive is functional 
+   * and returning non zero status for it is misleading.
+   *
+   * @param hiveVersion
+   *          version of hive software
+   * @param dbVersion
+   *          version of metastore rdbms schema
+   * @return true if versions are compatible
+   */
+  public static boolean isVersionCompatible(String hiveVersion, String dbVersion) {
+    hiveVersion = getEquivalentVersion(hiveVersion);
+    dbVersion = getEquivalentVersion(dbVersion);
+    if (hiveVersion.equals(dbVersion)) {
+      return true;
+    }
+    String[] hiveVerParts = hiveVersion.split("\\.");
+    String[] dbVerParts = dbVersion.split("\\.");
+    if (hiveVerParts.length != 3 || dbVerParts.length != 3) {
+      // these are non standard version numbers. can't perform the
+      // comparison on these, so assume that they are incompatible
+      return false;
+    }
+
+    for (int i = 0; i < dbVerParts.length; i++) {
+      int dbVerPart = Integer.parseInt(dbVerParts[i]);
+      int hiveVerPart = Integer.parseInt(hiveVerParts[i]);
+      if (dbVerPart > hiveVerPart) {
+        return true;
+      } else if (dbVerPart < hiveVerPart) {
+        return false;
+      } else {
+        continue; // compare next part
+      }
+    }
+
+    return true;
   }
 
 }

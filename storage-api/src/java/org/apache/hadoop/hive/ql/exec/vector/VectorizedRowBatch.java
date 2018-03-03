@@ -39,6 +39,10 @@ public class VectorizedRowBatch implements Writable {
   public int[] projectedColumns;
   public int projectionSize;
 
+  private int dataColumnCount;
+  private int partitionColumnCount;
+
+
   /*
    * If no filtering has been applied yet, selectedInUse is false,
    * meaning that all rows qualify. If it is true, then the selected[] array
@@ -54,6 +58,11 @@ public class VectorizedRowBatch implements Writable {
    * one VectorizedRowBatch to fit in cache.
    */
   public static final int DEFAULT_SIZE = 1024;
+
+  /*
+   * This number is a safety limit for 32MB of writables.
+   */
+  public static final int DEFAULT_BYTES = 32 * 1024 * 1024;
 
   /**
    * Return a batch with the specified number of columns.
@@ -86,6 +95,22 @@ public class VectorizedRowBatch implements Writable {
     for (int i = 0; i < numCols; i++) {
       projectedColumns[i] = i;
     }
+
+    dataColumnCount = -1;
+    partitionColumnCount = -1;
+  }
+
+  public void setPartitionInfo(int dataColumnCount, int partitionColumnCount) {
+    this.dataColumnCount = dataColumnCount;
+    this.partitionColumnCount = partitionColumnCount;
+  }
+
+  public int getDataColumnCount() {
+    return dataColumnCount;
+  }
+
+  public int getPartitionColumnCount() {
+    return partitionColumnCount;
   }
 
   /**
@@ -117,6 +142,43 @@ public class VectorizedRowBatch implements Writable {
       return "";
     }
     StringBuilder b = new StringBuilder();
+    b.append("Column vector types: ");
+    for (int k = 0; k < projectionSize; k++) {
+      int projIndex = projectedColumns[k];
+      ColumnVector cv = cols[projIndex];
+      if (k > 0) {
+        b.append(", ");
+      }
+      b.append(projIndex);
+      b.append(":");
+      String colVectorType = null;
+      if (cv instanceof LongColumnVector) {
+        colVectorType = "LONG";
+      } else if (cv instanceof DoubleColumnVector) {
+        colVectorType = "DOUBLE";
+      } else if (cv instanceof BytesColumnVector) {
+        colVectorType = "BYTES";
+      } else if (cv instanceof DecimalColumnVector) {
+        colVectorType = "DECIMAL";
+      } else if (cv instanceof TimestampColumnVector) {
+        colVectorType = "TIMESTAMP";
+      } else if (cv instanceof IntervalDayTimeColumnVector) {
+        colVectorType = "INTERVAL_DAY_TIME";
+      } else if (cv instanceof ListColumnVector) {
+        colVectorType = "LIST";
+      } else if (cv instanceof MapColumnVector) {
+        colVectorType = "MAP";
+      } else if (cv instanceof StructColumnVector) {
+        colVectorType = "STRUCT";
+      } else if (cv instanceof UnionColumnVector) {
+        colVectorType = "UNION";
+      } else {
+        colVectorType = "Unknown";
+      }
+      b.append(colVectorType);
+    }
+    b.append('\n');
+
     if (this.selectedInUse) {
       for (int j = 0; j < size; j++) {
         int i = selected[j];
@@ -143,7 +205,13 @@ public class VectorizedRowBatch implements Writable {
           if (k > 0) {
             b.append(", ");
           }
-          cv.stringifyValue(b, i);
+          if (cv != null) {
+            try {
+              cv.stringifyValue(b, i);
+            } catch (Exception ex) {
+              b.append("<invalid>");
+            }
+          }
         }
         b.append(']');
         if (i < size - 1) {
@@ -181,6 +249,16 @@ public class VectorizedRowBatch implements Writable {
         vc.reset();
         vc.init();
       }
+    }
+  }
+
+  /**
+   * Set the maximum number of rows in the batch.
+   * Data is not preserved.
+   */
+  public void ensureSize(int rows) {
+    for(int i=0; i < cols.length; ++i) {
+      cols[i].ensureSize(rows, false);
     }
   }
 }

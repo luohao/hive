@@ -1,17 +1,15 @@
-PREHOOK: query: -- SORT_BEFORE_DIFF
-
-create table src_auth_tmp as select * from src
+PREHOOK: query: create table src_auth_tmp as select * from src
 PREHOOK: type: CREATETABLE_AS_SELECT
 PREHOOK: Input: default@src
 PREHOOK: Output: database:default
 PREHOOK: Output: default@src_auth_tmp
-POSTHOOK: query: -- SORT_BEFORE_DIFF
-
-create table src_auth_tmp as select * from src
+POSTHOOK: query: create table src_auth_tmp as select * from src
 POSTHOOK: type: CREATETABLE_AS_SELECT
 POSTHOOK: Input: default@src
 POSTHOOK: Output: database:default
 POSTHOOK: Output: default@src_auth_tmp
+POSTHOOK: Lineage: src_auth_tmp.key SIMPLE [(src)src.FieldSchema(name:key, type:string, comment:default), ]
+POSTHOOK: Lineage: src_auth_tmp.value SIMPLE [(src)src.FieldSchema(name:value, type:string, comment:default), ]
 PREHOOK: query: create table authorization_part (key int, value string) partitioned by (ds string)
 PREHOOK: type: CREATETABLE
 PREHOOK: Output: database:default
@@ -34,12 +32,10 @@ PREHOOK: Output: default@src_auth_tmp
 POSTHOOK: query: grant select on table src_auth_tmp to user hive_test_user
 POSTHOOK: type: GRANT_PRIVILEGE
 POSTHOOK: Output: default@src_auth_tmp
-PREHOOK: query: -- column grant to user
-grant Create on table authorization_part to user hive_test_user
+PREHOOK: query: grant Create on table authorization_part to user hive_test_user
 PREHOOK: type: GRANT_PRIVILEGE
 PREHOOK: Output: default@authorization_part
-POSTHOOK: query: -- column grant to user
-grant Create on table authorization_part to user hive_test_user
+POSTHOOK: query: grant Create on table authorization_part to user hive_test_user
 POSTHOOK: type: GRANT_PRIVILEGE
 POSTHOOK: Output: default@authorization_part
 PREHOOK: query: grant Update on table authorization_part to user hive_test_user

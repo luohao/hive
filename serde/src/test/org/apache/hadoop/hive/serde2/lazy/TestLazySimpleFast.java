@@ -26,43 +26,65 @@ import org.apache.hadoop.hive.serde.serdeConstants;
 import org.apache.hadoop.hive.serde2.ByteStream.Output;
 import org.apache.hadoop.hive.serde2.SerDeException;
 import org.apache.hadoop.hive.serde2.SerDeUtils;
+import org.apache.hadoop.hive.serde2.SerdeRandomRowSource;
 import org.apache.hadoop.hive.serde2.VerifyFast;
-import org.apache.hadoop.hive.serde2.binarysortable.MyTestPrimitiveClass;
-import org.apache.hadoop.hive.serde2.binarysortable.MyTestPrimitiveClass.ExtraTypeInfo;
+import org.apache.hadoop.hive.serde2.binarysortable.MyTestClass;
 import org.apache.hadoop.hive.serde2.lazy.fast.LazySimpleDeserializeRead;
 import org.apache.hadoop.hive.serde2.lazy.fast.LazySimpleSerializeWrite;
 import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspectorUtils;
-import org.apache.hadoop.hive.serde2.objectinspector.PrimitiveObjectInspector.PrimitiveCategory;
 import org.apache.hadoop.hive.serde2.objectinspector.StructObjectInspector;
 import org.apache.hadoop.hive.serde2.typeinfo.PrimitiveTypeInfo;
 import org.apache.hadoop.io.BytesWritable;
 import org.apache.hadoop.io.Text;
+import org.apache.hadoop.io.Writable;
 
 import junit.framework.TestCase;
 
 public class TestLazySimpleFast extends TestCase {
 
-  private void testLazySimpleFast(MyTestPrimitiveClass[] myTestPrimitiveClasses, LazySimpleSerDe[] serdes,
-      StructObjectInspector[] rowOIs, byte separator, LazySerDeParameters[] serdeParams,
-      PrimitiveTypeInfo[][] primitiveTypeInfosArray) throws Throwable {
+  private void testLazySimpleFast(
+    SerdeRandomRowSource source, Object[][] rows,
+    LazySimpleSerDe serde, StructObjectInspector rowOI,
+    LazySimpleSerDe serde_fewer, StructObjectInspector writeRowOI,
+    byte separator, LazySerDeParameters serdeParams, LazySerDeParameters serdeParams_fewer,
+    PrimitiveTypeInfo[] primitiveTypeInfos,
+    boolean useIncludeColumns, boolean doWriteFewerColumns, Random r) throws Throwable {
 
+    int rowCount = rows.length;
+    int columnCount = primitiveTypeInfos.length;
+
+    boolean[] columnsToInclude = null;
+    if (useIncludeColumns) {
+      columnsToInclude = new boolean[columnCount];
+      for (int i = 0; i < columnCount; i++) {
+        columnsToInclude[i] = r.nextBoolean();
+      }
+    }
+
+    int writeColumnCount = columnCount;
+    PrimitiveTypeInfo[] writePrimitiveTypeInfos = primitiveTypeInfos;
+    if (doWriteFewerColumns) {
+      writeColumnCount = writeRowOI.getAllStructFieldRefs().size();
+      writePrimitiveTypeInfos = Arrays.copyOf(primitiveTypeInfos, writeColumnCount);
+    }
 
     // Try to serialize
-    BytesWritable serializeWriteBytes[] = new BytesWritable[myTestPrimitiveClasses.length];
-    for (int i = 0; i < myTestPrimitiveClasses.length; i++) {
-      MyTestPrimitiveClass t = myTestPrimitiveClasses[i];
+    BytesWritable serializeWriteBytes[] = new BytesWritable[rowCount];
+    for (int i = 0; i < rowCount; i++) {
+      Object[] row = rows[i];
       Output output = new Output();
 
-      LazySimpleSerializeWrite lazySimpleSerializeWrite = 
-          new LazySimpleSerializeWrite(MyTestPrimitiveClass.primitiveCount,
-              separator, serdeParams[i]);
+      LazySimpleSerializeWrite lazySimpleSerializeWrite =
+          new LazySimpleSerializeWrite(columnCount,
+              separator, serdeParams);
 
       lazySimpleSerializeWrite.set(output);
 
-      for (int index = 0; index < MyTestPrimitiveClass.primitiveCount; index++) {
-        Object object = t.getPrimitiveObject(index);
-        PrimitiveCategory primitiveCategory = t.getPrimitiveCategory(index);
-        VerifyFast.serializeWrite(lazySimpleSerializeWrite, primitiveCategory, object);
+      for (int index = 0; index < columnCount; index++) {
+
+        Writable writable = (Writable) row[index];
+
+        VerifyFast.serializeWrite(lazySimpleSerializeWrite, primitiveTypeInfos[index], writable);
       }
 
       BytesWritable bytesWritable = new BytesWritable();
@@ -71,12 +93,13 @@ public class TestLazySimpleFast extends TestCase {
     }
 
     // Try to deserialize
-    for (int i = 0; i < myTestPrimitiveClasses.length; i++) {
-      MyTestPrimitiveClass t = myTestPrimitiveClasses[i];
-      PrimitiveTypeInfo[] primitiveTypeInfos = primitiveTypeInfosArray[i];
-      LazySimpleDeserializeRead lazySimpleDeserializeRead = 
-              new LazySimpleDeserializeRead(primitiveTypeInfos,
-                  separator, serdeParams[i]);
+    for (int i = 0; i < rowCount; i++) {
+      Object[] row = rows[i];
+      LazySimpleDeserializeRead lazySimpleDeserializeRead =
+              new LazySimpleDeserializeRead(
+                  writePrimitiveTypeInfos,
+                  /* useExternalBuffer */ false,
+                  separator, serdeParams);
 
       BytesWritable bytesWritable = serializeWriteBytes[i];
       byte[] bytes = bytesWritable.getBytes();
@@ -88,28 +111,32 @@ public class TestLazySimpleFast extends TestCase {
         chars[c] = (char) (bytes[c] & 0xFF);
       }
 
-      for (int index = 0; index < MyTestPrimitiveClass.primitiveCount; index++) {
-        Object object = t.getPrimitiveObject(index);
-        PrimitiveCategory primitiveCategory = t.getPrimitiveCategory(index);
-        VerifyFast.verifyDeserializeRead(lazySimpleDeserializeRead, primitiveTypeInfos[index], object);
+      for (int index = 0; index < columnCount; index++) {
+        if (useIncludeColumns && !columnsToInclude[index]) {
+          lazySimpleDeserializeRead.skipNextField();
+        } else if (index >= writeColumnCount) {
+          // Should come back a null.
+          VerifyFast.verifyDeserializeRead(lazySimpleDeserializeRead, primitiveTypeInfos[index], null);
+        } else {
+          Writable writable = (Writable) row[index];
+          VerifyFast.verifyDeserializeRead(lazySimpleDeserializeRead, primitiveTypeInfos[index], writable);
+        }
       }
-      lazySimpleDeserializeRead.extraFieldsCheck();
-      TestCase.assertTrue(!lazySimpleDeserializeRead.readBeyondConfiguredFieldsWarned());
-      TestCase.assertTrue(!lazySimpleDeserializeRead.readBeyondBufferRangeWarned());
-      TestCase.assertTrue(!lazySimpleDeserializeRead.bufferRangeHasExtraDataWarned());
+      if (writeColumnCount == columnCount) {
+        TestCase.assertTrue(lazySimpleDeserializeRead.isEndOfInputReached());
+      }
     }
 
     // Try to deserialize using SerDe class our Writable row objects created by SerializeWrite.
-    for (int i = 0; i < myTestPrimitiveClasses.length; i++) {
+    for (int i = 0; i < rowCount; i++) {
       BytesWritable bytesWritable = serializeWriteBytes[i];
-      LazyStruct lazySimpleStruct = (LazyStruct) serdes[i].deserialize(bytesWritable);
+      LazyStruct lazySimpleStruct = (LazyStruct) serde.deserialize(bytesWritable);
 
-      MyTestPrimitiveClass t = myTestPrimitiveClasses[i];
-      PrimitiveTypeInfo[] primitiveTypeInfos = primitiveTypeInfosArray[i];
+      Object[] row = rows[i];
 
-      for (int index = 0; index < MyTestPrimitiveClass.primitiveCount; index++) {
+      for (int index = 0; index < columnCount; index++) {
         PrimitiveTypeInfo primitiveTypeInfo = primitiveTypeInfos[index];
-        Object expected = t.getPrimitiveWritableObject(index, primitiveTypeInfo);
+        Writable writable = (Writable) row[index];
         LazyPrimitive lazyPrimitive = (LazyPrimitive) lazySimpleStruct.getField(index);
         Object object;
         if (lazyPrimitive != null) {
@@ -117,12 +144,12 @@ public class TestLazySimpleFast extends TestCase {
         } else {
           object = null;
         }
-        if (expected == null || object == null) {
-          if (expected != null || object != null) {
+        if (writable == null || object == null) {
+          if (writable != null || object != null) {
             fail("SerDe deserialized NULL column mismatch");
           }
         } else {
-          if (!object.equals(expected)) {
+          if (!object.equals(writable)) {
             fail("SerDe deserialized value does not match");
           }
         }
@@ -130,21 +157,19 @@ public class TestLazySimpleFast extends TestCase {
     }
 
     // One Writable per row.
-    byte[][] serdeBytes = new byte[myTestPrimitiveClasses.length][];
-  
+    byte[][] serdeBytes = new byte[rowCount][];
+
     // Serialize using the SerDe, then below deserialize using DeserializeRead.
-    Object[] row = new Object[MyTestPrimitiveClass.primitiveCount];
-    for (int i = 0; i < myTestPrimitiveClasses.length; i++) {
-      MyTestPrimitiveClass t = myTestPrimitiveClasses[i];
-      PrimitiveTypeInfo[] primitiveTypeInfos = primitiveTypeInfosArray[i];
+    Object[] serdeRow = new Object[columnCount];
+    for (int i = 0; i < rowCount; i++) {
+      Object[] row = rows[i];
 
       // LazySimple seems to work better with an row object array instead of a Java object...
-      for (int index = 0; index < MyTestPrimitiveClass.primitiveCount; index++) {
-        Object object = t.getPrimitiveWritableObject(index, primitiveTypeInfos[index]);
-        row[index] = object;
+      for (int index = 0; index < columnCount; index++) {
+        serdeRow[index] = row[index];
       }
 
-      Text serialized = (Text) serdes[i].serialize(row, rowOIs[i]);
+      Text serialized = (Text) serde.serialize(serdeRow, rowOI);
       byte[] bytes1 = Arrays.copyOfRange(serialized.getBytes(), 0, serialized.getLength());
 
       byte[] bytes2 = Arrays.copyOfRange(serializeWriteBytes[i].getBytes(), 0, serializeWriteBytes[i].getLength());
@@ -155,24 +180,32 @@ public class TestLazySimpleFast extends TestCase {
     }
 
     // Try to deserialize using DeserializeRead our Writable row objects created by SerDe.
-    for (int i = 0; i < myTestPrimitiveClasses.length; i++) {
-      MyTestPrimitiveClass t = myTestPrimitiveClasses[i];
-      PrimitiveTypeInfo[] primitiveTypeInfos = primitiveTypeInfosArray[i];
-      LazySimpleDeserializeRead lazySimpleDeserializeRead = 
-              new LazySimpleDeserializeRead(primitiveTypeInfos,
-                  separator, serdeParams[i]);
+    for (int i = 0; i < rowCount; i++) {
+      Object[] row = rows[i];
+
+      LazySimpleDeserializeRead lazySimpleDeserializeRead =
+              new LazySimpleDeserializeRead(
+                  writePrimitiveTypeInfos,
+                  /* useExternalBuffer */ false,
+                  separator, serdeParams);
 
       byte[] bytes = serdeBytes[i];
       lazySimpleDeserializeRead.set(bytes, 0, bytes.length);
 
-      for (int index = 0; index < MyTestPrimitiveClass.primitiveCount; index++) {
-        Object object = t.getPrimitiveObject(index);
-        VerifyFast.verifyDeserializeRead(lazySimpleDeserializeRead, primitiveTypeInfos[index], object);
+      for (int index = 0; index < columnCount; index++) {
+        if (useIncludeColumns && !columnsToInclude[index]) {
+          lazySimpleDeserializeRead.skipNextField();
+        } else if (index >= writeColumnCount) {
+          // Should come back a null.
+          VerifyFast.verifyDeserializeRead(lazySimpleDeserializeRead, primitiveTypeInfos[index], null);
+        } else {
+          Writable writable = (Writable) row[index];
+          VerifyFast.verifyDeserializeRead(lazySimpleDeserializeRead, primitiveTypeInfos[index], writable);
+        }
       }
-      lazySimpleDeserializeRead.extraFieldsCheck();
-      TestCase.assertTrue(!lazySimpleDeserializeRead.readBeyondConfiguredFieldsWarned());
-      TestCase.assertTrue(!lazySimpleDeserializeRead.readBeyondBufferRangeWarned());
-      TestCase.assertTrue(!lazySimpleDeserializeRead.bufferRangeHasExtraDataWarned());
+      if (writeColumnCount == columnCount) {
+        TestCase.assertTrue(lazySimpleDeserializeRead.isEndOfInputReached());
+      }
     }
   }
 
@@ -187,7 +220,7 @@ public class TestLazySimpleFast extends TestCase {
 
     // Set the configuration parameters
     tbl.setProperty(serdeConstants.SERIALIZATION_FORMAT, "9");
-    
+
     tbl.setProperty("columns", fieldNames);
     tbl.setProperty("columns.types", fieldTypes);
 
@@ -211,44 +244,95 @@ public class TestLazySimpleFast extends TestCase {
     return new LazySerDeParameters(conf, tbl, LazySimpleSerDe.class.getName());
   }
 
+  public void testLazySimpleFastCase(int caseNum, boolean doNonRandomFill, Random r)
+      throws Throwable {
+
+    SerdeRandomRowSource source = new SerdeRandomRowSource();
+    source.init(r);
+
+    int rowCount = 1000;
+    Object[][] rows = source.randomRows(rowCount);
+
+    if (doNonRandomFill) {
+      MyTestClass.nonRandomRowFill(rows, source.primitiveCategories());
+    }
+
+    StructObjectInspector rowStructObjectInspector = source.rowStructObjectInspector();
+
+    PrimitiveTypeInfo[] primitiveTypeInfos = source.primitiveTypeInfos();
+    int columnCount = primitiveTypeInfos.length;
+
+    int writeColumnCount = columnCount;
+    StructObjectInspector writeRowStructObjectInspector = rowStructObjectInspector;
+    boolean doWriteFewerColumns = r.nextBoolean();
+    if (doWriteFewerColumns) {
+      writeColumnCount = 1 + r.nextInt(columnCount);
+      if (writeColumnCount == columnCount) {
+        doWriteFewerColumns = false;
+      } else {
+        writeRowStructObjectInspector = source.partialRowStructObjectInspector(writeColumnCount);
+      }
+    }
+
+    String fieldNames = ObjectInspectorUtils.getFieldNames(rowStructObjectInspector);
+    String fieldTypes = ObjectInspectorUtils.getFieldTypes(rowStructObjectInspector);
+
+    LazySimpleSerDe serde = getSerDe(fieldNames, fieldTypes);
+    LazySerDeParameters serdeParams = getSerDeParams(fieldNames, fieldTypes);
+
+    LazySimpleSerDe serde_fewer = null;
+    LazySerDeParameters serdeParams_fewer = null;
+    if (doWriteFewerColumns) {
+      String partialFieldNames = ObjectInspectorUtils.getFieldNames(writeRowStructObjectInspector);
+      String partialFieldTypes = ObjectInspectorUtils.getFieldTypes(writeRowStructObjectInspector);
+
+        serde_fewer = getSerDe(fieldNames, fieldTypes);
+        serdeParams_fewer = getSerDeParams(partialFieldNames, partialFieldTypes);
+    }
+
+    byte separator = (byte) '\t';
+    testLazySimpleFast(
+        source, rows,
+        serde, rowStructObjectInspector,
+        serde_fewer, writeRowStructObjectInspector,
+        separator, serdeParams, serdeParams_fewer, primitiveTypeInfos,
+        /* useIncludeColumns */ false, /* doWriteFewerColumns */ false, r);
+
+    testLazySimpleFast(
+        source, rows,
+        serde, rowStructObjectInspector,
+        serde_fewer, writeRowStructObjectInspector,
+        separator, serdeParams, serdeParams_fewer, primitiveTypeInfos,
+        /* useIncludeColumns */ true, /* doWriteFewerColumns */ false, r);
+
+    if (doWriteFewerColumns) {
+      testLazySimpleFast(
+          source, rows,
+          serde, rowStructObjectInspector,
+          serde_fewer, writeRowStructObjectInspector,
+          separator, serdeParams, serdeParams_fewer, primitiveTypeInfos,
+          /* useIncludeColumns */ false, /* doWriteFewerColumns */ true, r);
+
+      testLazySimpleFast(
+          source, rows,
+          serde, rowStructObjectInspector,
+          serde_fewer, writeRowStructObjectInspector,
+          separator, serdeParams, serdeParams_fewer, primitiveTypeInfos,
+          /* useIncludeColumns */ true, /* doWriteFewerColumns */ true, r);
+    }
+  }
+
   public void testLazySimpleFast() throws Throwable {
+
     try {
+      Random r = new Random(35790);
 
-      int num = 1000;
-      Random r = new Random(1234);
-      MyTestPrimitiveClass[] rows = new MyTestPrimitiveClass[num];
-      PrimitiveTypeInfo[][] primitiveTypeInfosArray = new PrimitiveTypeInfo[num][];
-      for (int i = 0; i < num; i++) {
-        int randField = r.nextInt(MyTestPrimitiveClass.primitiveCount);
-        MyTestPrimitiveClass t = new MyTestPrimitiveClass();
-        int field = 0;
-        ExtraTypeInfo extraTypeInfo = new ExtraTypeInfo();
-        t.randomFill(r, randField, field, extraTypeInfo);
-        PrimitiveTypeInfo[] primitiveTypeInfos = MyTestPrimitiveClass.getPrimitiveTypeInfos(extraTypeInfo);
-        rows[i] = t;
-        primitiveTypeInfosArray[i] = primitiveTypeInfos;
+      int caseNum = 0;
+      for (int i = 0; i < 10; i++) {
+        testLazySimpleFastCase(caseNum, (i % 2 == 0), r);
+        caseNum++;
       }
 
-      // To get the specific type information for CHAR and VARCHAR, seems like we need an
-      // inspector and SerDe per row...
-      StructObjectInspector[] rowOIs = new StructObjectInspector[num];
-      LazySimpleSerDe[] serdes = new LazySimpleSerDe[num];
-      LazySerDeParameters[] serdeParams = new LazySerDeParameters[num];
-      for (int i = 0; i < num; i++) {
-        MyTestPrimitiveClass t = rows[i];
-
-        StructObjectInspector rowOI = t.getRowInspector(primitiveTypeInfosArray[i]);
-
-        String fieldNames = ObjectInspectorUtils.getFieldNames(rowOI);
-        String fieldTypes = ObjectInspectorUtils.getFieldTypes(rowOI);
-
-        rowOIs[i] = rowOI;
-        serdes[i] = getSerDe(fieldNames, fieldTypes);
-        serdeParams[i] = getSerDeParams(fieldNames, fieldTypes);
-      }
-
-      byte separator = (byte) '\t';
-      testLazySimpleFast(rows, serdes, rowOIs, separator, serdeParams, primitiveTypeInfosArray);
     } catch (Throwable e) {
       e.printStackTrace();
       throw e;

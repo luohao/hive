@@ -20,11 +20,10 @@ package org.apache.hadoop.hive.ql.exec.vector.util;
 
 import java.io.Serializable;
 import java.util.ArrayList;
-import java.util.Collection;
 import java.util.List;
-import java.util.concurrent.Future;
 
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hive.ql.CompilationOpContext;
 import org.apache.hadoop.hive.ql.exec.Operator;
 import org.apache.hadoop.hive.ql.metadata.HiveException;
 import org.apache.hadoop.hive.ql.plan.OperatorDesc;
@@ -54,9 +53,9 @@ public class FakeCaptureOutputOperator extends Operator<FakeCaptureOutputDesc>
 
   private transient List<Object> rows;
 
-  public static FakeCaptureOutputOperator addCaptureOutputChild(
+  public static FakeCaptureOutputOperator addCaptureOutputChild(CompilationOpContext ctx,
       Operator<? extends OperatorDesc> op) {
-    FakeCaptureOutputOperator out = new FakeCaptureOutputOperator();
+    FakeCaptureOutputOperator out = new FakeCaptureOutputOperator(ctx);
     List<Operator<? extends OperatorDesc>> listParents =
         new ArrayList<Operator<? extends OperatorDesc>>(1);
     listParents.add(op);
@@ -73,11 +72,19 @@ public class FakeCaptureOutputOperator extends Operator<FakeCaptureOutputDesc>
     return rows;
   }
 
+  /** Kryo ctor. */
+  protected FakeCaptureOutputOperator() {
+    super();
+  }
+
+  public FakeCaptureOutputOperator(CompilationOpContext ctx) {
+    super(ctx);
+  }
+
   @Override
-  public Collection<Future<?>> initializeOp(Configuration conf) throws HiveException {
-    Collection<Future<?>> result = super.initializeOp(conf);
+  public void initializeOp(Configuration conf) throws HiveException {
+    super.initializeOp(conf);
     rows = new ArrayList<Object>();
-    return result;
   }
 
   @Override
@@ -93,4 +100,12 @@ public class FakeCaptureOutputOperator extends Operator<FakeCaptureOutputDesc>
     return null;
   }
 
+  @Override
+  public String getName() {
+    return FakeCaptureOutputOperator.getOperatorName();
+  }
+
+  public static String getOperatorName() {
+    return "FAKE_CAPTURE";
+  }
 }

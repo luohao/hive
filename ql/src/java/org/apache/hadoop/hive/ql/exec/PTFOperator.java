@@ -19,15 +19,15 @@
 package org.apache.hadoop.hive.ql.exec;
 
 import java.io.Serializable;
-import java.util.Collection;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Stack;
-import java.util.concurrent.Future;
 
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hive.ql.CompilationOpContext;
 import org.apache.hadoop.hive.ql.exec.PTFPartition.PTFPartitionIterator;
 import org.apache.hadoop.hive.ql.metadata.HiveException;
+import org.apache.hadoop.hive.ql.parse.LeadLagInfo;
 import org.apache.hadoop.hive.ql.plan.ExprNodeGenericFuncDesc;
 import org.apache.hadoop.hive.ql.plan.PTFDesc;
 import org.apache.hadoop.hive.ql.plan.PTFDeserializer;
@@ -38,7 +38,7 @@ import org.apache.hadoop.hive.ql.plan.ptf.PartitionDef;
 import org.apache.hadoop.hive.ql.plan.ptf.PartitionedTableFunctionDef;
 import org.apache.hadoop.hive.ql.udf.generic.GenericUDFLeadLag;
 import org.apache.hadoop.hive.ql.udf.ptf.TableFunctionEvaluator;
-import org.apache.hadoop.hive.serde2.SerDe;
+import org.apache.hadoop.hive.serde2.AbstractSerDe;
 import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspector;
 import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspectorUtils;
 import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspectorUtils.ObjectInspectorCopyOption;
@@ -60,6 +60,15 @@ public class PTFOperator extends Operator<PTFDesc> implements Serializable {
   transient Configuration hiveConf;
   transient PTFInvocation ptfInvocation;
 
+  /** Kryo ctor. */
+  protected PTFOperator() {
+    super();
+  }
+
+  public PTFOperator(CompilationOpContext ctx) {
+    super(ctx);
+  }
+
   /*
    * 1. Find out if the operator is invoked at Map-Side or Reduce-side
    * 2. Get the deserialized QueryDef
@@ -67,10 +76,11 @@ public class PTFOperator extends Operator<PTFDesc> implements Serializable {
    * 4. Create input partition to store rows coming from previous operator
    */
   @Override
-  protected Collection<Future<?>> initializeOp(Configuration jobConf) throws HiveException {
-    Collection<Future<?>> result = super.initializeOp(jobConf);
+  protected void initializeOp(Configuration jobConf) throws HiveException {
+    super.initializeOp(jobConf);
     hiveConf = jobConf;
     isMapOperator = conf.isMapSide();
+    currentKeys = null;
 
     reconstructQueryDef(hiveConf);
 
@@ -86,7 +96,6 @@ public class PTFOperator extends Operator<PTFDesc> implements Serializable {
     ptfInvocation = setupChain();
     ptfInvocation.initializeStreaming(jobConf, isMapOperator);
     firstMapRow = true;
-    return result;
   }
 
   @Override
@@ -175,7 +184,7 @@ public class PTFOperator extends Operator<PTFDesc> implements Serializable {
    */
   @Override
   public String getName() {
-    return getOperatorName();
+    return PTFOperator.getOperatorName();
   }
 
   static public String getOperatorName() {
@@ -209,15 +218,14 @@ public class PTFOperator extends Operator<PTFDesc> implements Serializable {
     return first;
   }
 
-  public static void connectLeadLagFunctionsToPartition(PTFDesc ptfDesc,
+  public static void connectLeadLagFunctionsToPartition(LeadLagInfo leadLagInfo,
       PTFPartitionIterator<Object> pItr) throws HiveException {
-    List<ExprNodeGenericFuncDesc> llFnDescs = ptfDesc.getLlInfo().getLeadLagExprs();
-    if (llFnDescs == null) {
+    if (leadLagInfo == null || leadLagInfo.getLeadLagExprs() == null) {
       return;
     }
-    for (ExprNodeGenericFuncDesc llFnDesc : llFnDescs) {
-      GenericUDFLeadLag llFn = (GenericUDFLeadLag) llFnDesc
-          .getGenericUDF();
+
+    for (ExprNodeGenericFuncDesc llFnDesc : leadLagInfo.getLeadLagExprs()) {
+      GenericUDFLeadLag llFn = (GenericUDFLeadLag) llFnDesc.getGenericUDF();
       llFn.setpItr(pItr);
     }
   }
@@ -395,7 +403,7 @@ public class PTFOperator extends Operator<PTFDesc> implements Serializable {
       ObjectInspector inputOI = conf.getStartOfChain() == tabDef ?
           inputObjInspectors[0] : inputDef.getOutputShape().getOI();
 
-      SerDe serde = conf.isMapSide() ? tabDef.getInput().getOutputShape().getSerde() :
+      AbstractSerDe serde = conf.isMapSide() ? tabDef.getInput().getOutputShape().getSerde() :
         tabDef.getRawInputShape().getSerde();
       StructObjectInspector outputOI = conf.isMapSide() ? tabDef.getInput().getOutputShape().getOI() :
         tabDef.getRawInputShape().getOI();
@@ -408,6 +416,7 @@ public class PTFOperator extends Operator<PTFDesc> implements Serializable {
     void close() {
       if ( inputPart != null ) {
         inputPart.close();
+        inputPart = null;
       }
       tabFn.close();
       if ( next != null ) {

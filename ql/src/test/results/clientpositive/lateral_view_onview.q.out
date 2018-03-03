@@ -28,6 +28,10 @@ POSTHOOK: type: CREATEVIEW
 POSTHOOK: Input: default@lv_table
 POSTHOOK: Output: database:default
 POSTHOOK: Output: default@lv_view
+POSTHOOK: Lineage: lv_view.c1 SIMPLE [(lv_table)lv_table.FieldSchema(name:c1, type:string, comment:null), ]
+POSTHOOK: Lineage: lv_view.c2 SIMPLE [(lv_table)lv_table.FieldSchema(name:c2, type:array<int>, comment:null), ]
+POSTHOOK: Lineage: lv_view.c3 SIMPLE [(lv_table)lv_table.FieldSchema(name:c3, type:int, comment:null), ]
+POSTHOOK: Lineage: lv_view.c4 SIMPLE [(lv_table)lv_table.FieldSchema(name:c4, type:char(1), comment:null), ]
 PREHOOK: query: EXPLAIN SELECT * FROM lv_view LATERAL VIEW explode(array(1,2,3)) myTable AS myCol SORT BY c1 ASC, myCol ASC LIMIT 1
 PREHOOK: type: QUERY
 POSTHOOK: query: EXPLAIN SELECT * FROM lv_view LATERAL VIEW explode(array(1,2,3)) myTable AS myCol SORT BY c1 ASC, myCol ASC LIMIT 1
@@ -61,6 +65,7 @@ STAGE PLANS:
                       key expressions: _col0 (type: string), _col4 (type: int)
                       sort order: ++
                       Statistics: Num rows: 1000 Data size: 17000 Basic stats: COMPLETE Column stats: NONE
+                      TopN Hash Memory Usage: 0.1
                       value expressions: _col1 (type: array<int>), _col2 (type: int), _col3 (type: char(1))
                 Select Operator
                   expressions: array(1,2,3) (type: array<int>)
@@ -76,6 +81,7 @@ STAGE PLANS:
                         key expressions: _col0 (type: string), _col4 (type: int)
                         sort order: ++
                         Statistics: Num rows: 1000 Data size: 17000 Basic stats: COMPLETE Column stats: NONE
+                        TopN Hash Memory Usage: 0.1
                         value expressions: _col1 (type: array<int>), _col2 (type: int), _col3 (type: char(1))
       Reduce Operator Tree:
         Select Operator
@@ -100,6 +106,7 @@ STAGE PLANS:
               key expressions: _col0 (type: string), _col4 (type: int)
               sort order: ++
               Statistics: Num rows: 1 Data size: 17 Basic stats: COMPLETE Column stats: NONE
+              TopN Hash Memory Usage: 0.1
               value expressions: _col1 (type: array<int>), _col2 (type: int), _col3 (type: char(1))
       Reduce Operator Tree:
         Select Operator
@@ -113,8 +120,8 @@ STAGE PLANS:
               compressed: false
               Statistics: Num rows: 1 Data size: 17 Basic stats: COMPLETE Column stats: NONE
               table:
-                  input format: org.apache.hadoop.mapred.TextInputFormat
-                  output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
+                  input format: org.apache.hadoop.mapred.SequenceFileInputFormat
+                  output format: org.apache.hadoop.hive.ql.io.HiveSequenceFileOutputFormat
                   serde: org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe
 
   Stage: Stage-0
@@ -139,51 +146,51 @@ STAGE PLANS:
             alias: lv_table
             Statistics: Num rows: 500 Data size: 8500 Basic stats: COMPLETE Column stats: COMPLETE
             Select Operator
-              Statistics: Num rows: 500 Data size: 0 Basic stats: PARTIAL Column stats: COMPLETE
+              Statistics: Num rows: 500 Data size: 4000 Basic stats: COMPLETE Column stats: COMPLETE
               Lateral View Forward
-                Statistics: Num rows: 500 Data size: 0 Basic stats: PARTIAL Column stats: COMPLETE
+                Statistics: Num rows: 500 Data size: 4000 Basic stats: COMPLETE Column stats: COMPLETE
                 Select Operator
-                  Statistics: Num rows: 500 Data size: 0 Basic stats: PARTIAL Column stats: COMPLETE
+                  Statistics: Num rows: 500 Data size: 4000 Basic stats: COMPLETE Column stats: COMPLETE
                   Lateral View Join Operator
                     outputColumnNames: _col4
-                    Statistics: Num rows: 1000 Data size: 0 Basic stats: PARTIAL Column stats: COMPLETE
+                    Statistics: Num rows: 1000 Data size: 32000 Basic stats: COMPLETE Column stats: COMPLETE
                     Select Operator
                       expressions: _col4 (type: int)
                       outputColumnNames: _col0
-                      Statistics: Num rows: 1000 Data size: 0 Basic stats: PARTIAL Column stats: COMPLETE
+                      Statistics: Num rows: 1000 Data size: 32000 Basic stats: COMPLETE Column stats: COMPLETE
                       Limit
                         Number of rows: 3
-                        Statistics: Num rows: 3 Data size: 0 Basic stats: PARTIAL Column stats: COMPLETE
+                        Statistics: Num rows: 3 Data size: 24 Basic stats: COMPLETE Column stats: COMPLETE
                         File Output Operator
                           compressed: false
-                          Statistics: Num rows: 3 Data size: 0 Basic stats: PARTIAL Column stats: COMPLETE
+                          Statistics: Num rows: 3 Data size: 24 Basic stats: COMPLETE Column stats: COMPLETE
                           table:
-                              input format: org.apache.hadoop.mapred.TextInputFormat
-                              output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
+                              input format: org.apache.hadoop.mapred.SequenceFileInputFormat
+                              output format: org.apache.hadoop.hive.ql.io.HiveSequenceFileOutputFormat
                               serde: org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe
                 Select Operator
                   expressions: array(1,2,3) (type: array<int>)
                   outputColumnNames: _col0
-                  Statistics: Num rows: 500 Data size: 0 Basic stats: PARTIAL Column stats: COMPLETE
+                  Statistics: Num rows: 500 Data size: 28000 Basic stats: COMPLETE Column stats: COMPLETE
                   UDTF Operator
-                    Statistics: Num rows: 500 Data size: 0 Basic stats: PARTIAL Column stats: COMPLETE
+                    Statistics: Num rows: 500 Data size: 28000 Basic stats: COMPLETE Column stats: COMPLETE
                     function name: explode
                     Lateral View Join Operator
                       outputColumnNames: _col4
-                      Statistics: Num rows: 1000 Data size: 0 Basic stats: PARTIAL Column stats: COMPLETE
+                      Statistics: Num rows: 1000 Data size: 32000 Basic stats: COMPLETE Column stats: COMPLETE
                       Select Operator
                         expressions: _col4 (type: int)
                         outputColumnNames: _col0
-                        Statistics: Num rows: 1000 Data size: 0 Basic stats: PARTIAL Column stats: COMPLETE
+                        Statistics: Num rows: 1000 Data size: 32000 Basic stats: COMPLETE Column stats: COMPLETE
                         Limit
                           Number of rows: 3
-                          Statistics: Num rows: 3 Data size: 0 Basic stats: PARTIAL Column stats: COMPLETE
+                          Statistics: Num rows: 3 Data size: 24 Basic stats: COMPLETE Column stats: COMPLETE
                           File Output Operator
                             compressed: false
-                            Statistics: Num rows: 3 Data size: 0 Basic stats: PARTIAL Column stats: COMPLETE
+                            Statistics: Num rows: 3 Data size: 24 Basic stats: COMPLETE Column stats: COMPLETE
                             table:
-                                input format: org.apache.hadoop.mapred.TextInputFormat
-                                output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
+                                input format: org.apache.hadoop.mapred.SequenceFileInputFormat
+                                output format: org.apache.hadoop.hive.ql.io.HiveSequenceFileOutputFormat
                                 serde: org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe
 
   Stage: Stage-0
@@ -208,36 +215,36 @@ STAGE PLANS:
             alias: lv_table
             Statistics: Num rows: 500 Data size: 8500 Basic stats: COMPLETE Column stats: COMPLETE
             Select Operator
-              Statistics: Num rows: 500 Data size: 0 Basic stats: PARTIAL Column stats: COMPLETE
+              Statistics: Num rows: 500 Data size: 4000 Basic stats: COMPLETE Column stats: COMPLETE
               Lateral View Forward
-                Statistics: Num rows: 500 Data size: 0 Basic stats: PARTIAL Column stats: COMPLETE
+                Statistics: Num rows: 500 Data size: 4000 Basic stats: COMPLETE Column stats: COMPLETE
                 Select Operator
-                  Statistics: Num rows: 500 Data size: 0 Basic stats: PARTIAL Column stats: COMPLETE
+                  Statistics: Num rows: 500 Data size: 4000 Basic stats: COMPLETE Column stats: COMPLETE
                   Lateral View Join Operator
                     outputColumnNames: _col4
-                    Statistics: Num rows: 1000 Data size: 0 Basic stats: PARTIAL Column stats: COMPLETE
+                    Statistics: Num rows: 1000 Data size: 32000 Basic stats: COMPLETE Column stats: COMPLETE
                     Lateral View Forward
-                      Statistics: Num rows: 1000 Data size: 0 Basic stats: PARTIAL Column stats: COMPLETE
+                      Statistics: Num rows: 1000 Data size: 32000 Basic stats: COMPLETE Column stats: COMPLETE
                       Select Operator
                         expressions: _col4 (type: int)
                         outputColumnNames: _col4
-                        Statistics: Num rows: 1000 Data size: 0 Basic stats: PARTIAL Column stats: COMPLETE
+                        Statistics: Num rows: 1000 Data size: 56000 Basic stats: COMPLETE Column stats: COMPLETE
                         Lateral View Join Operator
                           outputColumnNames: _col4, _col5
-                          Statistics: Num rows: 2000 Data size: 0 Basic stats: PARTIAL Column stats: COMPLETE
+                          Statistics: Num rows: 2000 Data size: 56000 Basic stats: COMPLETE Column stats: COMPLETE
                           Select Operator
                             expressions: _col4 (type: int), _col5 (type: string)
                             outputColumnNames: _col0, _col1
-                            Statistics: Num rows: 2000 Data size: 0 Basic stats: PARTIAL Column stats: COMPLETE
+                            Statistics: Num rows: 2000 Data size: 16000 Basic stats: COMPLETE Column stats: COMPLETE
                             Limit
                               Number of rows: 9
-                              Statistics: Num rows: 9 Data size: 0 Basic stats: PARTIAL Column stats: COMPLETE
+                              Statistics: Num rows: 9 Data size: 72 Basic stats: COMPLETE Column stats: COMPLETE
                               File Output Operator
                                 compressed: false
-                                Statistics: Num rows: 9 Data size: 0 Basic stats: PARTIAL Column stats: COMPLETE
+                                Statistics: Num rows: 9 Data size: 72 Basic stats: COMPLETE Column stats: COMPLETE
                                 table:
-                                    input format: org.apache.hadoop.mapred.TextInputFormat
-                                    output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
+                                    input format: org.apache.hadoop.mapred.SequenceFileInputFormat
+                                    output format: org.apache.hadoop.hive.ql.io.HiveSequenceFileOutputFormat
                                     serde: org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe
                       Select Operator
                         expressions: array('a','b','c') (type: array<string>)
@@ -248,53 +255,53 @@ STAGE PLANS:
                           function name: explode
                           Lateral View Join Operator
                             outputColumnNames: _col4, _col5
-                            Statistics: Num rows: 2000 Data size: 0 Basic stats: PARTIAL Column stats: COMPLETE
+                            Statistics: Num rows: 2000 Data size: 56000 Basic stats: COMPLETE Column stats: COMPLETE
                             Select Operator
                               expressions: _col4 (type: int), _col5 (type: string)
                               outputColumnNames: _col0, _col1
-                              Statistics: Num rows: 2000 Data size: 0 Basic stats: PARTIAL Column stats: COMPLETE
+                              Statistics: Num rows: 2000 Data size: 16000 Basic stats: COMPLETE Column stats: COMPLETE
                               Limit
                                 Number of rows: 9
-                                Statistics: Num rows: 9 Data size: 0 Basic stats: PARTIAL Column stats: COMPLETE
+                                Statistics: Num rows: 9 Data size: 72 Basic stats: COMPLETE Column stats: COMPLETE
                                 File Output Operator
                                   compressed: false
-                                  Statistics: Num rows: 9 Data size: 0 Basic stats: PARTIAL Column stats: COMPLETE
+                                  Statistics: Num rows: 9 Data size: 72 Basic stats: COMPLETE Column stats: COMPLETE
                                   table:
-                                      input format: org.apache.hadoop.mapred.TextInputFormat
-                                      output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
+                                      input format: org.apache.hadoop.mapred.SequenceFileInputFormat
+                                      output format: org.apache.hadoop.hive.ql.io.HiveSequenceFileOutputFormat
                                       serde: org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe
                 Select Operator
                   expressions: array(1,2,3) (type: array<int>)
                   outputColumnNames: _col0
-                  Statistics: Num rows: 500 Data size: 0 Basic stats: PARTIAL Column stats: COMPLETE
+                  Statistics: Num rows: 500 Data size: 28000 Basic stats: COMPLETE Column stats: COMPLETE
                   UDTF Operator
-                    Statistics: Num rows: 500 Data size: 0 Basic stats: PARTIAL Column stats: COMPLETE
+                    Statistics: Num rows: 500 Data size: 28000 Basic stats: COMPLETE Column stats: COMPLETE
                     function name: explode
                     Lateral View Join Operator
                       outputColumnNames: _col4
-                      Statistics: Num rows: 1000 Data size: 0 Basic stats: PARTIAL Column stats: COMPLETE
+                      Statistics: Num rows: 1000 Data size: 32000 Basic stats: COMPLETE Column stats: COMPLETE
                       Lateral View Forward
-                        Statistics: Num rows: 1000 Data size: 0 Basic stats: PARTIAL Column stats: COMPLETE
+                        Statistics: Num rows: 1000 Data size: 32000 Basic stats: COMPLETE Column stats: COMPLETE
                         Select Operator
                           expressions: _col4 (type: int)
                           outputColumnNames: _col4
-                          Statistics: Num rows: 1000 Data size: 0 Basic stats: PARTIAL Column stats: COMPLETE
+                          Statistics: Num rows: 1000 Data size: 56000 Basic stats: COMPLETE Column stats: COMPLETE
                           Lateral View Join Operator
                             outputColumnNames: _col4, _col5
-                            Statistics: Num rows: 2000 Data size: 0 Basic stats: PARTIAL Column stats: COMPLETE
+                            Statistics: Num rows: 2000 Data size: 56000 Basic stats: COMPLETE Column stats: COMPLETE
                             Select Operator
                               expressions: _col4 (type: int), _col5 (type: string)
                               outputColumnNames: _col0, _col1
-                              Statistics: Num rows: 2000 Data size: 0 Basic stats: PARTIAL Column stats: COMPLETE
+                              Statistics: Num rows: 2000 Data size: 16000 Basic stats: COMPLETE Column stats: COMPLETE
                               Limit
                                 Number of rows: 9
-                                Statistics: Num rows: 9 Data size: 0 Basic stats: PARTIAL Column stats: COMPLETE
+                                Statistics: Num rows: 9 Data size: 72 Basic stats: COMPLETE Column stats: COMPLETE
                                 File Output Operator
                                   compressed: false
-                                  Statistics: Num rows: 9 Data size: 0 Basic stats: PARTIAL Column stats: COMPLETE
+                                  Statistics: Num rows: 9 Data size: 72 Basic stats: COMPLETE Column stats: COMPLETE
                                   table:
-                                      input format: org.apache.hadoop.mapred.TextInputFormat
-                                      output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
+                                      input format: org.apache.hadoop.mapred.SequenceFileInputFormat
+                                      output format: org.apache.hadoop.hive.ql.io.HiveSequenceFileOutputFormat
                                       serde: org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe
                         Select Operator
                           expressions: array('a','b','c') (type: array<string>)
@@ -305,20 +312,20 @@ STAGE PLANS:
                             function name: explode
                             Lateral View Join Operator
                               outputColumnNames: _col4, _col5
-                              Statistics: Num rows: 2000 Data size: 0 Basic stats: PARTIAL Column stats: COMPLETE
+                              Statistics: Num rows: 2000 Data size: 56000 Basic stats: COMPLETE Column stats: COMPLETE
                               Select Operator
                                 expressions: _col4 (type: int), _col5 (type: string)
                                 outputColumnNames: _col0, _col1
-                                Statistics: Num rows: 2000 Data size: 0 Basic stats: PARTIAL Column stats: COMPLETE
+                                Statistics: Num rows: 2000 Data size: 16000 Basic stats: COMPLETE Column stats: COMPLETE
                                 Limit
                                   Number of rows: 9
-                                  Statistics: Num rows: 9 Data size: 0 Basic stats: PARTIAL Column stats: COMPLETE
+                                  Statistics: Num rows: 9 Data size: 72 Basic stats: COMPLETE Column stats: COMPLETE
                                   File Output Operator
                                     compressed: false
-                                    Statistics: Num rows: 9 Data size: 0 Basic stats: PARTIAL Column stats: COMPLETE
+                                    Statistics: Num rows: 9 Data size: 72 Basic stats: COMPLETE Column stats: COMPLETE
                                     table:
-                                        input format: org.apache.hadoop.mapred.TextInputFormat
-                                        output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
+                                        input format: org.apache.hadoop.mapred.SequenceFileInputFormat
+                                        output format: org.apache.hadoop.hive.ql.io.HiveSequenceFileOutputFormat
                                         serde: org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe
 
   Stage: Stage-0
@@ -343,113 +350,113 @@ STAGE PLANS:
             alias: lv_table
             Statistics: Num rows: 500 Data size: 8500 Basic stats: COMPLETE Column stats: COMPLETE
             Select Operator
-              Statistics: Num rows: 500 Data size: 0 Basic stats: PARTIAL Column stats: COMPLETE
+              Statistics: Num rows: 500 Data size: 4000 Basic stats: COMPLETE Column stats: COMPLETE
               Lateral View Forward
-                Statistics: Num rows: 500 Data size: 0 Basic stats: PARTIAL Column stats: COMPLETE
+                Statistics: Num rows: 500 Data size: 4000 Basic stats: COMPLETE Column stats: COMPLETE
                 Select Operator
-                  Statistics: Num rows: 500 Data size: 0 Basic stats: PARTIAL Column stats: COMPLETE
+                  Statistics: Num rows: 500 Data size: 4000 Basic stats: COMPLETE Column stats: COMPLETE
                   Lateral View Join Operator
                     outputColumnNames: _col4
-                    Statistics: Num rows: 1000 Data size: 0 Basic stats: PARTIAL Column stats: COMPLETE
+                    Statistics: Num rows: 1000 Data size: 28000 Basic stats: COMPLETE Column stats: COMPLETE
                     Lateral View Forward
-                      Statistics: Num rows: 1000 Data size: 0 Basic stats: PARTIAL Column stats: COMPLETE
+                      Statistics: Num rows: 1000 Data size: 28000 Basic stats: COMPLETE Column stats: COMPLETE
                       Select Operator
-                        Statistics: Num rows: 1000 Data size: 0 Basic stats: PARTIAL Column stats: COMPLETE
+                        Statistics: Num rows: 1000 Data size: 48000 Basic stats: COMPLETE Column stats: COMPLETE
                         Lateral View Join Operator
                           outputColumnNames: _col5
-                          Statistics: Num rows: 2000 Data size: 0 Basic stats: PARTIAL Column stats: COMPLETE
+                          Statistics: Num rows: 2000 Data size: 56000 Basic stats: COMPLETE Column stats: COMPLETE
                           Select Operator
                             expressions: _col5 (type: int)
                             outputColumnNames: _col0
-                            Statistics: Num rows: 2000 Data size: 0 Basic stats: PARTIAL Column stats: COMPLETE
+                            Statistics: Num rows: 2000 Data size: 56000 Basic stats: COMPLETE Column stats: COMPLETE
                             Limit
                               Number of rows: 3
-                              Statistics: Num rows: 3 Data size: 0 Basic stats: PARTIAL Column stats: COMPLETE
+                              Statistics: Num rows: 3 Data size: 24 Basic stats: COMPLETE Column stats: COMPLETE
                               File Output Operator
                                 compressed: false
-                                Statistics: Num rows: 3 Data size: 0 Basic stats: PARTIAL Column stats: COMPLETE
+                                Statistics: Num rows: 3 Data size: 24 Basic stats: COMPLETE Column stats: COMPLETE
                                 table:
-                                    input format: org.apache.hadoop.mapred.TextInputFormat
-                                    output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
+                                    input format: org.apache.hadoop.mapred.SequenceFileInputFormat
+                                    output format: org.apache.hadoop.hive.ql.io.HiveSequenceFileOutputFormat
                                     serde: org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe
                       Select Operator
                         expressions: _col4 (type: array<int>)
                         outputColumnNames: _col0
-                        Statistics: Num rows: 1000 Data size: 0 Basic stats: PARTIAL Column stats: COMPLETE
+                        Statistics: Num rows: 1000 Data size: 8000 Basic stats: COMPLETE Column stats: COMPLETE
                         UDTF Operator
-                          Statistics: Num rows: 1000 Data size: 0 Basic stats: PARTIAL Column stats: COMPLETE
+                          Statistics: Num rows: 1000 Data size: 8000 Basic stats: COMPLETE Column stats: COMPLETE
                           function name: explode
                           Lateral View Join Operator
                             outputColumnNames: _col5
-                            Statistics: Num rows: 2000 Data size: 0 Basic stats: PARTIAL Column stats: COMPLETE
+                            Statistics: Num rows: 2000 Data size: 56000 Basic stats: COMPLETE Column stats: COMPLETE
                             Select Operator
                               expressions: _col5 (type: int)
                               outputColumnNames: _col0
-                              Statistics: Num rows: 2000 Data size: 0 Basic stats: PARTIAL Column stats: COMPLETE
+                              Statistics: Num rows: 2000 Data size: 56000 Basic stats: COMPLETE Column stats: COMPLETE
                               Limit
                                 Number of rows: 3
-                                Statistics: Num rows: 3 Data size: 0 Basic stats: PARTIAL Column stats: COMPLETE
+                                Statistics: Num rows: 3 Data size: 24 Basic stats: COMPLETE Column stats: COMPLETE
                                 File Output Operator
                                   compressed: false
-                                  Statistics: Num rows: 3 Data size: 0 Basic stats: PARTIAL Column stats: COMPLETE
+                                  Statistics: Num rows: 3 Data size: 24 Basic stats: COMPLETE Column stats: COMPLETE
                                   table:
-                                      input format: org.apache.hadoop.mapred.TextInputFormat
-                                      output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
+                                      input format: org.apache.hadoop.mapred.SequenceFileInputFormat
+                                      output format: org.apache.hadoop.hive.ql.io.HiveSequenceFileOutputFormat
                                       serde: org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe
                 Select Operator
                   expressions: array(array(1,2,3)) (type: array<array<int>>)
                   outputColumnNames: _col0
-                  Statistics: Num rows: 500 Data size: 0 Basic stats: PARTIAL Column stats: COMPLETE
+                  Statistics: Num rows: 500 Data size: 24000 Basic stats: COMPLETE Column stats: COMPLETE
                   UDTF Operator
-                    Statistics: Num rows: 500 Data size: 0 Basic stats: PARTIAL Column stats: COMPLETE
+                    Statistics: Num rows: 500 Data size: 24000 Basic stats: COMPLETE Column stats: COMPLETE
                     function name: explode
                     Lateral View Join Operator
                       outputColumnNames: _col4
-                      Statistics: Num rows: 1000 Data size: 0 Basic stats: PARTIAL Column stats: COMPLETE
+                      Statistics: Num rows: 1000 Data size: 28000 Basic stats: COMPLETE Column stats: COMPLETE
                       Lateral View Forward
-                        Statistics: Num rows: 1000 Data size: 0 Basic stats: PARTIAL Column stats: COMPLETE
+                        Statistics: Num rows: 1000 Data size: 28000 Basic stats: COMPLETE Column stats: COMPLETE
                         Select Operator
-                          Statistics: Num rows: 1000 Data size: 0 Basic stats: PARTIAL Column stats: COMPLETE
+                          Statistics: Num rows: 1000 Data size: 48000 Basic stats: COMPLETE Column stats: COMPLETE
                           Lateral View Join Operator
                             outputColumnNames: _col5
-                            Statistics: Num rows: 2000 Data size: 0 Basic stats: PARTIAL Column stats: COMPLETE
+                            Statistics: Num rows: 2000 Data size: 56000 Basic stats: COMPLETE Column stats: COMPLETE
                             Select Operator
                               expressions: _col5 (type: int)
                               outputColumnNames: _col0
-                              Statistics: Num rows: 2000 Data size: 0 Basic stats: PARTIAL Column stats: COMPLETE
+                              Statistics: Num rows: 2000 Data size: 56000 Basic stats: COMPLETE Column stats: COMPLETE
                               Limit
                                 Number of rows: 3
-                                Statistics: Num rows: 3 Data size: 0 Basic stats: PARTIAL Column stats: COMPLETE
+                                Statistics: Num rows: 3 Data size: 24 Basic stats: COMPLETE Column stats: COMPLETE
                                 File Output Operator
                                   compressed: false
-                                  Statistics: Num rows: 3 Data size: 0 Basic stats: PARTIAL Column stats: COMPLETE
+                                  Statistics: Num rows: 3 Data size: 24 Basic stats: COMPLETE Column stats: COMPLETE
                                   table:
-                                      input format: org.apache.hadoop.mapred.TextInputFormat
-                                      output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
+                                      input format: org.apache.hadoop.mapred.SequenceFileInputFormat
+                                      output format: org.apache.hadoop.hive.ql.io.HiveSequenceFileOutputFormat
                                       serde: org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe
                         Select Operator
                           expressions: _col4 (type: array<int>)
                           outputColumnNames: _col0
-                          Statistics: Num rows: 1000 Data size: 0 Basic stats: PARTIAL Column stats: COMPLETE
+                          Statistics: Num rows: 1000 Data size: 8000 Basic stats: COMPLETE Column stats: COMPLETE
                           UDTF Operator
-                            Statistics: Num rows: 1000 Data size: 0 Basic stats: PARTIAL Column stats: COMPLETE
+                            Statistics: Num rows: 1000 Data size: 8000 Basic stats: COMPLETE Column stats: COMPLETE
                             function name: explode
                             Lateral View Join Operator
                               outputColumnNames: _col5
-                              Statistics: Num rows: 2000 Data size: 0 Basic stats: PARTIAL Column stats: COMPLETE
+                              Statistics: Num rows: 2000 Data size: 56000 Basic stats: COMPLETE Column stats: COMPLETE
                               Select Operator
                                 expressions: _col5 (type: int)
                                 outputColumnNames: _col0
-                                Statistics: Num rows: 2000 Data size: 0 Basic stats: PARTIAL Column stats: COMPLETE
+                                Statistics: Num rows: 2000 Data size: 56000 Basic stats: COMPLETE Column stats: COMPLETE
                                 Limit
                                   Number of rows: 3
-                                  Statistics: Num rows: 3 Data size: 0 Basic stats: PARTIAL Column stats: COMPLETE
+                                  Statistics: Num rows: 3 Data size: 24 Basic stats: COMPLETE Column stats: COMPLETE
                                   File Output Operator
                                     compressed: false
-                                    Statistics: Num rows: 3 Data size: 0 Basic stats: PARTIAL Column stats: COMPLETE
+                                    Statistics: Num rows: 3 Data size: 24 Basic stats: COMPLETE Column stats: COMPLETE
                                     table:
-                                        input format: org.apache.hadoop.mapred.TextInputFormat
-                                        output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
+                                        input format: org.apache.hadoop.mapred.SequenceFileInputFormat
+                                        output format: org.apache.hadoop.hive.ql.io.HiveSequenceFileOutputFormat
                                         serde: org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe
 
   Stage: Stage-0
@@ -458,27 +465,23 @@ STAGE PLANS:
       Processor Tree:
         ListSink
 
-PREHOOK: query: -- Verify that * selects columns from both tables
-SELECT * FROM lv_view LATERAL VIEW explode(array(1,2,3)) myTable AS myCol SORT BY c1 ASC, myCol ASC LIMIT 1
+PREHOOK: query: SELECT * FROM lv_view LATERAL VIEW explode(array(1,2,3)) myTable AS myCol SORT BY c1 ASC, myCol ASC LIMIT 1
 PREHOOK: type: QUERY
 PREHOOK: Input: default@lv_table
 PREHOOK: Input: default@lv_view
 #### A masked pattern was here ####
-POSTHOOK: query: -- Verify that * selects columns from both tables
-SELECT * FROM lv_view LATERAL VIEW explode(array(1,2,3)) myTable AS myCol SORT BY c1 ASC, myCol ASC LIMIT 1
+POSTHOOK: query: SELECT * FROM lv_view LATERAL VIEW explode(array(1,2,3)) myTable AS myCol SORT BY c1 ASC, myCol ASC LIMIT 1
 POSTHOOK: type: QUERY
 POSTHOOK: Input: default@lv_table
 POSTHOOK: Input: default@lv_view
 #### A masked pattern was here ####
 abc  	[1,2,3]	100	t	1
-PREHOOK: query: -- TABLE.* should be supported
-SELECT myTable.* FROM lv_view LATERAL VIEW explode(array(1,2,3)) myTable AS myCol LIMIT 3
+PREHOOK: query: SELECT myTable.* FROM lv_view LATERAL VIEW explode(array(1,2,3)) myTable AS myCol LIMIT 3
 PREHOOK: type: QUERY
 PREHOOK: Input: default@lv_table
 PREHOOK: Input: default@lv_view
 #### A masked pattern was here ####
-POSTHOOK: query: -- TABLE.* should be supported
-SELECT myTable.* FROM lv_view LATERAL VIEW explode(array(1,2,3)) myTable AS myCol LIMIT 3
+POSTHOOK: query: SELECT myTable.* FROM lv_view LATERAL VIEW explode(array(1,2,3)) myTable AS myCol LIMIT 3
 POSTHOOK: type: QUERY
 POSTHOOK: Input: default@lv_table
 POSTHOOK: Input: default@lv_view
@@ -486,14 +489,12 @@ POSTHOOK: Input: default@lv_view
 1
 2
 3
-PREHOOK: query: -- Multiple lateral views should result in a Cartesian product
-SELECT myTable.myCol, myTable2.myCol2 FROM lv_view LATERAL VIEW explode(array(1,2,3)) myTable AS myCol LATERAL VIEW explode(array('a', 'b', 'c')) myTable2 AS myCol2 LIMIT 9
+PREHOOK: query: SELECT myTable.myCol, myTable2.myCol2 FROM lv_view LATERAL VIEW explode(array(1,2,3)) myTable AS myCol LATERAL VIEW explode(array('a', 'b', 'c')) myTable2 AS myCol2 LIMIT 9
 PREHOOK: type: QUERY
 PREHOOK: Input: default@lv_table
 PREHOOK: Input: default@lv_view
 #### A masked pattern was here ####
-POSTHOOK: query: -- Multiple lateral views should result in a Cartesian product
-SELECT myTable.myCol, myTable2.myCol2 FROM lv_view LATERAL VIEW explode(array(1,2,3)) myTable AS myCol LATERAL VIEW explode(array('a', 'b', 'c')) myTable2 AS myCol2 LIMIT 9
+POSTHOOK: query: SELECT myTable.myCol, myTable2.myCol2 FROM lv_view LATERAL VIEW explode(array(1,2,3)) myTable AS myCol LATERAL VIEW explode(array('a', 'b', 'c')) myTable2 AS myCol2 LIMIT 9
 POSTHOOK: type: QUERY
 POSTHOOK: Input: default@lv_table
 POSTHOOK: Input: default@lv_view
@@ -507,14 +508,12 @@ POSTHOOK: Input: default@lv_view
 3	a
 3	b
 3	c
-PREHOOK: query: -- Should be able to reference tables generated earlier
-SELECT myTable2.* FROM lv_view LATERAL VIEW explode(array(array(1,2,3))) myTable AS myCol LATERAL VIEW explode(myTable.myCol) myTable2 AS myCol2 LIMIT 3
+PREHOOK: query: SELECT myTable2.* FROM lv_view LATERAL VIEW explode(array(array(1,2,3))) myTable AS myCol LATERAL VIEW explode(myTable.myCol) myTable2 AS myCol2 LIMIT 3
 PREHOOK: type: QUERY
 PREHOOK: Input: default@lv_table
 PREHOOK: Input: default@lv_view
 #### A masked pattern was here ####
-POSTHOOK: query: -- Should be able to reference tables generated earlier
-SELECT myTable2.* FROM lv_view LATERAL VIEW explode(array(array(1,2,3))) myTable AS myCol LATERAL VIEW explode(myTable.myCol) myTable2 AS myCol2 LIMIT 3
+POSTHOOK: query: SELECT myTable2.* FROM lv_view LATERAL VIEW explode(array(array(1,2,3))) myTable AS myCol LATERAL VIEW explode(myTable.myCol) myTable2 AS myCol2 LIMIT 3
 POSTHOOK: type: QUERY
 POSTHOOK: Input: default@lv_table
 POSTHOOK: Input: default@lv_view
@@ -563,8 +562,8 @@ STAGE PLANS:
                           compressed: false
                           Statistics: Num rows: 3 Data size: 51 Basic stats: COMPLETE Column stats: NONE
                           table:
-                              input format: org.apache.hadoop.mapred.TextInputFormat
-                              output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
+                              input format: org.apache.hadoop.mapred.SequenceFileInputFormat
+                              output format: org.apache.hadoop.hive.ql.io.HiveSequenceFileOutputFormat
                               serde: org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe
                 Select Operator
                   expressions: array(1,2,3) (type: array<int>)
@@ -587,8 +586,8 @@ STAGE PLANS:
                             compressed: false
                             Statistics: Num rows: 3 Data size: 51 Basic stats: COMPLETE Column stats: NONE
                             table:
-                                input format: org.apache.hadoop.mapred.TextInputFormat
-                                output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
+                                input format: org.apache.hadoop.mapred.SequenceFileInputFormat
+                                output format: org.apache.hadoop.hive.ql.io.HiveSequenceFileOutputFormat
                                 serde: org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe
 
   Stage: Stage-0

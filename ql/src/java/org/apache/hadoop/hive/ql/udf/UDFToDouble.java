@@ -22,12 +22,13 @@ import org.apache.hadoop.hive.ql.exec.UDF;
 import org.apache.hadoop.hive.ql.exec.vector.VectorizedExpressions;
 import org.apache.hadoop.hive.ql.exec.vector.expressions.CastDecimalToDouble;
 import org.apache.hadoop.hive.ql.exec.vector.expressions.gen.CastLongToDouble;
-import org.apache.hadoop.hive.ql.exec.vector.expressions.gen.CastTimestampToDoubleViaLongToDouble;
+import org.apache.hadoop.hive.ql.exec.vector.expressions.CastTimestampToDouble;
 import org.apache.hadoop.hive.serde2.io.ByteWritable;
 import org.apache.hadoop.hive.serde2.io.DoubleWritable;
 import org.apache.hadoop.hive.serde2.io.HiveDecimalWritable;
 import org.apache.hadoop.hive.serde2.io.ShortWritable;
 import org.apache.hadoop.hive.serde2.io.TimestampWritable;
+import org.apache.hadoop.hive.serde2.lazy.LazyUtils;
 import org.apache.hadoop.io.BooleanWritable;
 import org.apache.hadoop.io.FloatWritable;
 import org.apache.hadoop.io.IntWritable;
@@ -38,7 +39,7 @@ import org.apache.hadoop.io.Text;
  * UDFToDouble.
  *
  */
-@VectorizedExpressions({CastTimestampToDoubleViaLongToDouble.class, CastLongToDouble.class,
+@VectorizedExpressions({CastTimestampToDouble.class, CastLongToDouble.class,
     CastDecimalToDouble.class})
 public class UDFToDouble extends UDF {
   private final DoubleWritable doubleWritable = new DoubleWritable();
@@ -164,8 +165,11 @@ public class UDFToDouble extends UDF {
     if (i == null) {
       return null;
     } else {
+      if (!LazyUtils.isNumberMaybe(i.getBytes(), 0, i.getLength())) {
+        return null;
+      }
       try {
-        doubleWritable.set(Double.valueOf(i.toString()));
+        doubleWritable.set(Double.parseDouble(i.toString()));
         return doubleWritable;
       } catch (NumberFormatException e) {
         // MySQL returns 0 if the string is not a well-formed double value.
@@ -191,10 +195,10 @@ public class UDFToDouble extends UDF {
   }
 
   public DoubleWritable evaluate(HiveDecimalWritable i) {
-    if (i == null) {
+    if (i == null || !i.isSet()) {
       return null;
     } else {
-      doubleWritable.set(i.getHiveDecimal().doubleValue());
+      doubleWritable.set(i.doubleValue());
       return doubleWritable;
     }
   }

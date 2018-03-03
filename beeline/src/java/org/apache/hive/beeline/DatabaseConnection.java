@@ -29,7 +29,6 @@ import java.sql.Driver;
 import java.sql.DriverManager;
 import java.sql.ResultSet;
 import java.sql.SQLException;
-import java.util.Arrays;
 import java.util.Collection;
 import java.util.LinkedList;
 import java.util.List;
@@ -44,8 +43,6 @@ import jline.console.completer.ArgumentCompleter;
 import jline.console.completer.Completer;
 
 class DatabaseConnection {
-  private static final String HIVE_AUTH_USER = "user";
-  private static final String HIVE_AUTH_PASSWD = "password";
   private static final String HIVE_VAR_PREFIX = "hivevar:";
   private static final String HIVE_CONF_PREFIX = "hiveconf:";
 
@@ -130,13 +127,17 @@ class DatabaseConnection {
     }
 
     Map<String, String> hiveVars = beeLine.getOpts().getHiveVariables();
-    for (Map.Entry<String, String> var : hiveVars.entrySet()) {
-      info.put(HIVE_VAR_PREFIX + var.getKey(), var.getValue());
+    if (hiveVars != null){
+      for (Map.Entry<String, String> var : hiveVars.entrySet()) {
+        info.put(HIVE_VAR_PREFIX + var.getKey(), var.getValue());
+      }
     }
 
     Map<String, String> hiveConfVars = beeLine.getOpts().getHiveConfVariables();
-    for (Map.Entry<String, String> var : hiveConfVars.entrySet()) {
-      info.put(HIVE_CONF_PREFIX + var.getKey(), var.getValue());
+    if (hiveConfVars != null){
+      for (Map.Entry<String, String> var : hiveConfVars.entrySet()) {
+        info.put(HIVE_CONF_PREFIX + var.getKey(), var.getValue());
+      }
     }
 
     if (isDriverRegistered) {
@@ -201,7 +202,6 @@ class DatabaseConnection {
     return null;
   }
 
-
   public Connection getConnection() throws SQLException {
     if (connection != null) {
       return connection;
@@ -210,6 +210,9 @@ class DatabaseConnection {
     return connection;
   }
 
+  public Connection getCurrentConnection() {
+    return connection;
+  }
 
   public void reconnect() throws Exception {
     close();

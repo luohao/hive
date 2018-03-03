@@ -1,12 +1,8 @@
-PREHOOK: query: -- SORT_QUERY_RESULTS
-
-CREATE TABLE dest1(key STRING, c1 INT, c2 STRING, C3 INT, c4 INT) STORED AS TEXTFILE
+PREHOOK: query: CREATE TABLE dest1(key STRING, c1 INT, c2 STRING, C3 INT, c4 INT) STORED AS TEXTFILE
 PREHOOK: type: CREATETABLE
 PREHOOK: Output: database:default
 PREHOOK: Output: default@dest1
-POSTHOOK: query: -- SORT_QUERY_RESULTS
-
-CREATE TABLE dest1(key STRING, c1 INT, c2 STRING, C3 INT, c4 INT) STORED AS TEXTFILE
+POSTHOOK: query: CREATE TABLE dest1(key STRING, c1 INT, c2 STRING, C3 INT, c4 INT) STORED AS TEXTFILE
 POSTHOOK: type: CREATETABLE
 POSTHOOK: Output: database:default
 POSTHOOK: Output: default@dest1
@@ -24,94 +20,6 @@ SELECT substr(src.key,1,1), count(DISTINCT substr(src.value,5)), concat(substr(s
 WHERE src.ds = '2008-04-08'
 GROUP BY substr(src.key,1,1)
 POSTHOOK: type: QUERY
-ABSTRACT SYNTAX TREE:
-  
-TOK_QUERY
-   TOK_FROM
-      TOK_TABREF
-         TOK_TABNAME
-            srcpart
-         src
-   TOK_INSERT
-      TOK_DESTINATION
-         TOK_TAB
-            TOK_TABNAME
-               dest1
-      TOK_SELECT
-         TOK_SELEXPR
-            TOK_FUNCTION
-               substr
-               .
-                  TOK_TABLE_OR_COL
-                     src
-                  key
-               1
-               1
-         TOK_SELEXPR
-            TOK_FUNCTIONDI
-               count
-               TOK_FUNCTION
-                  substr
-                  .
-                     TOK_TABLE_OR_COL
-                        src
-                     value
-                  5
-         TOK_SELEXPR
-            TOK_FUNCTION
-               concat
-               TOK_FUNCTION
-                  substr
-                  .
-                     TOK_TABLE_OR_COL
-                        src
-                     key
-                  1
-                  1
-               TOK_FUNCTION
-                  sum
-                  TOK_FUNCTION
-                     substr
-                     .
-                        TOK_TABLE_OR_COL
-                           src
-                        value
-                     5
-         TOK_SELEXPR
-            TOK_FUNCTIONDI
-               sum
-               TOK_FUNCTION
-                  substr
-                  .
-                     TOK_TABLE_OR_COL
-                        src
-                     value
-                  5
-         TOK_SELEXPR
-            TOK_FUNCTIONDI
-               count
-               .
-                  TOK_TABLE_OR_COL
-                     src
-                  value
-      TOK_WHERE
-         =
-            .
-               TOK_TABLE_OR_COL
-                  src
-               ds
-            '2008-04-08'
-      TOK_GROUPBY
-         TOK_FUNCTION
-            substr
-            .
-               TOK_TABLE_OR_COL
-                  src
-               key
-            1
-            1
-
-
 STAGE DEPENDENCIES:
   Stage-1 is a root stage
   Stage-0 depends on stages: Stage-1
@@ -142,6 +50,7 @@ STAGE PLANS:
                       Statistics: Num rows: 1000 Data size: 10624 Basic stats: COMPLETE Column stats: NONE
                       Reduce Output Operator
                         key expressions: _col0 (type: string), _col1 (type: string), _col2 (type: string)
+                        null sort order: aaa
                         sort order: +++
                         Map-reduce partition columns: _col0 (type: string)
                         Statistics: Num rows: 1000 Data size: 10624 Basic stats: COMPLETE Column stats: NONE
@@ -160,8 +69,9 @@ STAGE PLANS:
                     ds 2008-04-08
                     hr 11
                   properties:
-                    COLUMN_STATS_ACCURATE true
+                    COLUMN_STATS_ACCURATE {"BASIC_STATS":"true","COLUMN_STATS":{"key":"true","value":"true"}}
                     bucket_count -1
+                    column.name.delimiter ,
                     columns key,value
                     columns.comments 'default','default'
                     columns.types string:string
@@ -183,6 +93,7 @@ STAGE PLANS:
                     output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
                     properties:
                       bucket_count -1
+                      column.name.delimiter ,
                       columns key,value
                       columns.comments 'default','default'
                       columns.types string:string
@@ -206,8 +117,9 @@ STAGE PLANS:
                     ds 2008-04-08
                     hr 12
                   properties:
-                    COLUMN_STATS_ACCURATE true
+                    COLUMN_STATS_ACCURATE {"BASIC_STATS":"true","COLUMN_STATS":{"key":"true","value":"true"}}
                     bucket_count -1
+                    column.name.delimiter ,
                     columns key,value
                     columns.comments 'default','default'
                     columns.types string:string
@@ -229,6 +141,7 @@ STAGE PLANS:
                     output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
                     properties:
                       bucket_count -1
+                      column.name.delimiter ,
                       columns key,value
                       columns.comments 'default','default'
                       columns.types string:string
@@ -270,15 +183,21 @@ STAGE PLANS:
                         input format: org.apache.hadoop.mapred.TextInputFormat
                         output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
                         properties:
+                          COLUMN_STATS_ACCURATE {"BASIC_STATS":"true"}
                           bucket_count -1
+                          column.name.delimiter ,
                           columns key,c1,c2,c3,c4
                           columns.comments 
                           columns.types string:int:string:int:int
 #### A masked pattern was here ####
                           name default.dest1
+                          numFiles 0
+                          numRows 0
+                          rawDataSize 0
                           serialization.ddl struct dest1 { string key, i32 c1, string c2, i32 c3, i32 c4}
                           serialization.format 1
                           serialization.lib org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe
+                          totalSize 0
 #### A masked pattern was here ####
                         serde: org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe
                         name: default.dest1
@@ -295,15 +214,21 @@ STAGE PLANS:
               input format: org.apache.hadoop.mapred.TextInputFormat
               output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
               properties:
+                COLUMN_STATS_ACCURATE {"BASIC_STATS":"true"}
                 bucket_count -1
+                column.name.delimiter ,
                 columns key,c1,c2,c3,c4
                 columns.comments 
                 columns.types string:int:string:int:int
 #### A masked pattern was here ####
                 name default.dest1
+                numFiles 0
+                numRows 0
+                rawDataSize 0
                 serialization.ddl struct dest1 { string key, i32 c1, string c2, i32 c3, i32 c4}
                 serialization.format 1
                 serialization.lib org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe
+                totalSize 0
 #### A masked pattern was here ####
               serde: org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe
               name: default.dest1

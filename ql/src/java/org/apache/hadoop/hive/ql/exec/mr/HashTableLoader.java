@@ -24,12 +24,13 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.filecache.DistributedCache;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.hive.ql.CompilationOpContext;
 import org.apache.hadoop.hive.ql.exec.HashTableSinkOperator;
 import org.apache.hadoop.hive.ql.exec.MapJoinOperator;
 import org.apache.hadoop.hive.ql.exec.MapredContext;
@@ -52,7 +53,7 @@ import org.apache.hadoop.mapred.JobConf;
  */
 public class HashTableLoader implements org.apache.hadoop.hive.ql.exec.HashTableLoader {
 
-  private static final Log LOG = LogFactory.getLog(MapJoinOperator.class.getName());
+  private static final Logger LOG = LoggerFactory.getLogger(MapJoinOperator.class.getName());
 
   private ExecMapperContext context;
   private Configuration hconf;
@@ -135,7 +136,7 @@ public class HashTableLoader implements org.apache.hadoop.hive.ql.exec.HashTable
     JobConf job = new JobConf(hconf);
     MapredLocalTask localTask = new MapredLocalTask(localWork, job, false);
 
-    HashTableSinkOperator sink = new TemporaryHashSinkOperator(desc);
+    HashTableSinkOperator sink = new TemporaryHashSinkOperator(new CompilationOpContext(), desc);
     sink.setParentOperators(new ArrayList<Operator<? extends OperatorDesc>>(directWorks));
 
     for (Operator<?> operator : directWorks) {

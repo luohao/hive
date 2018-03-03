@@ -17,13 +17,16 @@
  */
 package org.apache.hadoop.hive.ql.lockmgr;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.hive.common.ValidTxnList;
 import org.apache.hadoop.hive.common.ValidReadTxnList;
 import org.apache.hadoop.hive.conf.HiveConf;
+import org.apache.hadoop.hive.metastore.MetaStoreUtils;
 import org.apache.hadoop.hive.metastore.api.Database;
 import org.apache.hadoop.hive.ql.Context;
+import org.apache.hadoop.hive.ql.Driver.DriverState;
+import org.apache.hadoop.hive.ql.Driver.LockedDriverState;
 import org.apache.hadoop.hive.ql.ErrorMsg;
 import org.apache.hadoop.hive.ql.QueryPlan;
 import org.apache.hadoop.hive.ql.hooks.ReadEntity;
@@ -42,13 +45,13 @@ import java.util.*;
  * transactions.  This provides default Hive behavior.
  */
 class DummyTxnManager extends HiveTxnManagerImpl {
-  static final private Log LOG =
-      LogFactory.getLog(DummyTxnManager.class.getName());
+  static final private Logger LOG =
+      LoggerFactory.getLogger(DummyTxnManager.class.getName());
 
   private HiveLockManager lockMgr;
 
   @Override
-  public long openTxn(String user) throws LockException {
+  public long openTxn(Context ctx, String user) throws LockException {
     // No-op
     return 0L;
   }
@@ -62,7 +65,7 @@ class DummyTxnManager extends HiveTxnManagerImpl {
   }
 
   @Override
-  public int getStatementId() {
+  public int getWriteIdAndIncrement() {
     return 0;
   }
   @Override
@@ -109,6 +112,11 @@ class DummyTxnManager extends HiveTxnManagerImpl {
 
   @Override
   public void acquireLocks(QueryPlan plan, Context ctx, String username) throws LockException {
+    acquireLocks(plan,ctx,username,null);
+  }
+
+  @Override
+  public void acquireLocks(QueryPlan plan, Context ctx, String username, LockedDriverState lDrvState) throws LockException {
     // Make sure we've built the lock manager
     getLockManager();
 
@@ -170,12 +178,21 @@ class DummyTxnManager extends HiveTxnManagerImpl {
     }
 
     dedupLockObjects(lockObjects);
-    List<HiveLock> hiveLocks = lockMgr.lock(lockObjects, false);
+    List<HiveLock> hiveLocks = lockMgr.lock(lockObjects, false, lDrvState);
 
     if (hiveLocks == null) {
       throw new LockException(ErrorMsg.LOCK_CANNOT_BE_ACQUIRED.getMsg());
     } else {
       ctx.setHiveLocks(hiveLocks);
+    }
+  }
+
+  @Override
+  public void releaseLocks(List<HiveLock> hiveLocks) throws LockException {
+    // If there's no lock manager, it essentially means we didn't acquire locks in the first place,
+    // thus no need to release locks
+    if (lockMgr != null) {
+      lockMgr.releaseLocks(hiveLocks);
     }
   }
 
@@ -197,6 +214,11 @@ class DummyTxnManager extends HiveTxnManagerImpl {
   @Override
   public ValidTxnList getValidTxns() throws LockException {
     return new ValidReadTxnList();
+  }
+
+  @Override
+  public String getTxnManagerName() {
+    return DummyTxnManager.class.getName();
   }
 
   @Override
@@ -322,7 +344,7 @@ class DummyTxnManager extends HiveTxnManagerImpl {
         try {
           locks.add(new HiveLockObj(
                       new HiveLockObject(new DummyPartition(p.getTable(), p.getTable().getDbName()
-                                                            + "/" + p.getTable().getTableName()
+                                                            + "/" + MetaStoreUtils.encodeTableName(p.getTable().getTableName())
                                                             + "/" + partialName,
                                                               partialSpec), lockData), mode));
           partialName += "/";

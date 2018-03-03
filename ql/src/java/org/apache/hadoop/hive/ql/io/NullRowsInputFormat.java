@@ -18,59 +18,79 @@
 
 package org.apache.hadoop.hive.ql.io;
 
-import java.io.DataInput;
-import java.io.DataOutput;
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.hive.ql.exec.vector.ColumnVector;
+import org.apache.hadoop.hive.ql.exec.vector.VectorizedInputFormatInterface;
+import org.apache.hadoop.hive.ql.exec.vector.VectorizedRowBatch;
+import org.apache.hadoop.hive.ql.exec.vector.VectorizedRowBatchCtx;
+
+import org.apache.hadoop.hive.ql.exec.Utilities;
+
 import java.io.IOException;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.io.NullWritable;
+import org.apache.hadoop.mapred.FileSplit;
 import org.apache.hadoop.mapred.InputFormat;
 import org.apache.hadoop.mapred.InputSplit;
 import org.apache.hadoop.mapred.JobConf;
 import org.apache.hadoop.mapred.JobConfigurable;
 import org.apache.hadoop.mapred.RecordReader;
 import org.apache.hadoop.mapred.Reporter;
+import org.apache.hadoop.mapreduce.lib.input.FileInputFormat;
 
 /**
  * NullRowsInputFormat outputs null rows, maximum 100.
  */
 public class NullRowsInputFormat implements InputFormat<NullWritable, NullWritable>,
-    JobConfigurable {
+    JobConfigurable, VectorizedInputFormatInterface {
 
   static final int MAX_ROW = 100; // to prevent infinite loop
-  static final Log LOG = LogFactory.getLog(NullRowsRecordReader.class.getName());
+  static final Logger LOG = LoggerFactory.getLogger(NullRowsRecordReader.class.getName());
 
-  public static class DummyInputSplit implements InputSplit {
-    public DummyInputSplit() {
+  public static class DummyInputSplit extends FileSplit {
+    @SuppressWarnings("unused")  // Serialization ctor.
+    private DummyInputSplit() {
+      super();
     }
 
-    @Override
-    public long getLength() throws IOException {
-      return 1;
+    public DummyInputSplit(String path) {
+      super(new Path(path, "null"), 0, 1, (String[])null);
     }
-
-    @Override
-    public String[] getLocations() throws IOException {
-      return new String[0];
-    }
-
-    @Override
-    public void readFields(DataInput arg0) throws IOException {
-    }
-
-    @Override
-    public void write(DataOutput arg0) throws IOException {
-    }
-
   }
 
-  public static class NullRowsRecordReader implements RecordReader<NullWritable, NullWritable> {
+
+  @SuppressWarnings("rawtypes")
+  public static class NullRowsRecordReader implements RecordReader {
 
     private int counter;
+    protected final VectorizedRowBatchCtx rbCtx;
+    private final Object[] partitionValues;
+    private boolean addPartitionCols = true;
 
-    public NullRowsRecordReader() {
+    public NullRowsRecordReader(Configuration conf, InputSplit split) throws IOException {
+      boolean isVectorMode = Utilities.getUseVectorizedInputFileFormat(conf);
+      if (LOG.isDebugEnabled()) {
+        LOG.debug(getClass().getSimpleName() + " in "
+            + (isVectorMode ? "" : "non-") + "vector mode");
+      }
+      if (isVectorMode) {
+        rbCtx = Utilities.getVectorizedRowBatchCtx(conf);
+        int partitionColumnCount = rbCtx.getPartitionColumnCount();
+        if (partitionColumnCount > 0) {
+          partitionValues = new Object[partitionColumnCount];
+          VectorizedRowBatchCtx.getPartitionValues(rbCtx, conf, (FileSplit)split, partitionValues);
+        } else {
+          partitionValues = null;
+        }
+      } else {
+        rbCtx = null;
+        partitionValues = null;
+      }
     }
+
     @Override
     public void close() throws IOException {
     }
@@ -81,8 +101,9 @@ public class NullRowsInputFormat implements InputFormat<NullWritable, NullWritab
     }
 
     @Override
-    public NullWritable createValue() {
-      return NullWritable.get();
+    public Object createValue() {
+      return rbCtx == null ? NullWritable.get() :
+        rbCtx.createVectorizedRowBatch();
     }
 
     @Override
@@ -96,26 +117,58 @@ public class NullRowsInputFormat implements InputFormat<NullWritable, NullWritab
     }
 
     @Override
-    public boolean next(NullWritable arg0, NullWritable arg1) throws IOException {
-      if (counter++ < MAX_ROW) {
+    public boolean next(Object arg0, Object value) throws IOException {
+      if (rbCtx != null) {
+        if (counter >= MAX_ROW) return false;
+        makeNullVrb(value, MAX_ROW);
+        counter = MAX_ROW;
+        return true;
+      } else if (counter++ < MAX_ROW) {
         return true;
       }
       return false;
     }
+
+    protected void makeNullVrb(Object value, int size) {
+      VectorizedRowBatch vrb = (VectorizedRowBatch)value;
+      if (addPartitionCols) {
+        if (partitionValues != null) {
+          rbCtx.addPartitionColsToBatch(vrb, partitionValues);
+        }
+        addPartitionCols = false;
+      }
+
+      vrb.size = size;
+      vrb.selectedInUse = false;
+      for (int i = 0; i < rbCtx.getDataColumnCount(); i++) {
+        ColumnVector cv = vrb.cols[i];
+        if (cv == null) {
+          continue;
+        }
+        cv.noNulls = false;
+        cv.isRepeating = true;
+        cv.isNull[0] = true;
+      }
+    }
+  }
+
+  @SuppressWarnings("unchecked")
+  @Override
+  public RecordReader<NullWritable, NullWritable> getRecordReader(InputSplit split,
+      JobConf conf, Reporter arg2) throws IOException {
+    return new NullRowsRecordReader(conf, split);
   }
 
   @Override
-  public RecordReader<NullWritable, NullWritable> getRecordReader(InputSplit arg0,
-      JobConf arg1, Reporter arg2) throws IOException {
-    return new NullRowsRecordReader();
-  }
-
-  @Override
-  public InputSplit[] getSplits(JobConf arg0, int arg1) throws IOException {
-    InputSplit[] ret = new InputSplit[1];
-    ret[0] = new DummyInputSplit();
-    LOG.info("Calculating splits");
-    return ret;
+  public InputSplit[] getSplits(JobConf conf, int arg1) throws IOException {
+    // It's important to read the correct nulls! (in truth, the path is needed for SplitGrouper).
+    String[] paths = conf.getTrimmedStrings(FileInputFormat.INPUT_DIR, (String[])null);
+    if (paths == null) throw new IOException("Cannot find path in conf");
+    InputSplit[] result = new InputSplit[paths.length];
+    for (int i = 0; i < paths.length; ++i) {
+      result[i] = new DummyInputSplit(paths[i]);
+    }
+    return result;
   }
 
   @Override

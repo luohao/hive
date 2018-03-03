@@ -24,7 +24,7 @@ import java.util.Map;
 import org.apache.hadoop.hive.ql.exec.PTFUtils;
 import org.apache.hadoop.hive.ql.parse.RowResolver;
 import org.apache.hadoop.hive.ql.parse.TypeCheckCtx;
-import org.apache.hadoop.hive.serde2.SerDe;
+import org.apache.hadoop.hive.serde2.AbstractSerDe;
 import org.apache.hadoop.hive.serde2.objectinspector.StructObjectInspector;
 
 public class ShapeDetails {
@@ -32,13 +32,9 @@ public class ShapeDetails {
   Map<String, String> serdeProps;
   List<String> columnNames;
   transient StructObjectInspector OI;
-  transient SerDe serde;
+  transient AbstractSerDe serde;
   transient RowResolver rr;
   transient TypeCheckCtx typeCheckCtx;
-
-  static {
-    PTFUtils.makeTransient(ShapeDetails.class, "OI", "serde", "rr", "typeCheckCtx");
-  }
 
   public String getSerdeClassName() {
     return serdeClassName;
@@ -72,11 +68,11 @@ public class ShapeDetails {
     OI = oI;
   }
 
-  public SerDe getSerde() {
+  public AbstractSerDe getSerde() {
     return serde;
   }
 
-  public void setSerde(SerDe serde) {
+  public void setSerde(AbstractSerDe serde) {
     this.serde = serde;
   }
 

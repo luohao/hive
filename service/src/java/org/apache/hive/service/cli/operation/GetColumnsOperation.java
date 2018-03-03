@@ -20,22 +20,27 @@ package org.apache.hive.service.cli.operation;
 
 import java.sql.DatabaseMetaData;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
+import java.util.Set;
 import java.util.regex.Pattern;
 
 import org.apache.hadoop.hive.conf.HiveConf.ConfVars;
 import org.apache.hadoop.hive.metastore.IMetaStoreClient;
+import org.apache.hadoop.hive.metastore.api.PrimaryKeysRequest;
+import org.apache.hadoop.hive.metastore.api.SQLPrimaryKey;
 import org.apache.hadoop.hive.metastore.api.Table;
 import org.apache.hadoop.hive.ql.metadata.TableIterable;
-import org.apache.hadoop.hive.ql.plan.HiveOperation;
 import org.apache.hadoop.hive.ql.security.authorization.plugin.HiveOperationType;
 import org.apache.hadoop.hive.ql.security.authorization.plugin.HivePrivilegeObject;
 import org.apache.hadoop.hive.ql.security.authorization.plugin.HivePrivilegeObject.HivePrivilegeObjectType;
 import org.apache.hadoop.hive.ql.session.SessionState;
+import org.apache.hadoop.hive.serde2.thrift.Type;
 import org.apache.hive.service.cli.ColumnDescriptor;
 import org.apache.hive.service.cli.FetchOrientation;
 import org.apache.hive.service.cli.HiveSQLException;
@@ -44,7 +49,6 @@ import org.apache.hive.service.cli.OperationType;
 import org.apache.hive.service.cli.RowSet;
 import org.apache.hive.service.cli.RowSetFactory;
 import org.apache.hive.service.cli.TableSchema;
-import org.apache.hive.service.cli.Type;
 import org.apache.hive.service.cli.session.HiveSession;
 
 /**
@@ -122,7 +126,7 @@ public class GetColumnsOperation extends MetadataOperation {
     this.schemaName = schemaName;
     this.tableName = tableName;
     this.columnName = columnName;
-    this.rowSet = RowSetFactory.create(RESULT_SET_SCHEMA, getProtocolVersion());
+    this.rowSet = RowSetFactory.create(RESULT_SET_SCHEMA, getProtocolVersion(), false);
   }
 
   @Override
@@ -164,6 +168,11 @@ public class GetColumnsOperation extends MetadataOperation {
 
           TableSchema schema = new TableSchema(metastoreClient.getSchema(dbName,
               table.getTableName()));
+          List<SQLPrimaryKey> primaryKeys = metastoreClient.getPrimaryKeys(new PrimaryKeysRequest(dbName, table.getTableName()));
+          Set<String> pkColNames = new HashSet<>();
+          for(SQLPrimaryKey key : primaryKeys) {
+            pkColNames.add(key.getColumn_name().toLowerCase());
+          }
           for (ColumnDescriptor column : schema.getColumnDescriptors()) {
             if (columnPattern != null && !columnPattern.matcher(column.getName()).matches()) {
               continue;
@@ -179,14 +188,15 @@ public class GetColumnsOperation extends MetadataOperation {
                 null, // BUFFER_LENGTH, unused
                 column.getTypeDescriptor().getDecimalDigits(), // DECIMAL_DIGITS
                 column.getType().getNumPrecRadix(), // NUM_PREC_RADIX
-                DatabaseMetaData.columnNullable, // NULLABLE
+                pkColNames.contains(column.getName().toLowerCase()) ? DatabaseMetaData.columnNoNulls
+                    : DatabaseMetaData.columnNullable, // NULLABLE
                 column.getComment(), // REMARKS
                 null, // COLUMN_DEF
                 null, // SQL_DATA_TYPE
                 null, // SQL_DATETIME_SUB
                 null, // CHAR_OCTET_LENGTH
                 column.getOrdinalPosition(), // ORDINAL_POSITION
-                "YES", // IS_NULLABLE
+                pkColNames.contains(column.getName().toLowerCase()) ? "NO" : "YES", // IS_NULLABLE
                 null, // SCOPE_CATALOG
                 null, // SCOPE_SCHEMA
                 null, // SCOPE_TABLE
@@ -222,7 +232,7 @@ public class GetColumnsOperation extends MetadataOperation {
    */
   @Override
   public TableSchema getResultSetSchema() throws HiveSQLException {
-    assertState(OperationState.FINISHED);
+    assertState(new ArrayList<OperationState>(Arrays.asList(OperationState.FINISHED)));
     return RESULT_SET_SCHEMA;
   }
 
@@ -231,7 +241,7 @@ public class GetColumnsOperation extends MetadataOperation {
    */
   @Override
   public RowSet getNextRowSet(FetchOrientation orientation, long maxRows) throws HiveSQLException {
-    assertState(OperationState.FINISHED);
+    assertState(new ArrayList<OperationState>(Arrays.asList(OperationState.FINISHED)));
     validateDefaultFetchOrientation(orientation);
     if (orientation.equals(FetchOrientation.FETCH_FIRST)) {
       rowSet.setStartOffset(0);

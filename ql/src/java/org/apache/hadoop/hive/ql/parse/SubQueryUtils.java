@@ -18,7 +18,9 @@
 
 package org.apache.hadoop.hive.ql.parse;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Deque;
 import java.util.List;
 import java.util.Map;
 
@@ -30,6 +32,9 @@ import org.apache.hadoop.hive.ql.exec.FunctionRegistry;
 import org.apache.hadoop.hive.ql.exec.Operator;
 import org.apache.hadoop.hive.ql.parse.QBSubQuery.SubQueryType;
 import org.apache.hadoop.hive.ql.parse.QBSubQuery.SubQueryTypeDef;
+import org.apache.hadoop.hive.ql.udf.generic.GenericUDAFCount;
+import org.apache.hadoop.hive.ql.udf.generic.GenericUDAFResolver;
+import org.apache.hadoop.hive.ql.optimizer.calcite.CalciteSubquerySemanticException;
 
 public class SubQueryUtils {
 
@@ -196,14 +201,21 @@ public class SubQueryUtils {
   }
 
   private static void findSubQueries(ASTNode node, List<ASTNode> subQueries) {
-    switch(node.getType()) {
-    case HiveParser.TOK_SUBQUERY_EXPR:
-      subQueries.add(node);
-      break;
-    default:
-      int childCount = node.getChildCount();
-      for(int i=0; i < childCount; i++) {
-        findSubQueries((ASTNode) node.getChild(i), subQueries);
+    Deque<ASTNode> stack = new ArrayDeque<ASTNode>();
+    stack.push(node);
+
+    while (!stack.isEmpty()) {
+      ASTNode next = stack.pop();
+
+      switch(next.getType()) {
+        case HiveParser.TOK_SUBQUERY_EXPR:
+          subQueries.add(next);
+          break;
+        default:
+          int childCount = next.getChildCount();
+          for(int i = childCount - 1; i >= 0; i--) {
+            stack.push((ASTNode) next.getChild(i));
+          }
       }
     }
   }
@@ -243,7 +255,8 @@ public class SubQueryUtils {
    * @return
    * 0 if implies neither
    * 1 if implies aggregation
-   * 2 if implies windowing
+   * 2 if implies count
+   * 3 if implies windowing
    */
   static int checkAggOrWindowing(ASTNode expressionTree) throws SemanticException {
     int exprTokenType = expressionTree.getToken().getType();
@@ -253,12 +266,18 @@ public class SubQueryUtils {
       assert (expressionTree.getChildCount() != 0);
       if (expressionTree.getChild(expressionTree.getChildCount()-1).getType()
           == HiveParser.TOK_WINDOWSPEC) {
-        return 2;
+        return 3;
       }
       if (expressionTree.getChild(0).getType() == HiveParser.Identifier) {
         String functionName = SemanticAnalyzer.unescapeIdentifier(expressionTree.getChild(0)
             .getText());
-        if (FunctionRegistry.getGenericUDAFResolver(functionName) != null) {
+        GenericUDAFResolver udafResolver = FunctionRegistry.getGenericUDAFResolver(functionName);
+        if (udafResolver != null) {
+            // we need to know if it is COUNT since this is specialized for IN/NOT IN
+            // corr subqueries.
+          if(udafResolver instanceof GenericUDAFCount) {
+            return 2;
+          }
           return 1;
         }
       }
@@ -467,17 +486,6 @@ public class SubQueryUtils {
     return check;
   }
 
-  static void setOriginDeep(ASTNode node, ASTNodeOrigin origin) {
-    if ( node == null ) {
-      return;
-    }
-    node.setOrigin(origin);
-    int childCnt = node.getChildCount();
-    for(int i=0; i<childCnt; i++) {
-      setOriginDeep((ASTNode)node.getChild(i), origin);
-    }
-  }
-
   /*
    * Set of functions to create the Null Check Query for Not-In SubQuery predicates.
    * For a SubQuery predicate like:
@@ -643,6 +651,52 @@ public class SubQueryUtils {
         ParseDriver.adaptor.create(HiveParser.Number, "0"));
     
     return eq;
+  }
+
+  static void checkForSubqueries(ASTNode node) throws SemanticException {
+    // allow NOT but throw an error for rest
+    if(node.getType() == HiveParser.TOK_SUBQUERY_EXPR
+            && node.getParent().getType() != HiveParser.KW_NOT) {
+      throw new CalciteSubquerySemanticException(ErrorMsg.UNSUPPORTED_SUBQUERY_EXPRESSION.getMsg(
+              "Invalid subquery. Subquery in SELECT could only be top-level expression"));
+    }
+    for(int i=0; i<node.getChildCount(); i++) {
+        checkForSubqueries((ASTNode)node.getChild(i));
+    }
+  }
+  /*
+   * Given a TOK_SELECT this checks IF there is a subquery
+   *  it is top level expression, else it throws an error
+   */
+  public static void checkForTopLevelSubqueries(ASTNode selExprList) throws SemanticException{
+   // should be either SELECT or SELECT DISTINCT
+    assert(selExprList.getType() == HiveParser.TOK_SELECT
+            || selExprList.getType() == HiveParser.TOK_SELECTDI);
+    for(int i=0; i<selExprList.getChildCount(); i++) {
+      ASTNode selExpr = (ASTNode)selExprList.getChild(i);
+      // could get either query hint or select expr
+      assert(selExpr.getType() == HiveParser.TOK_SELEXPR
+        || selExpr.getType() == HiveParser.QUERY_HINT);
+
+      if(selExpr.getType() == HiveParser.QUERY_HINT) {
+        // skip query hints
+        continue;
+      }
+
+      if(selExpr.getChildCount() == 1
+        && selExpr.getChild(0).getType() == HiveParser.TOK_SUBQUERY_EXPR) {
+        if(selExprList.getType() == HiveParser.TOK_SELECTDI) {
+          throw new CalciteSubquerySemanticException(ErrorMsg.UNSUPPORTED_SUBQUERY_EXPRESSION.getMsg(
+                  "Invalid subquery. Subquery with DISTINCT clause is not supported!"));
+
+        }
+        continue; //we are good since subquery is top level expression
+      }
+      // otherwise we need to make sure that there is no subquery at any level
+      for(int j=0; j<selExpr.getChildCount(); j++) {
+        checkForSubqueries((ASTNode) selExpr.getChild(j));
+      }
+    }
   }
   
   public static interface ISubQueryJoinInfo {

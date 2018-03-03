@@ -1,12 +1,8 @@
-PREHOOK: query: -- SORT_QUERY_RESULTS
-
-CREATE TABLE dest1(key STRING, val1 INT, val2 INT) partitioned by (ds string)
+PREHOOK: query: CREATE TABLE dest1(key STRING, val1 INT, val2 INT) partitioned by (ds string)
 PREHOOK: type: CREATETABLE
 PREHOOK: Output: database:default
 PREHOOK: Output: default@dest1
-POSTHOOK: query: -- SORT_QUERY_RESULTS
-
-CREATE TABLE dest1(key STRING, val1 INT, val2 INT) partitioned by (ds string)
+POSTHOOK: query: CREATE TABLE dest1(key STRING, val1 INT, val2 INT) partitioned by (ds string)
 POSTHOOK: type: CREATETABLE
 POSTHOOK: Output: database:default
 POSTHOOK: Output: default@dest1
@@ -44,8 +40,8 @@ STAGE PLANS:
     Spark
       Edges:
         Reducer 2 <- Map 6 (GROUP PARTITION-LEVEL SORT, 2)
-        Reducer 4 <- Map 7 (GROUP PARTITION-LEVEL SORT, 2)
         Reducer 3 <- Reducer 2 (GROUP, 2)
+        Reducer 4 <- Map 7 (GROUP PARTITION-LEVEL SORT, 2)
         Reducer 5 <- Reducer 4 (GROUP, 2)
 #### A masked pattern was here ####
       Vertices:

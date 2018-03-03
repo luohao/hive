@@ -16,32 +16,39 @@ package org.apache.hadoop.hive.ql.io.parquet;
 import java.io.IOException;
 import java.io.Serializable;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
+import java.util.Set;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.hive.ql.exec.SerializationUtilities;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.ql.exec.Operator;
+import org.apache.hadoop.hive.ql.exec.RowSchema;
 import org.apache.hadoop.hive.ql.exec.TableScanOperator;
+import org.apache.hadoop.hive.ql.exec.UDFArgumentException;
 import org.apache.hadoop.hive.ql.exec.Utilities;
+import org.apache.hadoop.hive.ql.plan.ExprNodeDesc;
 import org.apache.hadoop.hive.ql.plan.ExprNodeGenericFuncDesc;
 import org.apache.hadoop.hive.ql.plan.MapWork;
 import org.apache.hadoop.hive.ql.plan.PartitionDesc;
 import org.apache.hadoop.hive.ql.plan.TableScanDesc;
+import org.apache.hadoop.hive.ql.udf.generic.GenericUDFOPOr;
 import org.apache.hadoop.hive.serde2.ColumnProjectionUtils;
 import org.apache.hadoop.mapred.JobConf;
 
 public class ProjectionPusher {
 
-  private static final Log LOG = LogFactory.getLog(ProjectionPusher.class);
+  private static final Logger LOG = LoggerFactory.getLogger(ProjectionPusher.class);
 
-  private final Map<String, PartitionDesc> pathToPartitionInfo =
-      new LinkedHashMap<String, PartitionDesc>();
+  private final Map<Path, PartitionDesc> pathToPartitionInfo = new LinkedHashMap<>();
   /**
    * MapWork is the Hive object which describes input files,
    * columns projections, and filters.
@@ -58,15 +65,16 @@ public class ProjectionPusher {
     if (mapWork == null && plan != null && plan.length() > 0) {
       mapWork = Utilities.getMapWork(job);
       pathToPartitionInfo.clear();
-      for (final Map.Entry<String, PartitionDesc> entry : mapWork.getPathToPartitionInfo().entrySet()) {
+      for (final Map.Entry<Path, PartitionDesc> entry : mapWork.getPathToPartitionInfo().entrySet()) {
         // key contains scheme (such as pfile://) and we want only the path portion fix in HIVE-6366
-        pathToPartitionInfo.put(new Path(entry.getKey()).toUri().getPath(), entry.getValue());
+        pathToPartitionInfo.put(Path.getPathWithoutSchemeAndAuthority(entry.getKey()), entry.getValue());
       }
     }
   }
 
   private void pushProjectionsAndFilters(final JobConf jobConf,
-      final String splitPath, final String splitPathWithNoSchema) {
+      final String splitPath,
+      final String splitPathWithNoSchema) {
 
     if (mapWork == null) {
       return;
@@ -74,60 +82,93 @@ public class ProjectionPusher {
       return;
     }
 
-    final ArrayList<String> aliases = new ArrayList<String>();
-    final Iterator<Entry<String, ArrayList<String>>> iterator = mapWork.getPathToAliases().entrySet().iterator();
+    final Set<String> aliases = new HashSet<String>();
+    final Iterator<Entry<Path, ArrayList<String>>> iterator =
+        mapWork.getPathToAliases().entrySet().iterator();
 
     while (iterator.hasNext()) {
-      final Entry<String, ArrayList<String>> entry = iterator.next();
-      final String key = new Path(entry.getKey()).toUri().getPath();
+      final Entry<Path, ArrayList<String>> entry = iterator.next();
+      final String key = entry.getKey().toUri().getPath();
       if (splitPath.equals(key) || splitPathWithNoSchema.equals(key)) {
-        final ArrayList<String> list = entry.getValue();
-        for (final String val : list) {
-          aliases.add(val);
-        }
+        aliases.addAll(entry.getValue());
       }
     }
 
-    for (final String alias : aliases) {
-      final Operator<? extends Serializable> op = mapWork.getAliasToWork().get(
-          alias);
+    // Collect the needed columns from all the aliases and create ORed filter
+    // expression for the table.
+    boolean allColumnsNeeded = false;
+    boolean noFilters = false;
+    Set<Integer> neededColumnIDs = new HashSet<Integer>();
+    // To support nested column pruning, we need to track the path from the top to the nested
+    // fields
+    Set<String> neededNestedColumnPaths = new HashSet<String>();
+    List<ExprNodeGenericFuncDesc> filterExprs = new ArrayList<ExprNodeGenericFuncDesc>();
+    RowSchema rowSchema = null;
+
+    for(String alias : aliases) {
+      final Operator<? extends Serializable> op =
+          mapWork.getAliasToWork().get(alias);
       if (op != null && op instanceof TableScanOperator) {
-        final TableScanOperator tableScan = (TableScanOperator) op;
+        final TableScanOperator ts = (TableScanOperator) op;
 
-        // push down projections
-        final List<Integer> list = tableScan.getNeededColumnIDs();
-
-        if (list != null) {
-          ColumnProjectionUtils.appendReadColumnIDs(jobConf, list);
+        if (ts.getNeededColumnIDs() == null) {
+          allColumnsNeeded = true;
         } else {
-          ColumnProjectionUtils.setFullyReadColumns(jobConf);
+          neededColumnIDs.addAll(ts.getNeededColumnIDs());
+          neededNestedColumnPaths.addAll(ts.getNeededNestedColumnPaths());
         }
 
-        pushFilters(jobConf, tableScan);
+        rowSchema = ts.getSchema();
+        ExprNodeGenericFuncDesc filterExpr =
+            ts.getConf() == null ? null : ts.getConf().getFilterExpr();
+        noFilters = filterExpr == null; // No filter if any TS has no filter expression
+        filterExprs.add(filterExpr);
       }
     }
+
+    ExprNodeGenericFuncDesc tableFilterExpr = null;
+    if (!noFilters) {
+      try {
+        for (ExprNodeGenericFuncDesc filterExpr : filterExprs) {
+          if (tableFilterExpr == null ) {
+            tableFilterExpr = filterExpr;
+          } else {
+            tableFilterExpr = ExprNodeGenericFuncDesc.newInstance(new GenericUDFOPOr(),
+                Arrays.<ExprNodeDesc>asList(tableFilterExpr, filterExpr));
+          }
+        }
+      } catch(UDFArgumentException ex) {
+        LOG.debug("Turn off filtering due to " + ex);
+        tableFilterExpr = null;
+      }
+    }
+
+    // push down projections
+    if (!allColumnsNeeded) {
+      if (!neededColumnIDs.isEmpty()) {
+        ColumnProjectionUtils.appendReadColumns(jobConf, new ArrayList<Integer>(neededColumnIDs));
+        ColumnProjectionUtils.appendNestedColumnPaths(jobConf,
+          new ArrayList<String>(neededNestedColumnPaths));
+      }
+    } else {
+      ColumnProjectionUtils.setReadAllColumns(jobConf);
+    }
+
+    pushFilters(jobConf, rowSchema, tableFilterExpr);
   }
 
-  private void pushFilters(final JobConf jobConf, final TableScanOperator tableScan) {
-
-    final TableScanDesc scanDesc = tableScan.getConf();
-    if (scanDesc == null) {
-      LOG.debug("Not pushing filters because TableScanDesc is null");
-      return;
-    }
-
+  private void pushFilters(final JobConf jobConf, RowSchema rowSchema, ExprNodeGenericFuncDesc filterExpr) {
     // construct column name list for reference by filter push down
-    Utilities.setColumnNameList(jobConf, tableScan);
+    Utilities.setColumnNameList(jobConf, rowSchema);
 
     // push down filters
-    final ExprNodeGenericFuncDesc filterExpr = scanDesc.getFilterExpr();
     if (filterExpr == null) {
       LOG.debug("Not pushing filters because FilterExpr is null");
       return;
     }
 
     final String filterText = filterExpr.getExprString();
-    final String filterExprSerialized = Utilities.serializeExpression(filterExpr);
+    final String filterExprSerialized = SerializationUtilities.serializeExpression(filterExpr);
     jobConf.set(
         TableScanDesc.FILTER_TEXT_CONF_STR,
         filterText);
@@ -136,12 +177,11 @@ public class ProjectionPusher {
         filterExprSerialized);
   }
 
-
   public JobConf pushProjectionsAndFilters(JobConf jobConf, Path path)
       throws IOException {
     updateMrWork(jobConf);  // TODO: refactor this in HIVE-6366
     final JobConf cloneJobConf = new JobConf(jobConf);
-    final PartitionDesc part = pathToPartitionInfo.get(path.toString());
+    final PartitionDesc part = pathToPartitionInfo.get(path);
 
     if ((part != null) && (part.getTableDesc() != null)) {
       Utilities.copyTableJobPropertiesToConf(part.getTableDesc(), cloneJobConf);

@@ -23,6 +23,7 @@ import java.io.DataOutput;
 import java.io.IOException;
 import java.io.Serializable;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -30,28 +31,37 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.Map.Entry;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.hive.common.StringInternUtils;
+import org.apache.hadoop.hive.ql.exec.SerializationUtilities;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configurable;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.hive.common.FileUtils;
 import org.apache.hadoop.hive.conf.HiveConf;
+import org.apache.hadoop.hive.conf.HiveConf.ConfVars;
 import org.apache.hadoop.hive.io.HiveIOExceptionHandlerUtil;
-import org.apache.hadoop.hive.metastore.api.hive_metastoreConstants;
+import org.apache.hadoop.hive.llap.io.api.LlapIo;
+import org.apache.hadoop.hive.llap.io.api.LlapProxy;
 import org.apache.hadoop.hive.ql.exec.spark.SparkDynamicPartitionPruner;
 import org.apache.hadoop.hive.ql.plan.TableDesc;
 import org.apache.hadoop.hive.ql.exec.Operator;
 import org.apache.hadoop.hive.ql.exec.TableScanOperator;
 import org.apache.hadoop.hive.ql.exec.Utilities;
+import org.apache.hadoop.hive.ql.exec.vector.VectorizedRowBatch;
 import org.apache.hadoop.hive.ql.log.PerfLogger;
+import org.apache.hadoop.hive.ql.metadata.HiveException;
 import org.apache.hadoop.hive.ql.plan.ExprNodeGenericFuncDesc;
 import org.apache.hadoop.hive.ql.plan.MapWork;
-import org.apache.hadoop.hive.ql.plan.MergeJoinWork;
 import org.apache.hadoop.hive.ql.plan.OperatorDesc;
 import org.apache.hadoop.hive.ql.plan.PartitionDesc;
 import org.apache.hadoop.hive.ql.plan.TableScanDesc;
+import org.apache.hadoop.hive.ql.plan.VectorPartitionDesc;
+import org.apache.hadoop.hive.ql.plan.VectorPartitionDesc.VectorMapOperatorReadType;
+import org.apache.hadoop.hive.ql.session.SessionState;
 import org.apache.hadoop.hive.serde2.ColumnProjectionUtils;
-import org.apache.hadoop.hive.shims.ShimLoader;
+import org.apache.hadoop.hive.serde2.Deserializer;
 import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.io.WritableComparable;
 import org.apache.hadoop.mapred.FileInputFormat;
@@ -62,6 +72,7 @@ import org.apache.hadoop.mapred.JobConf;
 import org.apache.hadoop.mapred.JobConfigurable;
 import org.apache.hadoop.mapred.RecordReader;
 import org.apache.hadoop.mapred.Reporter;
+import org.apache.hadoop.util.StringUtils;
 import org.apache.hive.common.util.ReflectionUtil;
 
 /**
@@ -72,20 +83,19 @@ import org.apache.hive.common.util.ReflectionUtil;
  */
 public class HiveInputFormat<K extends WritableComparable, V extends Writable>
     implements InputFormat<K, V>, JobConfigurable {
-
   private static final String CLASS_NAME = HiveInputFormat.class.getName();
-  private static final Log LOG = LogFactory.getLog(CLASS_NAME);
+  private static final Logger LOG = LoggerFactory.getLogger(CLASS_NAME);
 
   /**
    * A cache of InputFormat instances.
    */
-  private static Map<Class, InputFormat<WritableComparable, Writable>> inputFormats 
+  private static final Map<Class, InputFormat<WritableComparable, Writable>> inputFormats
     = new ConcurrentHashMap<Class, InputFormat<WritableComparable, Writable>>();
 
   private JobConf job;
 
   // both classes access by subclasses
-  protected Map<String, PartitionDesc> pathToPartitionInfo;
+  protected Map<Path, PartitionDesc> pathToPartitionInfo;
   protected MapWork mrwork;
 
   /**
@@ -124,7 +134,7 @@ public class HiveInputFormat<K extends WritableComparable, V extends Writable>
       if (inputSplit instanceof FileSplit) {
         return ((FileSplit) inputSplit).getPath();
       }
-      return new Path("");
+      throw new RuntimeException(inputSplit + " is not a FileSplit");
     }
 
     /** The position of the first byte in the file to process. */
@@ -196,6 +206,113 @@ public class HiveInputFormat<K extends WritableComparable, V extends Writable>
     this.job = job;
   }
 
+  public static InputFormat<WritableComparable, Writable> wrapForLlap(
+      InputFormat<WritableComparable, Writable> inputFormat, Configuration conf,
+      PartitionDesc part) throws HiveException {
+    if (!HiveConf.getBoolVar(conf, ConfVars.LLAP_IO_ENABLED, LlapProxy.isDaemon())) {
+      return inputFormat; // LLAP not enabled, no-op.
+    }
+    String ifName = inputFormat.getClass().getCanonicalName();
+    boolean isSupported = inputFormat instanceof LlapWrappableInputFormatInterface;
+    boolean isVectorized = Utilities.getUseVectorizedInputFileFormat(conf);
+    if (!isVectorized) {
+      // Pretend it's vectorized if the non-vector wrapped is enabled.
+      isVectorized = HiveConf.getBoolVar(conf, ConfVars.LLAP_IO_NONVECTOR_WRAPPER_ENABLED)
+          && (Utilities.getPlanPath(conf) != null);
+    }
+    boolean isSerdeBased = false;
+    if (isVectorized && !isSupported
+        && HiveConf.getBoolVar(conf, ConfVars.LLAP_IO_ENCODE_ENABLED)) {
+      // See if we can use re-encoding to read the format thru IO elevator.
+      String formatList = HiveConf.getVar(conf, ConfVars.LLAP_IO_ENCODE_FORMATS);
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("Checking " + ifName + " against " + formatList);
+      }
+      String[] formats = StringUtils.getStrings(formatList);
+      if (formats != null) {
+        for (String format : formats) {
+          // TODO: should we check isAssignableFrom?
+          if (ifName.equals(format)) {
+            if (LOG.isInfoEnabled()) {
+              LOG.info("Using SerDe-based LLAP reader for " + ifName);
+            }
+            isSupported = isSerdeBased = true;
+            break;
+          }
+        }
+      }
+    }
+    if (!isSupported || !isVectorized) {
+      if (LOG.isInfoEnabled()) {
+        LOG.info("Not using llap for " + ifName + ": supported = "
+          + isSupported + ", vectorized = " + isVectorized);
+      }
+      return inputFormat;
+    }
+    if (LOG.isDebugEnabled()) {
+      LOG.debug("Wrapping " + ifName);
+    }
+
+    @SuppressWarnings("unchecked")
+    LlapIo<VectorizedRowBatch> llapIo = LlapProxy.getIo();
+    if (llapIo == null) {
+      if (LOG.isInfoEnabled()) {
+        LOG.info("Not using LLAP IO because it is not initialized");
+      }
+      return inputFormat;
+    }
+    Deserializer serde = null;
+    if (isSerdeBased) {
+      if (part == null) {
+        if (LOG.isInfoEnabled()) {
+          LOG.info("Not using LLAP IO because there's no partition spec for SerDe-based IF");
+        }
+        return inputFormat;
+      }
+      VectorPartitionDesc vpart =  part.getVectorPartitionDesc();
+      if (vpart != null) {
+        VectorMapOperatorReadType old = vpart.getVectorMapOperatorReadType();
+        if (old != VectorMapOperatorReadType.VECTORIZED_INPUT_FILE_FORMAT) {
+          if (LOG.isInfoEnabled()) {
+            LOG.info("Resetting VectorMapOperatorReadType from " + old + " for partition "
+              + part.getTableName() + " " + part.getPartSpec());
+          }
+          vpart.setVectorMapOperatorReadType(
+              VectorMapOperatorReadType.VECTORIZED_INPUT_FILE_FORMAT);
+        }
+      }
+      try {
+        serde = part.getDeserializer(conf);
+      } catch (Exception e) {
+        throw new HiveException("Error creating SerDe for LLAP IO", e);
+      }
+    }
+    InputFormat<?, ?> wrappedIf = llapIo.getInputFormat(inputFormat, serde);
+    if (wrappedIf == null) {
+      return inputFormat; // We cannot wrap; the cause is logged inside.
+    }
+    return castInputFormat(wrappedIf);
+  }
+
+
+
+  public static boolean canWrapForLlap(Class<? extends InputFormat> clazz, boolean checkVector) {
+    return LlapWrappableInputFormatInterface.class.isAssignableFrom(clazz) &&
+        (!checkVector || BatchToRowInputFormat.class.isAssignableFrom(clazz));
+  }
+
+  @SuppressWarnings("unchecked")
+  private static <T, U, V, W> InputFormat<T, U> castInputFormat(InputFormat<V, W> from) {
+    // This is ugly in two ways...
+    // 1) We assume that LlapWrappableInputFormatInterface has NullWritable as first parameter.
+    //    Since we are using Java and not, say, a programming language, there's no way to check.
+    // 2) We ignore the fact that 2nd arg is completely incompatible (VRB -> Writable), because
+    //    vectorization currently works by magic, getting VRB from IF with non-VRB value param.
+    // So we just cast blindly and hope for the best (which is obviously what happens).
+    return (InputFormat<T, U>)from;
+  }
+
+  /** NOTE: this no longer wraps the IF for LLAP. Call wrapForLlap manually if needed. */
   public static InputFormat<WritableComparable, Writable> getInputFormatFromCache(
     Class inputFormatClass, JobConf job) throws IOException {
     InputFormat<WritableComparable, Writable> instance = inputFormats.get(inputFormatClass);
@@ -218,9 +335,7 @@ public class HiveInputFormat<K extends WritableComparable, V extends Writable>
 
   public RecordReader getRecordReader(InputSplit split, JobConf job,
       Reporter reporter) throws IOException {
-
     HiveInputSplit hsplit = (HiveInputSplit) split;
-
     InputSplit inputSplit = hsplit.getInputSplit();
     String inputFormatClassName = null;
     Class inputFormatClass = null;
@@ -231,21 +346,31 @@ public class HiveInputFormat<K extends WritableComparable, V extends Writable>
       throw new IOException("cannot find class " + inputFormatClassName, e);
     }
 
-    if (this.mrwork == null) {
+    if (this.mrwork == null || pathToPartitionInfo == null) {
       init(job);
     }
 
     boolean nonNative = false;
-    PartitionDesc part = pathToPartitionInfo.get(hsplit.getPath().toString());
+    PartitionDesc part = HiveFileFormatUtils.getPartitionDescFromPathRecursively(
+        pathToPartitionInfo, hsplit.getPath(), null);
+    if (LOG.isDebugEnabled()) {
+      LOG.debug("Found spec for " + hsplit.getPath() + " " + part + " from " + pathToPartitionInfo);
+    }
+
     if ((part != null) && (part.getTableDesc() != null)) {
       Utilities.copyTableJobPropertiesToConf(part.getTableDesc(), job);
       nonNative = part.getTableDesc().isNonNative();
     }
 
-    pushProjectionsAndFilters(job, inputFormatClass, hsplit.getPath()
-      .toString(), hsplit.getPath().toUri().getPath(), nonNative);
+    Path splitPath = hsplit.getPath();
+    pushProjectionsAndFilters(job, inputFormatClass, splitPath, nonNative);
 
     InputFormat inputFormat = getInputFormatFromCache(inputFormatClass, job);
+    try {
+      inputFormat = HiveInputFormat.wrapForLlap(inputFormat, job, part);
+    } catch (HiveException e) {
+      throw new IOException(e);
+    }
     RecordReader innerReader = null;
     try {
       innerReader = inputFormat.getRecordReader(inputSplit, job, reporter);
@@ -310,9 +435,7 @@ public class HiveInputFormat<K extends WritableComparable, V extends Writable>
       footerCount = Utilities.getFooterCount(table, conf);
       if (headerCount != 0 || footerCount != 0) {
         // Input file has header or footer, cannot be splitted.
-        conf.setLong(
-            ShimLoader.getHadoopShims().getHadoopConfNames().get("MAPREDMINSPLITSIZE"),
-            Long.MAX_VALUE);
+        HiveConf.setLongVar(conf, ConfVars.MAPREDMINSPLITSIZE, Long.MAX_VALUE);
       }
     }
 
@@ -325,12 +448,7 @@ public class HiveInputFormat<K extends WritableComparable, V extends Writable>
   Path[] getInputPaths(JobConf job) throws IOException {
     Path[] dirs;
     if (HiveConf.getVar(job, HiveConf.ConfVars.HIVE_EXECUTION_ENGINE).equals("spark")) {
-      Set<String> pathStrings = mrwork.getPathToPartitionInfo().keySet();
-      dirs = new Path[pathStrings.size()];
-      Iterator<String> it = pathStrings.iterator();
-      for (int i = 0; i < dirs.length; i++) {
-        dirs[i] = new Path(it.next());
-      }
+      dirs = mrwork.getPathToPartitionInfo().keySet().toArray(new Path[]{});
     } else {
       dirs = FileInputFormat.getInputPaths(job);
       if (dirs.length == 0) {
@@ -347,11 +465,12 @@ public class HiveInputFormat<K extends WritableComparable, V extends Writable>
         }
       }
     }
+    StringInternUtils.internUriStringsInPathArray(dirs);
     return dirs;
   }
 
   public InputSplit[] getSplits(JobConf job, int numSplits) throws IOException {
-    PerfLogger perfLogger = PerfLogger.getPerfLogger();
+    PerfLogger perfLogger = SessionState.getPerfLogger();
     perfLogger.PerfLogBegin(CLASS_NAME, PerfLogger.GET_SPLITS);
     init(job);
     Path[] dirs = getInputPaths(job);
@@ -376,8 +495,7 @@ public class HiveInputFormat<K extends WritableComparable, V extends Writable>
       TableDesc table = part.getTableDesc();
       TableScanOperator tableScan = null;
 
-      List<String> aliases =
-          mrwork.getPathToAliases().get(dir.toUri().toString());
+      List<String> aliases = mrwork.getPathToAliases().get(dir);
 
       // Make filter pushdown information available to getSplits.
       if ((aliases != null) && (aliases.size() == 1)) {
@@ -394,6 +512,10 @@ public class HiveInputFormat<K extends WritableComparable, V extends Writable>
           // push down filters
           pushFilters(newjob, tableScan);
         }
+      } else {
+        if (LOG.isDebugEnabled()) {
+          LOG.debug("aliases: {} pathToAliases: {} dir: {}", aliases, mrwork.getPathToAliases(), dir);
+        }
       }
 
       if (!currentDirs.isEmpty() &&
@@ -405,7 +527,15 @@ public class HiveInputFormat<K extends WritableComparable, V extends Writable>
       }
 
       if (!currentDirs.isEmpty()) {
-        LOG.info("Generating splits");
+        if (LOG.isInfoEnabled()) {
+          LOG.info("Generating splits as currentDirs is not empty. currentDirs: {}", currentDirs);
+        }
+
+        // set columns to read in conf
+        if (pushDownProjection) {
+          pushProjection(newjob, readColumnsBuffer, readColumnNamesBuffer);
+        }
+
         addSplitsForGroup(currentDirs, currentTableScan, newjob,
             getInputFormatFromCache(currentInputFormatClass, job),
             currentInputFormatClass, currentDirs.size()*(numSplits / dirs.length),
@@ -418,16 +548,16 @@ public class HiveInputFormat<K extends WritableComparable, V extends Writable>
       currentTable = table;
       currentInputFormatClass = inputFormatClass;
     }
+
+    // set columns to read in conf
     if (pushDownProjection) {
-      newjob.setBoolean(ColumnProjectionUtils.READ_ALL_COLUMNS, false);
-      newjob.set(ColumnProjectionUtils.READ_COLUMN_IDS_CONF_STR, readColumnsBuffer.toString());
-      newjob.set(ColumnProjectionUtils.READ_COLUMN_NAMES_CONF_STR, readColumnNamesBuffer.toString());
-      LOG.info(ColumnProjectionUtils.READ_COLUMN_IDS_CONF_STR + "=" + readColumnsBuffer.toString());
-      LOG.info(ColumnProjectionUtils.READ_COLUMN_NAMES_CONF_STR + "=" + readColumnNamesBuffer.toString());
+      pushProjection(newjob, readColumnsBuffer, readColumnNamesBuffer);
     }
 
     if (dirs.length != 0) {
-      LOG.info("Generating splits");
+      if (LOG.isInfoEnabled()) {
+        LOG.info("Generating splits for dirs: {}", dirs);
+      }
       addSplitsForGroup(currentDirs, currentTableScan, newjob,
           getInputFormatFromCache(currentInputFormatClass, job),
           currentInputFormatClass, currentDirs.size()*(numSplits / dirs.length),
@@ -435,17 +565,34 @@ public class HiveInputFormat<K extends WritableComparable, V extends Writable>
     }
 
     Utilities.clearWorkMapForConf(job);
-    LOG.info("number of splits " + result.size());
+    if (LOG.isInfoEnabled()) {
+      LOG.info("number of splits " + result.size());
+    }
     perfLogger.PerfLogEnd(CLASS_NAME, PerfLogger.GET_SPLITS);
     return result.toArray(new HiveInputSplit[result.size()]);
   }
 
+  private void pushProjection(final JobConf newjob, final StringBuilder readColumnsBuffer,
+      final StringBuilder readColumnNamesBuffer) {
+    String readColIds = readColumnsBuffer.toString();
+    String readColNames = readColumnNamesBuffer.toString();
+    newjob.setBoolean(ColumnProjectionUtils.READ_ALL_COLUMNS, false);
+    newjob.set(ColumnProjectionUtils.READ_COLUMN_IDS_CONF_STR, readColIds);
+    newjob.set(ColumnProjectionUtils.READ_COLUMN_NAMES_CONF_STR, readColNames);
+
+    if (LOG.isInfoEnabled()) {
+      LOG.info("{} = {}", ColumnProjectionUtils.READ_COLUMN_IDS_CONF_STR, readColIds);
+      LOG.info("{} = {}", ColumnProjectionUtils.READ_COLUMN_NAMES_CONF_STR, readColNames);
+    }
+  }
+
+
   protected static PartitionDesc getPartitionDescFromPath(
-      Map<String, PartitionDesc> pathToPartitionInfo, Path dir)
+      Map<Path, PartitionDesc> pathToPartitionInfo, Path dir)
       throws IOException {
-    PartitionDesc partDesc = pathToPartitionInfo.get(dir.toString());
+    PartitionDesc partDesc = pathToPartitionInfo.get(dir);
     if (partDesc == null) {
-      partDesc = pathToPartitionInfo.get(dir.toUri().getPath());
+      partDesc = pathToPartitionInfo.get(Path.getPathWithoutSchemeAndAuthority(dir));
     }
     if (partDesc == null) {
       throw new IOException("cannot find dir = " + dir.toString()
@@ -460,10 +607,15 @@ public class HiveInputFormat<K extends WritableComparable, V extends Writable>
     // ensure filters are not set from previous pushFilters
     jobConf.unset(TableScanDesc.FILTER_TEXT_CONF_STR);
     jobConf.unset(TableScanDesc.FILTER_EXPR_CONF_STR);
+
+    Utilities.unsetSchemaEvolution(jobConf);
+
     TableScanDesc scanDesc = tableScan.getConf();
     if (scanDesc == null) {
       return;
     }
+
+    Utilities.addTableSchemaToConf(jobConf, tableScan);
 
     // construct column name list and types for reference by filter push down
     Utilities.setColumnNameList(jobConf, tableScan);
@@ -480,14 +632,14 @@ public class HiveInputFormat<K extends WritableComparable, V extends Writable>
     if (!hasObj) {
       Serializable filterObject = scanDesc.getFilterObject();
       if (filterObject != null) {
-        serializedFilterObj = Utilities.serializeObject(filterObject);
+        serializedFilterObj = SerializationUtilities.serializeObject(filterObject);
       }
     }
     if (serializedFilterObj != null) {
       jobConf.set(TableScanDesc.FILTER_OBJECT_CONF_STR, serializedFilterObj);
     }
     if (!hasExpr) {
-      serializedFilterExpr = Utilities.serializeExpression(filterExpr);
+      serializedFilterExpr = SerializationUtilities.serializeExpression(filterExpr);
     }
     String filterText = filterExpr.getExprString();
     if (LOG.isDebugEnabled()) {
@@ -502,13 +654,13 @@ public class HiveInputFormat<K extends WritableComparable, V extends Writable>
   }
 
   protected void pushProjectionsAndFilters(JobConf jobConf, Class inputFormatClass,
-      String splitPath, String splitPathWithNoSchema) {
-    pushProjectionsAndFilters(jobConf, inputFormatClass, splitPath,
-      splitPathWithNoSchema, false);
+      Path splitPath) {
+    pushProjectionsAndFilters(jobConf, inputFormatClass, splitPath, false);
   }
 
   protected void pushProjectionsAndFilters(JobConf jobConf, Class inputFormatClass,
-      String splitPath, String splitPathWithNoSchema, boolean nonNative) {
+      Path splitPath, boolean nonNative) {
+    Path splitPathWithNoSchema = Path.getPathWithoutSchemeAndAuthority(splitPath);
     if (this.mrwork == null) {
       init(job);
     }
@@ -518,12 +670,14 @@ public class HiveInputFormat<K extends WritableComparable, V extends Writable>
     }
 
     ArrayList<String> aliases = new ArrayList<String>();
-    Iterator<Entry<String, ArrayList<String>>> iterator = this.mrwork
+    Iterator<Entry<Path, ArrayList<String>>> iterator = this.mrwork
         .getPathToAliases().entrySet().iterator();
 
+    Set<Path> splitParentPaths = null;
+    int pathsSize = this.mrwork.getPathToAliases().entrySet().size();
     while (iterator.hasNext()) {
-      Entry<String, ArrayList<String>> entry = iterator.next();
-      String key = entry.getKey();
+      Entry<Path, ArrayList<String>> entry = iterator.next();
+      Path key = entry.getKey();
       boolean match;
       if (nonNative) {
         // For non-native tables, we need to do an exact match to avoid
@@ -536,8 +690,20 @@ public class HiveInputFormat<K extends WritableComparable, V extends Writable>
         // subdirectories.  (Unlike non-native tables, prefix mixups don't seem
         // to be a potential problem here since we are always dealing with the
         // path to something deeper than the table location.)
-        match =
-          splitPath.startsWith(key) || splitPathWithNoSchema.startsWith(key);
+        if (pathsSize > 1) {
+          // Comparing paths multiple times creates lots of objects &
+          // creates GC pressure for tables having large number of partitions.
+          // In such cases, use pre-computed paths for comparison
+          if (splitParentPaths == null) {
+            splitParentPaths = new HashSet<>();
+            FileUtils.populateParentPaths(splitParentPaths, splitPath);
+            FileUtils.populateParentPaths(splitParentPaths, splitPathWithNoSchema);
+          }
+          match = splitParentPaths.contains(key);
+        } else {
+          match = FileUtils.isPathWithinSubtree(splitPath, key)
+              || FileUtils.isPathWithinSubtree(splitPathWithNoSchema, key);
+        }
       }
       if (match) {
         ArrayList<String> list = entry.getValue();
@@ -554,9 +720,12 @@ public class HiveInputFormat<K extends WritableComparable, V extends Writable>
         TableScanOperator ts = (TableScanOperator) op;
         // push down projections.
         ColumnProjectionUtils.appendReadColumns(
-            jobConf, ts.getNeededColumnIDs(), ts.getNeededColumns());
+            jobConf, ts.getNeededColumnIDs(), ts.getNeededColumns(), ts.getNeededNestedColumnPaths());
         // push down filters
         pushFilters(jobConf, ts);
+
+        AcidUtils.setTransactionalTableScan(job, ts.getConf().isAcidTable());
+        AcidUtils.setAcidOperationalProperties(job, ts.getConf().getAcidOperationalProperties());
       }
     }
   }

@@ -23,20 +23,18 @@ import static com.google.common.base.Preconditions.checkNotNull;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
-import java.io.OutputStreamWriter;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import org.apache.commons.io.FileUtils;
-import org.apache.log4j.ConsoleAppender;
-import org.apache.log4j.PatternLayout;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -47,73 +45,59 @@ import com.google.common.collect.Lists;
 import com.google.common.collect.Sets;
 
 public class TestParser {
+
   private static final Splitter TEST_SPLITTER = Splitter.onPattern("[, ]")
-    .trimResults().omitEmptyStrings();
+      .trimResults().omitEmptyStrings();
+
+  private static final String QTEST_MODULE_NAME = "itests/qtest";
+  private static final String QTEST_SPARK_MODULE_NAME = "itests/qtest-spark";
+
+  private final AtomicInteger batchIdCounter;
 
   private final Context context;
   private final String testCasePropertyName;
   private final File sourceDirectory;
   private final Logger logger;
 
-  public TestParser(Context context, String testCasePropertyName, 
+  public TestParser(Context context, AtomicInteger batchIdCounter, String testCasePropertyName,
       File sourceDirectory, Logger logger) {
     this.context = context;
+    this.batchIdCounter = batchIdCounter;
     this.testCasePropertyName = testCasePropertyName;
     this.sourceDirectory = sourceDirectory;
     this.logger = logger;
   }
   private List<TestBatch> parseTests() {
-    Context unitContext = new Context(context.getSubProperties(
-        Joiner.on(".").join("unitTests", "")));
-    Set<String> excluded = Sets.newHashSet(TEST_SPLITTER.split(unitContext.getString("exclude", "")));
-    Set<String> isolated = Sets.newHashSet(TEST_SPLITTER.split(unitContext.getString("isolate", "")));
-    Set<String> included = Sets.newHashSet(TEST_SPLITTER.split(unitContext.getString("include", "")));
-    if(!included.isEmpty() && !excluded.isEmpty()) {
-      throw new IllegalArgumentException(String.format("Included and excluded mutally exclusive." +
-          " Included = %s, excluded = %s", included.toString(), excluded.toString()));
-    }
-    List<File> unitTestsDirs = Lists.newArrayList();
-    for(String unitTestDir : TEST_SPLITTER
-        .split(checkNotNull(unitContext.getString("directories"), "directories"))) {
-      File unitTestParent = new File(sourceDirectory, unitTestDir);
-      if(unitTestParent.isDirectory()) {
-        unitTestsDirs.add(unitTestParent);
-      } else {
-        logger.warn("Unit test directory " + unitTestParent + " does not exist.");
-      }
-    }
+
+    Set<String> excluded = new HashSet<String>();
+
+
     List<TestBatch> result = Lists.newArrayList();
     for(QFileTestBatch test : parseQFileTests()) {
       result.add(test);
       excluded.add(test.getDriver());
     }
-    for(File unitTestDir : unitTestsDirs) {
-      for(File classFile : FileUtils.listFiles(unitTestDir, new String[]{"class"}, true)) {
-        String className = classFile.getName();
-        logger.debug("In  " + unitTestDir  + ", found " + className);
-        if(className.startsWith("Test") && !className.contains("$")) {
-          String testName = className.replaceAll("\\.class$", "");
-          if(excluded.contains(testName)) {
-            logger.info("Exlcuding unit test " + testName);
-          } else if(included.isEmpty() || included.contains(testName)) {
-            if(isolated.contains(testName)) {
-              logger.info("Executing isolated unit test " + testName);
-              result.add(new UnitTestBatch(testCasePropertyName, testName, false));
-            } else {
-              logger.info("Executing parallel unit test " + testName);
-              result.add(new UnitTestBatch(testCasePropertyName, testName, true));
-            }
-          }
-        }
-      }
-    }
+
+    Collection<TestBatch> unitTestBatches =
+        new UnitTestPropertiesParser(context, batchIdCounter, testCasePropertyName, sourceDirectory, logger,
+            excluded).generateTestBatches();
+    result.addAll(unitTestBatches);
+
     return result;
   }
   private List<QFileTestBatch> parseQFileTests() {
     Map<String, Properties> properties = parseQTestProperties();
 
     List<QFileTestBatch> result = Lists.newArrayList();
-    for(String alias : context.getString("qFileTests", "").split(" ")) {
+    String qFileTestsString = context.getString("qFileTests",null);
+    String []aliases;
+    if (qFileTestsString != null) {
+      aliases = qFileTestsString.split(" ");
+    } else {
+      aliases = new String[0];
+    }
+
+    for(String alias : aliases) {
       Context testContext = new Context(context.getSubProperties(
           Joiner.on(".").join("qFileTest", alias, "")));
       String driver = checkNotNull(testContext.getString("driver"), "driver").trim();
@@ -177,17 +161,20 @@ public class TestParser {
         logger.info("Exlcuding test " + driver + " " + test);
       } else if(isolated.contains(test)) {
         logger.info("Executing isolated test " + driver + " " + test);
-        testBatches.add(new QFileTestBatch(testCasePropertyName, driver, queryFilesProperty, Sets.newHashSet(test), isParallel));
+        testBatches.add(new QFileTestBatch(batchIdCounter, testCasePropertyName, driver, queryFilesProperty,
+            Sets.newHashSet(test), isParallel, getModuleName(driver)));
       } else {
         if(testBatch.size() >= batchSize) {
-          testBatches.add(new QFileTestBatch(testCasePropertyName, driver, queryFilesProperty, Sets.newHashSet(testBatch), isParallel));
+          testBatches.add(new QFileTestBatch(batchIdCounter, testCasePropertyName, driver, queryFilesProperty,
+              Sets.newHashSet(testBatch), isParallel, getModuleName(driver)));
           testBatch = Lists.newArrayList();
         }
         testBatch.add(test);
       }
     }
     if(!testBatch.isEmpty()) {
-      testBatches.add(new QFileTestBatch(testCasePropertyName, driver, queryFilesProperty, Sets.newHashSet(testBatch), isParallel));
+      testBatches.add(new QFileTestBatch(batchIdCounter, testCasePropertyName, driver, queryFilesProperty,
+          Sets.newHashSet(testBatch), isParallel, getModuleName(driver)));
     }
     return testBatches;
   }
@@ -259,6 +246,14 @@ public class TestParser {
     tests.addAll(toAdd);
   }
 
+  private String getModuleName(String driverName) {
+    if (driverName.toLowerCase().contains("spark")) {
+      return QTEST_SPARK_MODULE_NAME;
+    } else {
+      return QTEST_MODULE_NAME;
+    }
+  }
+
   public Supplier<List<TestBatch>> parse() {
     return new Supplier<List<TestBatch>>() {
       @Override
@@ -282,7 +277,7 @@ public class TestParser {
     File workingDir = new File("../..");
     File testConfigurationFile = new File(args[0]);
     TestConfiguration conf = TestConfiguration.fromFile(testConfigurationFile, log);
-    TestParser testParser = new TestParser(conf.getContext(), "test", workingDir, log);
+    TestParser testParser = new TestParser(conf.getContext(), new AtomicInteger(1), "test", workingDir, log);
     List<TestBatch> testBatches = testParser.parse().get();
     for (TestBatch testBatch : testBatches) {
       System.out.println(testBatch.getTestArguments());

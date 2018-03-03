@@ -24,6 +24,7 @@ import java.sql.Timestamp;
 
 import org.apache.hadoop.hive.common.type.HiveChar;
 import org.apache.hadoop.hive.common.type.HiveDecimal;
+import org.apache.hadoop.hive.serde2.io.HiveDecimalWritable;
 import org.apache.hadoop.hive.common.type.HiveIntervalDayTime;
 import org.apache.hadoop.hive.common.type.HiveIntervalYearMonth;
 import org.apache.hadoop.hive.common.type.HiveVarchar;
@@ -96,7 +97,7 @@ public interface SerializeWrite {
 
   /*
    * STRING.
-   * 
+   *
    * Can be used to write CHAR and VARCHAR when the caller takes responsibility for
    * truncation/padding issues.
    */
@@ -145,11 +146,12 @@ public interface SerializeWrite {
    */
   void writeHiveIntervalDayTime(HiveIntervalDayTime vidt) throws IOException;
 
-  // We provide a faster way to write a hive interval day time without a HiveIntervalDayTime object.
-  void writeHiveIntervalDayTime(long totalNanos) throws IOException;
-
   /*
    * DECIMAL.
+   *
+   * NOTE: The scale parameter is for text serialization (e.g. HiveDecimal.toFormatString) that
+   * creates trailing zeroes output decimals.
    */
-  void writeHiveDecimal(HiveDecimal dec) throws IOException;
+  void writeHiveDecimal(HiveDecimal dec, int scale) throws IOException;
+  void writeHiveDecimal(HiveDecimalWritable decWritable, int scale) throws IOException;
 }

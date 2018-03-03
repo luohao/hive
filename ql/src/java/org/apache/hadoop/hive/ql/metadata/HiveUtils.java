@@ -21,13 +21,14 @@ package org.apache.hadoop.hive.ql.metadata;
 import java.util.ArrayList;
 import java.util.List;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hive.common.JavaUtils;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.metastore.api.FieldSchema;
 import org.apache.hadoop.hive.ql.exec.Utilities;
+import org.apache.hadoop.hive.ql.exec.tez.TezContext;
 import org.apache.hadoop.hive.ql.index.HiveIndexHandler;
 import org.apache.hadoop.hive.ql.security.HadoopDefaultAuthenticator;
 import org.apache.hadoop.hive.ql.security.HiveAuthenticationProvider;
@@ -38,6 +39,7 @@ import org.apache.hadoop.hive.ql.security.authorization.plugin.HiveAuthorizerFac
 import org.apache.hadoop.hive.ql.security.authorization.plugin.sqlstd.SQLStdHiveAuthorizerFactory;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.util.ReflectionUtils;
+import org.apache.hadoop.util.StringUtils;
 
 /**
  * General collection of helper functions.
@@ -107,7 +109,7 @@ public final class HiveUtils {
   static final byte[] ctrlABytes = "\u0001".getBytes();
 
 
-  public static final Log LOG = LogFactory.getLog(HiveUtils.class);
+  public static final Logger LOG = LoggerFactory.getLogger(HiveUtils.class);
 
 
   public static Text escapeText(Text text) {
@@ -450,5 +452,16 @@ public final class HiveUtils {
       sb.append(HiveUtils.unparseIdentifier(fieldSchemas.get(i).getName()));
     }
     return sb.toString();
+  }
+
+  public static String getLocalDirList(Configuration conf) {
+    if (HiveConf.getVar(conf, HiveConf.ConfVars.HIVE_EXECUTION_ENGINE).equals("tez")) {
+      TezContext tezContext = (TezContext) TezContext.get();
+      if (tezContext != null && tezContext.getTezProcessorContext() != null) {
+        return StringUtils.arrayToString(tezContext.getTezProcessorContext().getWorkDirs());
+      } // otherwise fall back to return null, i.e. to use local tmp dir only
+    }
+
+    return null;
   }
 }

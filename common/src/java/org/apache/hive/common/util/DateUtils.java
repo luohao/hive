@@ -21,8 +21,6 @@ package org.apache.hive.common.util;
 import java.math.BigDecimal;
 import java.text.SimpleDateFormat;
 
-import org.apache.hadoop.hive.common.type.HiveIntervalDayTime;
-
 /**
  * DateUtils. Thread-safe class
  *
@@ -57,20 +55,23 @@ public class DateUtils {
     return result;
   }
 
-  public static long getIntervalDayTimeTotalNanos(HiveIntervalDayTime intervalDayTime) {
-    return intervalDayTime.getTotalSeconds() * NANOS_PER_SEC + intervalDayTime.getNanos();
-  }
+  // From java.util.Calendar
+  private static final String[] FIELD_NAME = {
+    "ERA", "YEAR", "MONTH", "WEEK_OF_YEAR", "WEEK_OF_MONTH", "DAY_OF_MONTH",
+    "DAY_OF_YEAR", "DAY_OF_WEEK", "DAY_OF_WEEK_IN_MONTH", "AM_PM", "HOUR",
+    "HOUR_OF_DAY", "MINUTE", "SECOND", "MILLISECOND", "ZONE_OFFSET",
+    "DST_OFFSET"
+  };
 
-  public static void setIntervalDayTimeTotalNanos(HiveIntervalDayTime intervalDayTime,
-      long totalNanos) {
-    intervalDayTime.set(totalNanos / NANOS_PER_SEC, (int) (totalNanos % NANOS_PER_SEC));
-  }
-
-  public static long getIntervalDayTimeTotalSecondsFromTotalNanos(long totalNanos) {
-    return totalNanos / NANOS_PER_SEC;
-  }
-
-  public static int getIntervalDayTimeNanosFromTotalNanos(long totalNanos) {
-    return (int) (totalNanos % NANOS_PER_SEC);
+  /**
+   * Returns the name of the specified calendar field.
+   *
+   * @param field the calendar field
+   * @return the calendar field name
+   * @exception IndexOutOfBoundsException if <code>field</code> is negative,
+   * equal to or greater then <code>FIELD_COUNT</code>.
+   */
+  public static String getFieldName(int field) {
+      return FIELD_NAME[field];
   }
 }

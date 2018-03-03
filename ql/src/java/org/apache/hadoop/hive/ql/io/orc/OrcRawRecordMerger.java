@@ -17,34 +17,31 @@
  */
 package org.apache.hadoop.hive.ql.io.orc;
 
-import com.google.common.annotations.VisibleForTesting;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import java.io.IOException;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Map;
+import java.util.TreeMap;
+
+import org.apache.orc.OrcUtils;
+import org.apache.orc.StripeInformation;
+import org.apache.orc.TypeDescription;
+import org.apache.orc.impl.AcidStats;
+import org.apache.orc.impl.OrcAcidUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hive.common.ValidTxnList;
 import org.apache.hadoop.hive.ql.io.AcidInputFormat;
 import org.apache.hadoop.hive.ql.io.AcidUtils;
 import org.apache.hadoop.hive.ql.io.RecordIdentifier;
-import org.apache.hadoop.hive.ql.metadata.VirtualColumn;
-import org.apache.hadoop.hive.serde.serdeConstants;
 import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspector;
-import org.apache.hadoop.hive.serde2.typeinfo.StructTypeInfo;
-import org.apache.hadoop.hive.serde2.typeinfo.TypeInfo;
-import org.apache.hadoop.hive.serde2.typeinfo.TypeInfoUtils;
 import org.apache.hadoop.io.IntWritable;
 import org.apache.hadoop.io.LongWritable;
 
-import java.io.IOException;
-import java.util.ArrayDeque;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Deque;
-import java.util.List;
-import java.util.Map;
-import java.util.TreeMap;
+import com.google.common.annotations.VisibleForTesting;
 
 /**
  * Merges a base and a list of delta files together into a single stream of
@@ -52,11 +49,12 @@ import java.util.TreeMap;
  */
 public class OrcRawRecordMerger implements AcidInputFormat.RawReader<OrcStruct>{
 
-  private static final Log LOG = LogFactory.getLog(OrcRawRecordMerger.class);
+  private static final Logger LOG = LoggerFactory.getLogger(OrcRawRecordMerger.class);
 
   private final Configuration conf;
   private final boolean collapse;
   private final RecordReader baseReader;
+  private final ObjectInspector objectInspector;
   private final long offset;
   private final long length;
   private final ValidTxnList validTxnList;
@@ -76,7 +74,8 @@ public class OrcRawRecordMerger implements AcidInputFormat.RawReader<OrcStruct>{
    * reader is collapsing events to just the last update, just the first
    * instance of each record is required.
    */
-  final static class ReaderKey extends RecordIdentifier{
+  @VisibleForTesting
+  public final static class ReaderKey extends RecordIdentifier{
     private long currentTransactionId;
     private int statementId;//sort on this descending, like currentTransactionId
 
@@ -122,6 +121,14 @@ public class OrcRawRecordMerger implements AcidInputFormat.RawReader<OrcStruct>{
             && statementId == ((ReaderKey) other).statementId//consistent with compareTo()
           ;
     }
+    @Override
+    public int hashCode() {
+      int result = super.hashCode();
+      result = 31 * result + (int)(currentTransactionId ^ (currentTransactionId >>> 32));
+      result = 31 * result + statementId;
+      return result;
+    }
+
 
     @Override
     public int compareTo(RecordIdentifier other) {
@@ -148,7 +155,7 @@ public class OrcRawRecordMerger implements AcidInputFormat.RawReader<OrcStruct>{
     private boolean isSameRow(ReaderKey other) {
       return compareRow(other) == 0 && currentTransactionId == other.currentTransactionId;
     }
-    
+
     public long getCurrentTransactionId() {
       return currentTransactionId;
     }
@@ -287,7 +294,7 @@ public class OrcRawRecordMerger implements AcidInputFormat.RawReader<OrcStruct>{
           ((LongWritable) next.getFieldValue(OrcRecordUpdater.CURRENT_TRANSACTION))
               .set(0);
           ((LongWritable) next.getFieldValue(OrcRecordUpdater.ROW_ID))
-              .set(0);
+              .set(nextRowId);
           nextRecord.setFieldValue(OrcRecordUpdater.ROW,
               recordReader.next(OrcRecordUpdater.getRow(next)));
         }
@@ -395,18 +402,7 @@ public class OrcRawRecordMerger implements AcidInputFormat.RawReader<OrcStruct>{
   static Reader.Options createEventOptions(Reader.Options options) {
     Reader.Options result = options.clone();
     result.range(options.getOffset(), Long.MAX_VALUE);
-    // slide the columns down by 6 for the include array
-    if (options.getInclude() != null) {
-      boolean[] orig = options.getInclude();
-      // we always need the base row
-      orig[0] = true;
-      boolean[] include = new boolean[orig.length + OrcRecordUpdater.FIELDS];
-      Arrays.fill(include, 0, OrcRecordUpdater.FIELDS, true);
-      for(int i= 0; i < orig.length; ++i) {
-        include[i + OrcRecordUpdater.FIELDS] = orig[i];
-      }
-      result.include(include);
-    }
+    result.include(options.getInclude());
 
     // slide the column names down by 6 for the name array
     if (options.getColumnNames() != null) {
@@ -443,6 +439,13 @@ public class OrcRawRecordMerger implements AcidInputFormat.RawReader<OrcStruct>{
     this.offset = options.getOffset();
     this.length = options.getLength();
     this.validTxnList = validTxnList;
+
+    TypeDescription typeDescr =
+        OrcInputFormat.getDesiredRowTypeDescr(conf, true, Integer.MAX_VALUE);
+
+    objectInspector = OrcRecordUpdater.createEventSchema
+        (OrcStruct.createObjectInspector(0, OrcUtils.getOrcTypes(typeDescr)));
+
     // modify the options to reflect the event instead of the base row
     Reader.Options eventOptions = createEventOptions(options);
     if (reader == null) {
@@ -461,7 +464,6 @@ public class OrcRawRecordMerger implements AcidInputFormat.RawReader<OrcStruct>{
       ReaderKey key = new ReaderKey();
       if (isOriginal) {
         options = options.clone();
-        options.range(options.getOffset(), Long.MAX_VALUE);
         pair = new OriginalReaderPair(key, reader, bucket, minKey, maxKey,
                                       options);
       } else {
@@ -484,7 +486,7 @@ public class OrcRawRecordMerger implements AcidInputFormat.RawReader<OrcStruct>{
         Path deltaFile = AcidUtils.createBucketFile(delta, bucket);
         AcidUtils.ParsedDelta deltaDir = AcidUtils.parsedDelta(delta);
         FileSystem fs = deltaFile.getFileSystem(conf);
-        long length = getLastFlushLength(fs, deltaFile);
+        long length = OrcAcidUtils.getLastFlushLength(fs, deltaFile);
         if (length != -1 && fs.exists(deltaFile)) {
           Reader deltaReader = OrcFile.createReader(deltaFile,
               OrcFile.readerOptions(conf).maxLength(length));
@@ -494,7 +496,7 @@ public class OrcRawRecordMerger implements AcidInputFormat.RawReader<OrcStruct>{
             // it can produce wrong results (if the latest valid version of the record is filtered out by
             // the sarg) or ArrayOutOfBounds errors (when the sarg is applied to a delete record)
             // unless the delta only has insert events
-            OrcRecordUpdater.AcidStats acidStats = OrcRecordUpdater.parseAcidStats(deltaReader);
+            AcidStats acidStats = OrcAcidUtils.parseAcidStats(deltaReader);
             if(acidStats.deletes > 0 || acidStats.updates > 0) {
               deltaEventOptions = eventOptions.clone().searchArgument(null, null);
             }
@@ -523,30 +525,6 @@ public class OrcRawRecordMerger implements AcidInputFormat.RawReader<OrcStruct>{
       }
       // get the number of columns in the user's rows
       columns = primary.getColumns();
-    }
-  }
-
-  /**
-   * Read the side file to get the last flush length.
-   * @param fs the file system to use
-   * @param deltaFile the path of the delta file
-   * @return the maximum size of the file to use
-   * @throws IOException
-   */
-  private static long getLastFlushLength(FileSystem fs,
-                                         Path deltaFile) throws IOException {
-    Path lengths = OrcRecordUpdater.getSideFile(deltaFile);
-    long result = Long.MAX_VALUE;
-    try {
-      FSDataInputStream stream = fs.open(lengths);
-      result = -1;
-      while (stream.available() > 0) {
-        result = stream.readLong();
-      }
-      stream.close();
-      return result;
-    } catch (IOException ioe) {
-      return result;
     }
   }
 
@@ -660,6 +638,9 @@ public class OrcRawRecordMerger implements AcidInputFormat.RawReader<OrcStruct>{
 
   @Override
   public void close() throws IOException {
+    if (primary != null) {
+      primary.recordReader.close();
+    }
     for(ReaderPair pair: readers.values()) {
       pair.recordReader.close();
     }
@@ -672,46 +653,7 @@ public class OrcRawRecordMerger implements AcidInputFormat.RawReader<OrcStruct>{
 
   @Override
   public ObjectInspector getObjectInspector() {
-    // Read the configuration parameters
-    String columnNameProperty = conf.get(serdeConstants.LIST_COLUMNS);
-    // NOTE: if "columns.types" is missing, all columns will be of String type
-    String columnTypeProperty = conf.get(serdeConstants.LIST_COLUMN_TYPES);
-
-    // Parse the configuration parameters
-    ArrayList<String> columnNames = new ArrayList<String>();
-    Deque<Integer> virtualColumns = new ArrayDeque<Integer>();
-    if (columnNameProperty != null && columnNameProperty.length() > 0) {
-      String[] colNames = columnNameProperty.split(",");
-      for (int i = 0; i < colNames.length; i++) {
-        if (VirtualColumn.VIRTUAL_COLUMN_NAMES.contains(colNames[i])) {
-          virtualColumns.addLast(i);
-        } else {
-          columnNames.add(colNames[i]);
-        }
-      }
-    }
-    if (columnTypeProperty == null) {
-      // Default type: all string
-      StringBuilder sb = new StringBuilder();
-      for (int i = 0; i < columnNames.size(); i++) {
-        if (i > 0) {
-          sb.append(":");
-        }
-        sb.append("string");
-      }
-      columnTypeProperty = sb.toString();
-    }
-
-    ArrayList<TypeInfo> fieldTypes =
-        TypeInfoUtils.getTypeInfosFromTypeString(columnTypeProperty);
-    while (virtualColumns.size() > 0) {
-      fieldTypes.remove(virtualColumns.removeLast());
-    }
-    StructTypeInfo rowType = new StructTypeInfo();
-    rowType.setAllStructFieldNames(columnNames);
-    rowType.setAllStructFieldTypeInfos(fieldTypes);
-    return OrcRecordUpdater.createEventSchema
-        (OrcStruct.createObjectInspector(rowType));
+    return objectInspector;
   }
 
   @Override

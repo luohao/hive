@@ -1,16 +1,8 @@
-PREHOOK: query: -- SORT_BEFORE_DIFF
--- This tests that a union all with a map only subquery on one side and a 
--- subquery involving two map reduce jobs on the other runs correctly.
-
-CREATE TABLE test_src (key STRING, value STRING)
+PREHOOK: query: CREATE TABLE test_src (key STRING, value STRING)
 PREHOOK: type: CREATETABLE
 PREHOOK: Output: database:default
 PREHOOK: Output: default@test_src
-POSTHOOK: query: -- SORT_BEFORE_DIFF
--- This tests that a union all with a map only subquery on one side and a 
--- subquery involving two map reduce jobs on the other runs correctly.
-
-CREATE TABLE test_src (key STRING, value STRING)
+POSTHOOK: query: CREATE TABLE test_src (key STRING, value STRING)
 POSTHOOK: type: CREATETABLE
 POSTHOOK: Output: database:default
 POSTHOOK: Output: default@test_src
@@ -19,7 +11,7 @@ SELECT key, value FROM (
 	SELECT key, value FROM src 
 	WHERE key = 0
 UNION ALL
- 	SELECT key, COUNT(*) AS value FROM src
+ 	SELECT key, cast(COUNT(*) as string) AS value FROM src
  	GROUP BY key
 )a
 PREHOOK: type: QUERY
@@ -28,7 +20,7 @@ SELECT key, value FROM (
 	SELECT key, value FROM src 
 	WHERE key = 0
 UNION ALL
- 	SELECT key, COUNT(*) AS value FROM src
+ 	SELECT key, cast(COUNT(*) as string) AS value FROM src
  	GROUP BY key
 )a
 POSTHOOK: type: QUERY
@@ -54,7 +46,7 @@ STAGE PLANS:
                     predicate: (UDFToDouble(key) = 0.0) (type: boolean)
                     Statistics: Num rows: 250 Data size: 2656 Basic stats: COMPLETE Column stats: NONE
                     Select Operator
-                      expressions: '0' (type: string), value (type: string)
+                      expressions: key (type: string), value (type: string)
                       outputColumnNames: _col0, _col1
                       Statistics: Num rows: 250 Data size: 2656 Basic stats: COMPLETE Column stats: NONE
                       File Output Operator
@@ -72,11 +64,11 @@ STAGE PLANS:
                   Statistics: Num rows: 500 Data size: 5312 Basic stats: COMPLETE Column stats: NONE
                   Select Operator
                     expressions: key (type: string)
-                    outputColumnNames: _col0
+                    outputColumnNames: key
                     Statistics: Num rows: 500 Data size: 5312 Basic stats: COMPLETE Column stats: NONE
                     Group By Operator
                       aggregations: count()
-                      keys: _col0 (type: string)
+                      keys: key (type: string)
                       mode: hash
                       outputColumnNames: _col0, _col1
                       Statistics: Num rows: 500 Data size: 5312 Basic stats: COMPLETE Column stats: NONE
@@ -139,7 +131,7 @@ SELECT key, value FROM (
 	SELECT key, value FROM src 
 	WHERE key = 0
 UNION ALL
- 	SELECT key, COUNT(*) AS value FROM src
+ 	SELECT key, cast(COUNT(*) as string) AS value FROM src
  	GROUP BY key
 )a
 PREHOOK: type: QUERY
@@ -150,7 +142,7 @@ SELECT key, value FROM (
 	SELECT key, value FROM src 
 	WHERE key = 0
 UNION ALL
- 	SELECT key, COUNT(*) AS value FROM src
+ 	SELECT key, cast(COUNT(*) as string) AS value FROM src
  	GROUP BY key
 )a
 POSTHOOK: type: QUERY
@@ -169,7 +161,7 @@ POSTHOOK: Input: default@test_src
 312
 PREHOOK: query: EXPLAIN INSERT OVERWRITE TABLE test_src 
 SELECT key, value FROM (
-	SELECT key, COUNT(*) AS value FROM src
+	SELECT key, cast(COUNT(*) as string) AS value FROM src
  	GROUP BY key
 UNION ALL
  	SELECT key, value FROM src 
@@ -178,7 +170,7 @@ UNION ALL
 PREHOOK: type: QUERY
 POSTHOOK: query: EXPLAIN INSERT OVERWRITE TABLE test_src 
 SELECT key, value FROM (
-	SELECT key, COUNT(*) AS value FROM src
+	SELECT key, cast(COUNT(*) as string) AS value FROM src
  	GROUP BY key
 UNION ALL
  	SELECT key, value FROM src 
@@ -205,11 +197,11 @@ STAGE PLANS:
                   Statistics: Num rows: 500 Data size: 5312 Basic stats: COMPLETE Column stats: NONE
                   Select Operator
                     expressions: key (type: string)
-                    outputColumnNames: _col0
+                    outputColumnNames: key
                     Statistics: Num rows: 500 Data size: 5312 Basic stats: COMPLETE Column stats: NONE
                     Group By Operator
                       aggregations: count()
-                      keys: _col0 (type: string)
+                      keys: key (type: string)
                       mode: hash
                       outputColumnNames: _col0, _col1
                       Statistics: Num rows: 500 Data size: 5312 Basic stats: COMPLETE Column stats: NONE
@@ -228,7 +220,7 @@ STAGE PLANS:
                     predicate: (UDFToDouble(key) = 0.0) (type: boolean)
                     Statistics: Num rows: 250 Data size: 2656 Basic stats: COMPLETE Column stats: NONE
                     Select Operator
-                      expressions: '0' (type: string), value (type: string)
+                      expressions: key (type: string), value (type: string)
                       outputColumnNames: _col0, _col1
                       Statistics: Num rows: 250 Data size: 2656 Basic stats: COMPLETE Column stats: NONE
                       File Output Operator
@@ -289,7 +281,7 @@ STAGE PLANS:
 
 PREHOOK: query: INSERT OVERWRITE TABLE test_src 
 SELECT key, value FROM (
-	SELECT key, COUNT(*) AS value FROM src
+	SELECT key, cast(COUNT(*) as string) AS value FROM src
  	GROUP BY key
 UNION ALL
  	SELECT key, value FROM src 
@@ -300,7 +292,7 @@ PREHOOK: Input: default@src
 PREHOOK: Output: default@test_src
 POSTHOOK: query: INSERT OVERWRITE TABLE test_src 
 SELECT key, value FROM (
-	SELECT key, COUNT(*) AS value FROM src
+	SELECT key, cast(COUNT(*) as string) AS value FROM src
  	GROUP BY key
 UNION ALL
  	SELECT key, value FROM src 

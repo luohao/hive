@@ -28,23 +28,25 @@ import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 
+import org.apache.commons.lang.StringUtils;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.hive.common.FileUtils;
+import org.apache.hadoop.hive.common.StatsSetupConst;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.metastore.IMetaStoreClient;
 import org.apache.hadoop.hive.metastore.MetaStoreUtils;
+import org.apache.hadoop.hive.metastore.Warehouse;
 import org.apache.hadoop.hive.metastore.api.FieldSchema;
 import org.apache.hadoop.hive.metastore.api.InvalidOperationException;
 import org.apache.hadoop.hive.metastore.api.MetaException;
+import org.apache.hadoop.hive.metastore.api.NoSuchObjectException;
 import org.apache.hadoop.hive.metastore.api.Partition;
 import org.apache.hadoop.hive.metastore.api.StorageDescriptor;
-import org.apache.hadoop.hive.metastore.api.NoSuchObjectException;
 import org.apache.hadoop.hive.ql.metadata.HiveStorageHandler;
-import org.apache.hadoop.hive.metastore.Warehouse;
 import org.apache.hadoop.hive.ql.metadata.Table;
 import org.apache.hadoop.hive.shims.ShimLoader;
 import org.apache.hadoop.mapred.JobConf;
@@ -107,7 +109,7 @@ class FileOutputCommitterContainer extends OutputCommitterContainer {
     this.partitionsDiscovered = !dynamicPartitioningUsed;
     cachedStorageHandler = HCatUtil.getStorageHandler(context.getConfiguration(), jobInfo.getTableInfo().getStorerInfo());
     Table table = new Table(jobInfo.getTableInfo().getTable());
-    if (dynamicPartitioningUsed && Boolean.valueOf((String)table.getProperty("EXTERNAL"))
+    if (dynamicPartitioningUsed && Boolean.parseBoolean((String)table.getProperty("EXTERNAL"))
         && jobInfo.getCustomDynamicPath() != null
         && jobInfo.getCustomDynamicPath().length() > 0) {
       customDynamicLocationUsed = true;
@@ -121,6 +123,7 @@ class FileOutputCommitterContainer extends OutputCommitterContainer {
   @Override
   public void abortTask(TaskAttemptContext context) throws IOException {
     if (!dynamicPartitioningUsed) {
+      FileOutputFormatContainer.setWorkOutputPath(context);
       getBaseOutputCommitter().abortTask(HCatMapRedUtil.createTaskAttemptContext(context));
     } else {
       try {
@@ -151,6 +154,7 @@ class FileOutputCommitterContainer extends OutputCommitterContainer {
   @Override
   public boolean needsTaskCommit(TaskAttemptContext context) throws IOException {
     if (!dynamicPartitioningUsed) {
+      FileOutputFormatContainer.setWorkOutputPath(context);
       return getBaseOutputCommitter().needsTaskCommit(HCatMapRedUtil.createTaskAttemptContext(context));
     } else {
       // called explicitly through FileRecordWriterContainer.close() if dynamic - return false by default
@@ -355,7 +359,7 @@ class FileOutputCommitterContainer extends OutputCommitterContainer {
     if (customDynamicLocationUsed) {
       partPath = new Path(dynPartPath);
     } else if (!dynamicPartitioningUsed
-         && Boolean.valueOf((String)table.getProperty("EXTERNAL"))
+         && Boolean.parseBoolean((String)table.getProperty("EXTERNAL"))
          && jobInfo.getLocation() != null && jobInfo.getLocation().length() > 0) {
       // Now, we need to de-scratchify this location - i.e., get rid of any
       // _SCRATCH[\d].?[\d]+ from the location.
@@ -443,7 +447,9 @@ class FileOutputCommitterContainer extends OutputCommitterContainer {
 
     //Copy table level hcat.* keys to the partition
     for (Entry<Object, Object> entry : storer.getProperties().entrySet()) {
-      params.put(entry.getKey().toString(), entry.getValue().toString());
+      if (!entry.getKey().toString().equals(StatsSetupConst.COLUMN_STATS_ACCURATE)) {
+        params.put(entry.getKey().toString(), entry.getValue().toString());
+      }
     }
     return params;
   }
@@ -763,49 +769,46 @@ class FileOutputCommitterContainer extends OutputCommitterContainer {
     Table table = new Table(jobInfo.getTableInfo().getTable());
     Path tblPath = new Path(table.getTTable().getSd().getLocation());
     FileSystem fs = tblPath.getFileSystem(conf);
-
-    if( table.getPartitionKeys().size() == 0 ) {
-      //Move data from temp directory the actual table directory
-      //No metastore operation required.
-      Path src = new Path(jobInfo.getLocation());
-      moveTaskOutputs(fs, src, src, tblPath, false, table.isImmutable());
-      if (!src.equals(tblPath)){
-        fs.delete(src, true);
-      }
-      return;
-    }
-
     IMetaStoreClient client = null;
     HCatTableInfo tableInfo = jobInfo.getTableInfo();
     List<Partition> partitionsAdded = new ArrayList<Partition>();
     try {
       HiveConf hiveConf = HCatUtil.getHiveConf(conf);
       client = HCatUtil.getHiveMetastoreClient(hiveConf);
-      StorerInfo storer = InternalUtil.extractStorerInfo(table.getTTable().getSd(),table.getParameters());
+      if (table.getPartitionKeys().size() == 0) {
+        // Move data from temp directory the actual table directory
+        // No metastore operation required.
+        Path src = new Path(jobInfo.getLocation());
+        moveTaskOutputs(fs, src, src, tblPath, false, table.isImmutable());
+        if (!src.equals(tblPath)) {
+          fs.delete(src, true);
+        }
+        if (table.getParameters() != null
+            && table.getParameters().containsKey(StatsSetupConst.COLUMN_STATS_ACCURATE)) {
+          table.getParameters().remove(StatsSetupConst.COLUMN_STATS_ACCURATE);
+          client.alter_table(table.getDbName(), table.getTableName(), table.getTTable());
+        }
+        return;
+      }
+
+      StorerInfo storer = InternalUtil.extractStorerInfo(table.getTTable().getSd(),
+          table.getParameters());
 
       FileStatus tblStat = fs.getFileStatus(tblPath);
       String grpName = tblStat.getGroup();
       FsPermission perms = tblStat.getPermission();
 
       List<Partition> partitionsToAdd = new ArrayList<Partition>();
-      if (!dynamicPartitioningUsed){
-        partitionsToAdd.add(
-            constructPartition(
-                context,jobInfo,
-                tblPath.toString(), null, jobInfo.getPartitionValues()
-                ,jobInfo.getOutputSchema(), getStorerParameterMap(storer)
-                ,table, fs
-                ,grpName,perms));
-      }else{
-        for (Entry<String,Map<String,String>> entry : partitionsDiscoveredByPath.entrySet()){
-          partitionsToAdd.add(
-              constructPartition(
-                  context,jobInfo,
-                  getPartitionRootLocation(entry.getKey(),entry.getValue().size())
-                  ,entry.getKey(), entry.getValue()
-                  ,jobInfo.getOutputSchema(), getStorerParameterMap(storer)
-                  ,table, fs
-                  ,grpName,perms));
+      if (!dynamicPartitioningUsed) {
+        partitionsToAdd.add(constructPartition(context, jobInfo, tblPath.toString(), null,
+            jobInfo.getPartitionValues(), jobInfo.getOutputSchema(), getStorerParameterMap(storer),
+            table, fs, grpName, perms));
+      } else {
+        for (Entry<String, Map<String, String>> entry : partitionsDiscoveredByPath.entrySet()) {
+          partitionsToAdd.add(constructPartition(context, jobInfo,
+              getPartitionRootLocation(entry.getKey(), entry.getValue().size()), entry.getKey(),
+              entry.getValue(), jobInfo.getOutputSchema(), getStorerParameterMap(storer), table,
+              fs, grpName, perms));
         }
       }
 
@@ -885,7 +888,13 @@ class FileOutputCommitterContainer extends OutputCommitterContainer {
             moveTaskOutputs(fs, src, src, dest, true, table.isImmutable());
             moveTaskOutputs(fs,src,src,dest,false,table.isImmutable());
             if (!src.equals(dest)){
-              fs.delete(src, true);
+              if (src.toString().matches(".*" + Path.SEPARATOR + SCRATCH_DIR_NAME + "\\d\\.?\\d+.*")){
+                // src is scratch directory, need to trim the part key value pairs from path
+                String diff = StringUtils.difference(src.toString(), dest.toString());
+                fs.delete(new Path(StringUtils.substringBefore(src.toString(), diff)), true);
+              } else {
+                fs.delete(src, true);
+              }
             }
 
             // Now, we check if the partition already exists. If not, we go ahead.

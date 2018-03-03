@@ -19,7 +19,7 @@
   <parent>
     <groupId>org.apache.hive</groupId>
     <artifactId>hive</artifactId>
-    <version>2.0.0-SNAPSHOT</version>
+    <version>2.3.2</version>
     <relativePath>../pom.xml</relativePath>
   </parent>
 
@@ -33,23 +33,20 @@
 
   <modules>
    <module>custom-serde</module>
+   <module>custom-udfs</module>
    <module>hcatalog-unit</module>
    <module>hive-unit</module>
+   <module>hive-blobstore</module>
    <module>util</module>
    <module>test-serde</module>
    <module>qtest</module>
    <module>qtest-accumulo</module>
    <module>hive-jmh</module>
+   <module>hive-unit-hadoop2</module>
+   <module>hive-minikdc</module>
   </modules>
 
   <profiles>
-    <profile>
-      <id>hadoop-2</id>
-      <modules>
-        <module>hive-unit-hadoop2</module>
-        <module>hive-minikdc</module>
-      </modules>
-    </profile>
     <profile>
       <id>spark-test</id>
       <activation>
@@ -88,16 +85,22 @@
                         if [[ ! -f $DOWNLOAD_DIR/$tarName ]]
                         then
                          curl -Sso $DOWNLOAD_DIR/$tarName $url
+                        else
+                          local md5File="$tarName".md5sum
+                          curl -Sso $DOWNLOAD_DIR/$md5File "$url".md5sum
+                          cd $DOWNLOAD_DIR
+                          if ! md5sum -c $md5File; then
+                            curl -Sso $DOWNLOAD_DIR/$tarName $url || return 1
+                          fi
+
+                          cd -
                         fi
                         tar -zxf $DOWNLOAD_DIR/$tarName -C $BASE_DIR
                         mv $BASE_DIR/spark-${spark.version}-bin-hadoop2-without-hive $BASE_DIR/$finalName
                       }
                       mkdir -p $DOWNLOAD_DIR
                       download "http://d3jw87u4immizc.cloudfront.net/spark-tarball/spark-${spark.version}-bin-hadoop2-without-hive.tgz" "spark"
-                      cp -f $HIVE_ROOT/data/conf/spark/log4j2.xml $BASE_DIR/spark/conf/
-                      sed '/package /d' ${basedir}/${hive.path.to.root}/contrib/src/java/org/apache/hadoop/hive/contrib/udf/example/UDFExampleAdd.java > /tmp/UDFExampleAdd.java
-                      javac -cp  ${settings.localRepository}/org/apache/hive/hive-exec/${project.version}/hive-exec-${project.version}.jar /tmp/UDFExampleAdd.java -d /tmp
-                      jar -cf /tmp/udfexampleadd-1.0.jar -C /tmp UDFExampleAdd.class
+                      cp -f $HIVE_ROOT/data/conf/spark/log4j2.properties $BASE_DIR/spark/conf/
                     </echo>
                   </target>
                 </configuration>

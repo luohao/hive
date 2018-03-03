@@ -25,18 +25,20 @@ import java.util.List;
 import java.util.Map;
 import java.util.Stack;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.ql.exec.FetchTask;
 import org.apache.hadoop.hive.ql.exec.FileSinkOperator;
 import org.apache.hadoop.hive.ql.exec.Operator;
+import org.apache.hadoop.hive.ql.exec.TableScanOperator;
 import org.apache.hadoop.hive.ql.exec.Task;
 import org.apache.hadoop.hive.ql.exec.UnionOperator;
 import org.apache.hadoop.hive.ql.lib.Node;
 import org.apache.hadoop.hive.ql.lib.NodeProcessor;
 import org.apache.hadoop.hive.ql.lib.NodeProcessorCtx;
+import org.apache.hadoop.hive.ql.optimizer.GenMRProcContext.GenMapRedCtx;
 import org.apache.hadoop.hive.ql.parse.ParseContext;
 import org.apache.hadoop.hive.ql.parse.SemanticException;
 import org.apache.hadoop.hive.ql.plan.FileSinkDesc;
@@ -48,7 +50,7 @@ import org.apache.hadoop.hive.ql.plan.OperatorDesc;
  */
 public class GenMRFileSink1 implements NodeProcessor {
 
-  static final private Log LOG = LogFactory.getLog(GenMRFileSink1.class.getName());
+  private static final Logger LOG = LoggerFactory.getLogger(GenMRFileSink1.class.getName());
 
   public GenMRFileSink1() {
   }
@@ -61,15 +63,22 @@ public class GenMRFileSink1 implements NodeProcessor {
    * @param opProcCtx
    *          context
    */
+  @Override
   public Object process(Node nd, Stack<Node> stack, NodeProcessorCtx opProcCtx,
       Object... nodeOutputs) throws SemanticException {
     GenMRProcContext ctx = (GenMRProcContext) opProcCtx;
     ParseContext parseCtx = ctx.getParseCtx();
     boolean chDir = false;
-    Task<? extends Serializable> currTask = ctx.getCurrTask();
+    // we should look take the parent of fsOp's task as the current task.
+    FileSinkOperator fsOp = (FileSinkOperator) nd;
+    Map<Operator<? extends OperatorDesc>, GenMapRedCtx> mapCurrCtx = ctx
+        .getMapCurrCtx();
+    GenMapRedCtx mapredCtx = mapCurrCtx.get(fsOp.getParentOperators().get(0));
+    Task<? extends Serializable> currTask = mapredCtx.getCurrTask();
+    
+    ctx.setCurrTask(currTask);
     ctx.addRootIfPossible(currTask);
 
-    FileSinkOperator fsOp = (FileSinkOperator) nd;
     boolean isInsertTable = // is INSERT OVERWRITE TABLE
         GenMapRedUtils.isInsertInto(parseCtx, fsOp);
     HiveConf hconf = parseCtx.getConf();
@@ -140,7 +149,7 @@ public class GenMRFileSink1 implements NodeProcessor {
   private void processLinkedFileDesc(GenMRProcContext ctx,
       Task<? extends Serializable> childTask) throws SemanticException {
     Task<? extends Serializable> currTask = ctx.getCurrTask();
-    Operator<? extends OperatorDesc> currTopOp = ctx.getCurrTopOp();
+    TableScanOperator currTopOp = ctx.getCurrTopOp();
     if (currTopOp != null && !ctx.isSeenOp(currTask, currTopOp)) {
       String currAliasId = ctx.getCurrAliasId();
       GenMapRedUtils.setTaskPlan(currAliasId, currTopOp, currTask, false, ctx);
@@ -186,7 +195,7 @@ public class GenMRFileSink1 implements NodeProcessor {
     dest = GenMapRedUtils.createMoveTask(ctx.getCurrTask(), chDir, fsOp, ctx.getParseCtx(),
         ctx.getMvTask(), ctx.getConf(), ctx.getDependencyTaskForMultiInsert());
 
-    Operator<? extends OperatorDesc> currTopOp = ctx.getCurrTopOp();
+    TableScanOperator currTopOp = ctx.getCurrTopOp();
     String currAliasId = ctx.getCurrAliasId();
     HashMap<Operator<? extends OperatorDesc>, Task<? extends Serializable>> opTaskMap =
         ctx.getOpTaskMap();

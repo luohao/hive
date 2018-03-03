@@ -44,20 +44,23 @@ import com.google.common.base.Predicates;
 import com.google.common.collect.Maps;
 
 import org.apache.commons.lang.StringUtils;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.PathFilter;
-import org.apache.hadoop.hive.common.HiveStatsUtils;
 import org.apache.hadoop.hive.common.JavaUtils;
 import org.apache.hadoop.hive.common.StatsSetupConst;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.metastore.HiveMetaStore.HMSHandler;
+import org.apache.hadoop.hive.metastore.api.ColumnStatistics;
+import org.apache.hadoop.hive.metastore.api.ColumnStatisticsObj;
 import org.apache.hadoop.hive.metastore.api.Database;
+import org.apache.hadoop.hive.metastore.api.EnvironmentContext;
 import org.apache.hadoop.hive.metastore.api.FieldSchema;
+import org.apache.hadoop.hive.metastore.api.InvalidObjectException;
 import org.apache.hadoop.hive.metastore.api.InvalidOperationException;
 import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.hadoop.hive.metastore.api.Partition;
@@ -65,6 +68,8 @@ import org.apache.hadoop.hive.metastore.api.SerDeInfo;
 import org.apache.hadoop.hive.metastore.api.StorageDescriptor;
 import org.apache.hadoop.hive.metastore.api.Table;
 import org.apache.hadoop.hive.metastore.api.hive_metastoreConstants;
+import org.apache.hadoop.hive.metastore.hbase.stats.merge.ColumnStatsMerger;
+import org.apache.hadoop.hive.metastore.hbase.stats.merge.ColumnStatsMergerFactory;
 import org.apache.hadoop.hive.metastore.partition.spec.PartitionSpecProxy;
 import org.apache.hadoop.hive.serde.serdeConstants;
 import org.apache.hadoop.hive.serde2.Deserializer;
@@ -78,20 +83,31 @@ import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspector.Category;
 import org.apache.hadoop.hive.serde2.objectinspector.StructField;
 import org.apache.hadoop.hive.serde2.objectinspector.StructObjectInspector;
 import org.apache.hadoop.hive.serde2.typeinfo.TypeInfo;
+import org.apache.hadoop.hive.serde2.typeinfo.TypeInfoUtils;
 import org.apache.hadoop.hive.shims.ShimLoader;
 import org.apache.hadoop.hive.thrift.HadoopThriftAuthBridge;
+import org.apache.hive.common.util.HiveStringUtils;
 import org.apache.hive.common.util.ReflectionUtil;
 
 import javax.annotation.Nullable;
 
 public class MetaStoreUtils {
 
-  protected static final Log LOG = LogFactory.getLog("hive.log");
+  protected static final Logger LOG = LoggerFactory.getLogger("hive.log");
 
   public static final String DEFAULT_DATABASE_NAME = "default";
   public static final String DEFAULT_DATABASE_COMMENT = "Default Hive database";
+  public static final String DEFAULT_SERIALIZATION_FORMAT = "1";
 
   public static final String DATABASE_WAREHOUSE_SUFFIX = ".db";
+
+  // Right now we only support one special character '/'.
+  // More special characters can be added accordingly in the future.
+  // NOTE:
+  // If the following array is updated, please also be sure to update the
+  // configuration parameter documentation
+  // HIVE_SUPPORT_SPECICAL_CHARACTERS_IN_TABLE_NAMES in HiveConf as well.
+  public static final char[] specialCharactersInTableNames = new char[] { '/' };
 
   public static Table createColumnsetSchema(String name, List<String> columns,
       List<String> partCols, Configuration conf) throws MetaException {
@@ -108,8 +124,8 @@ public class MetaStoreUtils {
     SerDeInfo serdeInfo = sd.getSerdeInfo();
     serdeInfo.setSerializationLib(LazySimpleSerDe.class.getName());
     serdeInfo.setParameters(new HashMap<String, String>());
-    serdeInfo.getParameters().put(
-        org.apache.hadoop.hive.serde.serdeConstants.SERIALIZATION_FORMAT, "1");
+    serdeInfo.getParameters().put(org.apache.hadoop.hive.serde.serdeConstants.SERIALIZATION_FORMAT,
+        DEFAULT_SERIALIZATION_FORMAT);
 
     List<FieldSchema> fields = new ArrayList<FieldSchema>();
     sd.setCols(fields);
@@ -170,17 +186,19 @@ public class MetaStoreUtils {
   }
 
   public static boolean updateTableStatsFast(Database db, Table tbl, Warehouse wh,
-      boolean madeDir) throws MetaException {
-    return updateTableStatsFast(db, tbl, wh, madeDir, false);
+      boolean madeDir, EnvironmentContext environmentContext) throws MetaException {
+    return updateTableStatsFast(db, tbl, wh, madeDir, false, environmentContext);
   }
 
   public static boolean updateTableStatsFast(Database db, Table tbl, Warehouse wh,
-      boolean madeDir, boolean forceRecompute) throws MetaException {
-    FileStatus[] fileStatuses = {};
-    if (tbl.getPartitionKeysSize() == 0) { // Update stats only when unpartitioned
-      fileStatuses = wh.getFileStatusesForUnpartitionedTable(db, tbl);
+      boolean madeDir, boolean forceRecompute, EnvironmentContext environmentContext) throws MetaException {
+    if (tbl.getPartitionKeysSize() == 0) {
+      // Update stats only when unpartitioned
+      FileStatus[] fileStatuses = wh.getFileStatusesForUnpartitionedTable(db, tbl);
+      return updateTableStatsFast(tbl, fileStatuses, madeDir, forceRecompute, environmentContext);
+    } else {
+      return false;
     }
-    return updateTableStatsFast(tbl, fileStatuses, madeDir, forceRecompute);
   }
 
   /**
@@ -193,8 +211,8 @@ public class MetaStoreUtils {
    * these parameters set
    * @return true if the stats were updated, false otherwise
    */
-  public static boolean updateTableStatsFast(Table tbl,
-      FileStatus[] fileStatus, boolean newDir, boolean forceRecompute) throws MetaException {
+  public static boolean updateTableStatsFast(Table tbl, FileStatus[] fileStatus, boolean newDir,
+      boolean forceRecompute, EnvironmentContext environmentContext) throws MetaException {
 
     Map<String,String> params = tbl.getParameters();
 
@@ -220,15 +238,13 @@ public class MetaStoreUtils {
         LOG.info("Updating table stats fast for " + tbl.getTableName());
         populateQuickStats(fileStatus, params);
         LOG.info("Updated size of table " + tbl.getTableName() +" to "+ params.get(StatsSetupConst.TOTAL_SIZE));
-        if(!params.containsKey(StatsSetupConst.STATS_GENERATED_VIA_STATS_TASK)) {
-          // invalidate stats requiring scan since this is a regular ddl alter case
-          for (String stat : StatsSetupConst.statsRequireCompute) {
-            params.put(stat, "-1");
-          }
-          params.put(StatsSetupConst.COLUMN_STATS_ACCURATE, StatsSetupConst.FALSE);
+        if (environmentContext != null
+            && environmentContext.isSetProperties()
+            && StatsSetupConst.TASK.equals(environmentContext.getProperties().get(
+                StatsSetupConst.STATS_GENERATED))) {
+          StatsSetupConst.setBasicStatsState(params, StatsSetupConst.TRUE);
         } else {
-          params.remove(StatsSetupConst.STATS_GENERATED_VIA_STATS_TASK);
-          params.put(StatsSetupConst.COLUMN_STATS_ACCURATE, StatsSetupConst.TRUE);
+          StatsSetupConst.setBasicStatsState(params, StatsSetupConst.FALSE);
         }
       }
       tbl.setParameters(params);
@@ -253,7 +269,14 @@ public class MetaStoreUtils {
 
   // check if stats need to be (re)calculated
   public static boolean requireCalStats(Configuration hiveConf, Partition oldPart,
-    Partition newPart, Table tbl) {
+    Partition newPart, Table tbl, EnvironmentContext environmentContext) {
+
+    if (environmentContext != null
+        && environmentContext.isSetProperties()
+        && StatsSetupConst.TRUE.equals(environmentContext.getProperties().get(
+            StatsSetupConst.DO_NOT_UPDATE_STATS))) {
+      return false;
+    }
 
     if (MetaStoreUtils.isView(tbl)) {
       return false;
@@ -269,10 +292,21 @@ public class MetaStoreUtils {
       return true;
     }
 
-    if(newPart.getParameters().containsKey(StatsSetupConst.STATS_GENERATED_VIA_STATS_TASK)) {
-      return true;
+    if (environmentContext != null && environmentContext.isSetProperties()) {
+      String statsType = environmentContext.getProperties().get(StatsSetupConst.STATS_GENERATED);
+      // no matter STATS_GENERATED is USER or TASK, all need to re-calculate the stats:
+      // USER: alter table .. update statistics
+      // TASK: from some sql operation which could collect and compute stats
+      if (StatsSetupConst.TASK.equals(statsType) || StatsSetupConst.USER.equals(statsType)) {
+        return true;
+      }
     }
 
+    // requires to calculate stats if new and old have different fast stats
+    return !isFastStatsSame(oldPart, newPart);
+  }
+
+  static boolean isFastStatsSame(Partition oldPart, Partition newPart) {
     // requires to calculate stats if new and old have different fast stats
     if ((oldPart != null) && (oldPart.getParameters() != null)) {
       for (String stat : StatsSetupConst.fastStats) {
@@ -280,22 +314,25 @@ public class MetaStoreUtils {
           Long oldStat = Long.parseLong(oldPart.getParameters().get(stat));
           Long newStat = Long.parseLong(newPart.getParameters().get(stat));
           if (!oldStat.equals(newStat)) {
-            return true;
+            return false;
           }
+        } else {
+          return false;
         }
       }
+      return true;
     }
     return false;
   }
 
-  public static boolean updatePartitionStatsFast(Partition part, Warehouse wh)
+  public static boolean updatePartitionStatsFast(Partition part, Warehouse wh, EnvironmentContext environmentContext)
       throws MetaException {
-    return updatePartitionStatsFast(part, wh, false, false);
+    return updatePartitionStatsFast(part, wh, false, false, environmentContext);
   }
 
-  public static boolean updatePartitionStatsFast(Partition part, Warehouse wh, boolean madeDir)
+  public static boolean updatePartitionStatsFast(Partition part, Warehouse wh, boolean madeDir, EnvironmentContext environmentContext)
       throws MetaException {
-    return updatePartitionStatsFast(part, wh, madeDir, false);
+    return updatePartitionStatsFast(part, wh, madeDir, false, environmentContext);
   }
 
   /**
@@ -309,9 +346,9 @@ public class MetaStoreUtils {
    * @return true if the stats were updated, false otherwise
    */
   public static boolean updatePartitionStatsFast(Partition part, Warehouse wh,
-      boolean madeDir, boolean forceRecompute) throws MetaException {
+      boolean madeDir, boolean forceRecompute, EnvironmentContext environmentContext) throws MetaException {
     return updatePartitionStatsFast(new PartitionSpecProxy.SimplePartitionWrapperIterator(part),
-                                    wh, madeDir, forceRecompute);
+                                    wh, madeDir, forceRecompute, environmentContext);
   }
 
   /**
@@ -325,7 +362,7 @@ public class MetaStoreUtils {
    * @return true if the stats were updated, false otherwise
    */
   public static boolean updatePartitionStatsFast(PartitionSpecProxy.PartitionIterator part, Warehouse wh,
-      boolean madeDir, boolean forceRecompute) throws MetaException {
+      boolean madeDir, boolean forceRecompute, EnvironmentContext environmentContext) throws MetaException {
     Map<String,String> params = part.getParameters();
     boolean updated = false;
     if (forceRecompute ||
@@ -341,21 +378,26 @@ public class MetaStoreUtils {
         FileStatus[] fileStatus = wh.getFileStatusesForLocation(part.getLocation());
         populateQuickStats(fileStatus, params);
         LOG.warn("Updated size to " + params.get(StatsSetupConst.TOTAL_SIZE));
-        if(!params.containsKey(StatsSetupConst.STATS_GENERATED_VIA_STATS_TASK)) {
-          // invalidate stats requiring scan since this is a regular ddl alter case
-          for (String stat : StatsSetupConst.statsRequireCompute) {
-            params.put(stat, "-1");
-          }
-          params.put(StatsSetupConst.COLUMN_STATS_ACCURATE, StatsSetupConst.FALSE);
-        } else {
-          params.remove(StatsSetupConst.STATS_GENERATED_VIA_STATS_TASK);
-          params.put(StatsSetupConst.COLUMN_STATS_ACCURATE, StatsSetupConst.TRUE);
-        }
+        updateBasicState(environmentContext, params);
       }
       part.setParameters(params);
       updated = true;
     }
     return updated;
+  }
+
+  static void updateBasicState(EnvironmentContext environmentContext, Map<String,String> params) {
+    if (params == null) {
+      return;
+    }
+    if (environmentContext != null
+        && environmentContext.isSetProperties()
+        && StatsSetupConst.TASK.equals(environmentContext.getProperties().get(
+        StatsSetupConst.STATS_GENERATED))) {
+      StatsSetupConst.setBasicStatsState(params, StatsSetupConst.TRUE);
+    } else {
+      StatsSetupConst.setBasicStatsState(params, StatsSetupConst.FALSE);
+    }
   }
 
   /**
@@ -384,6 +426,12 @@ public class MetaStoreUtils {
     if (lib == null) {
       return null;
     }
+    return getDeserializer(conf, table, skipConfError, lib);
+  }
+
+  public static Deserializer getDeserializer(Configuration conf,
+      org.apache.hadoop.hive.metastore.api.Table table, boolean skipConfError,
+      String lib) throws MetaException {
     try {
       Deserializer deserializer = ReflectionUtil.newInstance(conf.getClassByName(lib).
               asSubclass(Deserializer.class), conf);
@@ -523,12 +571,23 @@ public class MetaStoreUtils {
    *
    * @param name
    *          the name to validate
+   * @param conf
+   *          hive configuration
    * @return true or false depending on conformance
    * @exception MetaException
    *              if it doesn't match the pattern.
    */
-  static public boolean validateName(String name) {
-    Pattern tpat = Pattern.compile("[\\w_]+");
+  static public boolean validateName(String name, Configuration conf) {
+    Pattern tpat = null;
+    String allowedCharacters = "\\w_";
+    if (conf != null
+        && HiveConf.getBoolVar(conf,
+            HiveConf.ConfVars.HIVE_SUPPORT_SPECICAL_CHARACTERS_IN_TABLE_NAMES)) {
+      for (Character c : specialCharactersInTableNames) {
+        allowedCharacters += c;
+      }
+    }
+    tpat = Pattern.compile("[" + allowedCharacters + "]+");
     Matcher m = tpat.matcher(name);
     if (m.matches()) {
       return true;
@@ -548,8 +607,9 @@ public class MetaStoreUtils {
       if (!validateColumnName(fieldSchema.getName())) {
         return "name: " + fieldSchema.getName();
       }
-      if (!validateColumnType(fieldSchema.getType())) {
-        return "type: " + fieldSchema.getType();
+      String typeError = validateColumnType(fieldSchema.getType());
+      if (typeError != null) {
+        return typeError;
       }
     }
     return null;
@@ -598,14 +658,26 @@ public class MetaStoreUtils {
     return true;
   }
 
+  static boolean columnsIncluded(List<FieldSchema> oldCols, List<FieldSchema> newCols) {
+    if (oldCols.size() > newCols.size()) {
+      return false;
+    }
+
+    Set<FieldSchema> newColsSet = new HashSet<FieldSchema>(newCols);
+    for (final FieldSchema oldCol : oldCols) {
+      if (!newColsSet.contains(oldCol)) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
   /**
    * @return true if oldType and newType are compatible.
    * Two types are compatible if we have internal functions to cast one to another.
    */
   static private boolean areColTypesCompatible(String oldType, String newType) {
-    if (oldType.equals(newType)) {
-      return true;
-    }
 
     /*
      * RCFile default serde (ColumnarSerde) serializes the values in such a way that the
@@ -616,14 +688,12 @@ public class MetaStoreUtils {
      * Primitive types like INT, STRING, BIGINT, etc are compatible with each other and are
      * not blocked.
      */
-    if(serdeConstants.PrimitiveTypes.contains(oldType.toLowerCase()) &&
-        serdeConstants.PrimitiveTypes.contains(newType.toLowerCase())) {
-      return true;
-    }
 
-    return false;
+    return TypeInfoUtils.implicitConvertible(TypeInfoUtils.getTypeInfoFromTypeString(oldType),
+      TypeInfoUtils.getTypeInfoFromTypeString(newType));
   }
 
+  public static final String TYPE_FROM_DESERIALIZER = "<derived from deserializer>";
   /**
    * validate column type
    *
@@ -631,7 +701,8 @@ public class MetaStoreUtils {
    * @param name
    * @return
    */
-  static public boolean validateColumnType(String type) {
+  static public String validateColumnType(String type) {
+    if (type.equals(TYPE_FROM_DESERIALIZER)) return null;
     int last = 0;
     boolean lastAlphaDigit = isValidTypeChar(type.charAt(last));
     for (int i = 1; i <= type.length(); i++) {
@@ -640,12 +711,12 @@ public class MetaStoreUtils {
         String token = type.substring(last, i);
         last = i;
         if (!hiveThriftTypeMap.contains(token)) {
-          return false;
+          return "type: " + type;
         }
         break;
       }
     }
-    return true;
+    return null;
   }
 
   private static boolean isValidTypeChar(char c) {
@@ -970,8 +1041,40 @@ public class MetaStoreUtils {
     return schema;
   }
 
-  public static Properties getSchema(
-      org.apache.hadoop.hive.metastore.api.StorageDescriptor sd,
+  public static Properties addCols(Properties schema, List<FieldSchema> cols) {
+
+    StringBuilder colNameBuf = new StringBuilder();
+    StringBuilder colTypeBuf = new StringBuilder();
+    StringBuilder colComment = new StringBuilder();
+
+    boolean first = true;
+    String columnNameDelimiter = getColumnNameDelimiter(cols);
+    for (FieldSchema col : cols) {
+      if (!first) {
+        colNameBuf.append(columnNameDelimiter);
+        colTypeBuf.append(":");
+        colComment.append('\0');
+      }
+      colNameBuf.append(col.getName());
+      colTypeBuf.append(col.getType());
+      colComment.append((null != col.getComment()) ? col.getComment() : "");
+      first = false;
+    }
+    schema.setProperty(
+        org.apache.hadoop.hive.metastore.api.hive_metastoreConstants.META_TABLE_COLUMNS,
+        colNameBuf.toString());
+    schema.setProperty(serdeConstants.COLUMN_NAME_DELIMITER, columnNameDelimiter);
+    String colTypes = colTypeBuf.toString();
+    schema.setProperty(
+        org.apache.hadoop.hive.metastore.api.hive_metastoreConstants.META_TABLE_COLUMN_TYPES,
+        colTypes);
+    schema.setProperty("columns.comments", colComment.toString());
+
+    return schema;
+
+  }
+
+  public static Properties getSchemaWithoutCols(org.apache.hadoop.hive.metastore.api.StorageDescriptor sd,
       org.apache.hadoop.hive.metastore.api.StorageDescriptor tblsd,
       Map<String, String> parameters, String databaseName, String tableName,
       List<FieldSchema> partitionKeys) {
@@ -1021,30 +1124,7 @@ public class MetaStoreUtils {
                 .getSerdeInfo().getSerializationLib());
       }
     }
-    StringBuilder colNameBuf = new StringBuilder();
-    StringBuilder colTypeBuf = new StringBuilder();
-    StringBuilder colComment = new StringBuilder();
-    boolean first = true;
-    for (FieldSchema col : tblsd.getCols()) {
-      if (!first) {
-        colNameBuf.append(",");
-        colTypeBuf.append(":");
-        colComment.append('\0');
-      }
-      colNameBuf.append(col.getName());
-      colTypeBuf.append(col.getType());
-      colComment.append((null != col.getComment()) ? col.getComment() : "");
-      first = false;
-    }
-    String colNames = colNameBuf.toString();
-    String colTypes = colTypeBuf.toString();
-    schema.setProperty(
-        org.apache.hadoop.hive.metastore.api.hive_metastoreConstants.META_TABLE_COLUMNS,
-        colNames);
-    schema.setProperty(
-        org.apache.hadoop.hive.metastore.api.hive_metastoreConstants.META_TABLE_COLUMN_TYPES,
-        colTypes);
-    schema.setProperty("columns.comments", colComment.toString());
+
     if (sd.getCols() != null) {
       schema.setProperty(
           org.apache.hadoop.hive.serde.serdeConstants.SERIALIZATION_DDL,
@@ -1088,15 +1168,34 @@ public class MetaStoreUtils {
     return schema;
   }
 
+  public static Properties getSchema(
+      org.apache.hadoop.hive.metastore.api.StorageDescriptor sd,
+      org.apache.hadoop.hive.metastore.api.StorageDescriptor tblsd,
+      Map<String, String> parameters, String databaseName, String tableName,
+      List<FieldSchema> partitionKeys) {
+
+    return addCols(getSchemaWithoutCols(sd, tblsd, parameters, databaseName, tableName, partitionKeys), tblsd.getCols());
+  }
+
+  public static String getColumnNameDelimiter(List<FieldSchema> fieldSchemas) {
+    // we first take a look if any fieldSchemas contain COMMA
+    for (int i = 0; i < fieldSchemas.size(); i++) {
+      if (fieldSchemas.get(i).getName().contains(",")) {
+        return String.valueOf(SerDeUtils.COLUMN_COMMENTS_DELIMITER);
+      }
+    }
+    return String.valueOf(SerDeUtils.COMMA);
+  }
+  
   /**
    * Convert FieldSchemas to columnNames.
    */
-  public static String getColumnNamesFromFieldSchema(
-      List<FieldSchema> fieldSchemas) {
+  public static String getColumnNamesFromFieldSchema(List<FieldSchema> fieldSchemas) {
+    String delimiter = getColumnNameDelimiter(fieldSchemas);
     StringBuilder sb = new StringBuilder();
     for (int i = 0; i < fieldSchemas.size(); i++) {
       if (i > 0) {
-        sb.append(",");
+        sb.append(delimiter);
       }
       sb.append(fieldSchemas.get(i).getName());
     }
@@ -1139,22 +1238,38 @@ public class MetaStoreUtils {
     } catch (IOException e) {
       throw new MetaException("Unable to : " + path);
     }
+  }
 
+  public static int startMetaStore() throws Exception {
+    return startMetaStore(ShimLoader.getHadoopThriftAuthBridge(), null);
+  }
+
+  public static int startMetaStore(final HadoopThriftAuthBridge bridge, HiveConf conf) throws Exception {
+    int port = findFreePort();
+    startMetaStore(port, bridge, conf);
+    return port;
+  }
+
+  public static int startMetaStore(HiveConf conf) throws Exception {
+    return startMetaStore(ShimLoader.getHadoopThriftAuthBridge(), conf);
+  }
+
+  public static void startMetaStore(final int port, final HadoopThriftAuthBridge bridge) throws Exception {
+    startMetaStore(port, bridge, null);
   }
 
   public static void startMetaStore(final int port,
-      final HadoopThriftAuthBridge bridge) throws Exception {
-    startMetaStore(port, bridge, new HiveConf(HMSHandler.class));
-  }
-
-  public static void startMetaStore(final int port,
-      final HadoopThriftAuthBridge bridge, final HiveConf hiveConf)
+      final HadoopThriftAuthBridge bridge, HiveConf hiveConf)
       throws Exception{
+    if (hiveConf == null) {
+      hiveConf = new HiveConf(HMSHandler.class);
+    }
+    final HiveConf finalHiveConf = hiveConf;
     Thread thread = new Thread(new Runnable() {
       @Override
       public void run() {
         try {
-          HiveMetaStore.startMetaStore(port, bridge, hiveConf);
+          HiveMetaStore.startMetaStore(port, bridge, finalHiveConf);
         } catch (Throwable e) {
           LOG.error("Metastore Thrift Server threw an exception...",e);
         }
@@ -1179,14 +1294,38 @@ public class MetaStoreUtils {
         socket.close();
         return;
       } catch (Exception e) {
-        if (retries++ > 6) { //give up
+        if (retries++ > 60) { //give up
           exc = e;
           break;
         }
-        Thread.sleep(10000);
+        Thread.sleep(1000);
       }
     }
+    // something is preventing metastore from starting
+    // print the stack from all threads for debugging purposes
+    LOG.error("Unable to connect to metastore server: " + exc.getMessage());
+    LOG.info("Printing all thread stack traces for debugging before throwing exception.");
+    LOG.info(getAllThreadStacksAsString());
     throw exc;
+  }
+
+  private static String getAllThreadStacksAsString() {
+    Map<Thread, StackTraceElement[]> threadStacks = Thread.getAllStackTraces();
+    StringBuilder sb = new StringBuilder();
+    for (Map.Entry<Thread, StackTraceElement[]> entry : threadStacks.entrySet()) {
+      Thread t = entry.getKey();
+      sb.append(System.lineSeparator());
+      sb.append("Name: ").append(t.getName()).append(" State: " + t.getState());
+      addStackString(entry.getValue(), sb);
+    }
+    return sb.toString();
+  }
+
+  private static void addStackString(StackTraceElement[] stackElems, StringBuilder sb) {
+    sb.append(System.lineSeparator());
+    for (StackTraceElement stackElem : stackElems) {
+      sb.append(stackElem).append(System.lineSeparator());
+    }
   }
 
   /**
@@ -1200,6 +1339,33 @@ public class MetaStoreUtils {
     int port = socket.getLocalPort();
     socket.close();
     return port;
+  }
+
+  /**
+   * Finds a free port on the machine, but allow the
+   * ability to specify a port number to not use, no matter what.
+   */
+  public static int findFreePortExcepting(int portToExclude) throws IOException {
+    ServerSocket socket1 = null;
+    ServerSocket socket2 = null;
+    try {
+      socket1 = new ServerSocket(0);
+      socket2 = new ServerSocket(0);
+      if (socket1.getLocalPort() != portToExclude) {
+        return socket1.getLocalPort();
+      }
+      // If we're here, then socket1.getLocalPort was the port to exclude
+      // Since both sockets were open together at a point in time, we're
+      // guaranteed that socket2.getLocalPort() is not the same.
+      return socket2.getLocalPort();
+    } finally {
+      if (socket1 != null){
+        socket1.close();
+      }
+      if (socket2 != null){
+        socket2.close();
+      }
+    }
   }
 
   /**
@@ -1352,7 +1518,7 @@ public class MetaStoreUtils {
   }
 
   public static boolean isNonNativeTable(Table table) {
-    if (table == null) {
+    if (table == null || table.getParameters() == null) {
       return false;
     }
     return (table.getParameters().get(hive_metastoreConstants.META_TABLE_STORAGE) != null);
@@ -1422,6 +1588,13 @@ public class MetaStoreUtils {
     return TableType.INDEX_TABLE.toString().equals(table.getTableType());
   }
 
+  public static boolean isMaterializedViewTable(Table table) {
+    if (table == null) {
+      return false;
+    }
+    return TableType.MATERIALIZED_VIEW.toString().equals(table.getTableType());
+  }
+
   /**
    * Given a map of partition column names to values, this creates a filter
    * string that can be used to call the *byFilter methods
@@ -1486,10 +1659,12 @@ public class MetaStoreUtils {
     return listeners;
   }
 
-  public static Class<?> getClass(String rawStoreClassName)
+  @SuppressWarnings("unchecked")
+  public static Class<? extends RawStore> getClass(String rawStoreClassName)
       throws MetaException {
     try {
-      return Class.forName(rawStoreClassName, true, JavaUtils.getClassLoader());
+      return (Class<? extends RawStore>)
+          Class.forName(rawStoreClassName, true, JavaUtils.getClassLoader());
     } catch (ClassNotFoundException e) {
       throw new MetaException(rawStoreClassName + " class not found");
     }
@@ -1512,7 +1687,7 @@ public class MetaStoreUtils {
     }
     for (int i = 0; i < parameterTypes.length; i++) {
       Class<?> clazz = parameterTypes[i];
-      if (!(clazz.isInstance(initargs[i]))) {
+      if (initargs[i] != null && !(clazz.isInstance(initargs[i]))) {
         throw new IllegalArgumentException("Object : " + initargs[i]
             + " is not an instance of " + clazz);
       }
@@ -1531,7 +1706,7 @@ public class MetaStoreUtils {
       Pattern partitionValidationPattern) throws MetaException {
 
     String invalidPartitionVal =
-        getPartitionValWithInvalidCharacter(partVals, partitionValidationPattern);
+        HiveStringUtils.getPartitionValWithInvalidCharacter(partVals, partitionValidationPattern);
     if (invalidPartitionVal != null) {
       throw new MetaException("Partition value '" + invalidPartitionVal +
           "' contains a character " + "not matched by whitelist pattern '" +
@@ -1542,7 +1717,7 @@ public class MetaStoreUtils {
 
   public static boolean partitionNameHasValidCharacters(List<String> partVals,
       Pattern partitionValidationPattern) {
-    return getPartitionValWithInvalidCharacter(partVals, partitionValidationPattern) == null;
+    return HiveStringUtils.getPartitionValWithInvalidCharacter(partVals, partitionValidationPattern) == null;
   }
 
   /**
@@ -1591,21 +1766,6 @@ public class MetaStoreUtils {
     return ShimLoader.getHadoopThriftAuthBridge().getHadoopSaslProperties(conf);
   }
 
-
-  private static String getPartitionValWithInvalidCharacter(List<String> partVals,
-      Pattern partitionValidationPattern) {
-    if (partitionValidationPattern == null) {
-      return null;
-    }
-
-    for (String partVal : partVals) {
-      if (!partitionValidationPattern.matcher(partVal).matches()) {
-        return partVal;
-      }
-    }
-
-    return null;
-  }
 
   public static String ARCHIVING_LEVEL = "archiving_level";
   public static int getArchivingLevel(Partition part) throws MetaException {
@@ -1716,4 +1876,52 @@ public class MetaStoreUtils {
     return new URLClassLoader(curPath.toArray(new URL[0]), loader);
   }
 
+  public static String encodeTableName(String name) {
+    // The encoding method is simple, e.g., replace
+    // all the special characters with the corresponding number in ASCII.
+    // Note that unicode is not supported in table names. And we have explicit
+    // checks for it.
+    String ret = "";
+    for (char ch : name.toCharArray()) {
+      if (Character.isLetterOrDigit(ch) || ch == '_') {
+        ret += ch;
+      } else {
+        ret += "-" + (int) ch + "-";
+      }
+    }
+    return ret;
+  }
+
+  // this function will merge csOld into csNew.
+  public static void mergeColStats(ColumnStatistics csNew, ColumnStatistics csOld)
+      throws InvalidObjectException {
+    List<ColumnStatisticsObj> list = new ArrayList<>();
+    if (csNew.getStatsObj().size() != csOld.getStatsObjSize()) {
+      // Some of the columns' stats are missing
+      // This implies partition schema has changed. We will merge columns
+      // present in both, overwrite stats for columns absent in metastore and
+      // leave alone columns stats missing from stats task. This last case may
+      // leave stats in stale state. This will be addressed later.
+      LOG.debug("New ColumnStats size is " + csNew.getStatsObj().size()
+          + ". But old ColumnStats size is " + csOld.getStatsObjSize());
+    }
+    // In this case, we have to find out which columns can be merged.
+    Map<String, ColumnStatisticsObj> map = new HashMap<>();
+    // We build a hash map from colName to object for old ColumnStats.
+    for (ColumnStatisticsObj obj : csOld.getStatsObj()) {
+      map.put(obj.getColName(), obj);
+    }
+    for (int index = 0; index < csNew.getStatsObj().size(); index++) {
+      ColumnStatisticsObj statsObjNew = csNew.getStatsObj().get(index);
+      ColumnStatisticsObj statsObjOld = map.get(statsObjNew.getColName());
+      if (statsObjOld != null) {
+        // If statsObjOld is found, we can merge.
+        ColumnStatsMerger merger = ColumnStatsMergerFactory.getColumnStatsMerger(statsObjNew,
+            statsObjOld);
+        merger.merge(statsObjNew, statsObjOld);
+      }
+      list.add(statsObjNew);
+    }
+    csNew.setStatsObj(list);
+  }
 }

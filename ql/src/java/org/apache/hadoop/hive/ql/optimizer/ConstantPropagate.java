@@ -24,8 +24,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.hive.ql.exec.FileSinkOperator;
 import org.apache.hadoop.hive.ql.exec.FilterOperator;
 import org.apache.hadoop.hive.ql.exec.GroupByOperator;
@@ -59,9 +59,9 @@ import org.apache.hadoop.hive.ql.parse.SemanticException;
  * 3. Propagate expression: if the expression is an assignment like column=constant, the expression
  * will be propagate to parents to see if further folding operation is possible.
  */
-public class ConstantPropagate implements Transform {
+public class ConstantPropagate extends Transform {
 
-  private static final Log LOG = LogFactory.getLog(ConstantPropagate.class);
+  private static final Logger LOG = LoggerFactory.getLogger(ConstantPropagate.class);
   protected ParseContext pGraphContext;
   private ConstantPropagateOption constantPropagateOption;
 
@@ -140,7 +140,7 @@ public class ConstantPropagate implements Transform {
     }
 
     @Override
-    public void walk(Node nd) throws SemanticException {
+    protected void walk(Node nd) throws SemanticException {
 
       List<Node> parents = ((Operator) nd).getParentOperators();
       if ((parents == null)

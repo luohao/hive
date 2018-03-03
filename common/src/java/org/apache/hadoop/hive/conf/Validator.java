@@ -18,6 +18,9 @@
 
 package org.apache.hadoop.hive.conf;
 
+import java.nio.file.FileSystems;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
@@ -199,7 +202,7 @@ public interface Validator {
     @Override
     public String validate(String value) {
       try {
-        float fvalue = Float.valueOf(value);
+        float fvalue = Float.parseFloat(value);
         if (fvalue < 0 || fvalue > 1) {
           return "Invalid ratio " + value + ", which should be in between 0 to 1";
         }
@@ -281,4 +284,95 @@ public interface Validator {
       return time + " " + HiveConf.stringFor(timeUnit);
     }
   }
+
+
+  class SizeValidator implements Validator {
+
+    private final Long min;
+    private final boolean minInclusive;
+
+    private final Long max;
+    private final boolean maxInclusive;
+
+    public SizeValidator() {
+      this(null, false, null, false);
+    }
+
+    public SizeValidator(Long min, boolean minInclusive, Long max, boolean maxInclusive) {
+      this.min = min;
+      this.minInclusive = minInclusive;
+      this.max = max;
+      this.maxInclusive = maxInclusive;
+    }
+
+    @Override
+    public String validate(String value) {
+      try {
+        long size = HiveConf.toSizeBytes(value);
+        if (min != null && (minInclusive ? size < min : size <= min)) {
+          return value + " is smaller than " + sizeString(min);
+        }
+        if (max != null && (maxInclusive ? size > max : size >= max)) {
+          return value + " is bigger than " + sizeString(max);
+        }
+      } catch (Exception e) {
+        return e.toString();
+      }
+      return null;
+    }
+
+    public String toDescription() {
+      String description =
+          "Expects a byte size value with unit (blank for bytes, kb, mb, gb, tb, pb)";
+      if (min != null && max != null) {
+        description += ".\nThe size should be in between " +
+            sizeString(min) + (minInclusive ? " (inclusive)" : " (exclusive)") + " and " +
+            sizeString(max) + (maxInclusive ? " (inclusive)" : " (exclusive)");
+      } else if (min != null) {
+        description += ".\nThe time should be bigger than " +
+            (minInclusive ? "or equal to " : "") + sizeString(min);
+      } else if (max != null) {
+        description += ".\nThe size should be smaller than " +
+            (maxInclusive ? "or equal to " : "") + sizeString(max);
+      }
+      return description;
+    }
+
+    private String sizeString(long size) {
+      final String[] units = { " bytes", "Kb", "Mb", "Gb", "Tb" };
+      long current = 1;
+      for (int i = 0; i < units.length && current > 0; ++i) {
+        long next = current << 10;
+        if ((size & (next - 1)) != 0) return (long)(size / current) + units[i];
+        current = next;
+      }
+      return current > 0 ? ((long)(size / current) + "Pb") : (size + units[0]);
+    }
+  }
+
+  public class WritableDirectoryValidator implements Validator {
+
+    @Override
+    public String validate(String value) {
+      final Path path = FileSystems.getDefault().getPath(value);
+      if (path == null && value != null) {
+        return String.format("Path '%s' provided could not be located.", value);
+      }
+      final boolean isDir = Files.isDirectory(path);
+      final boolean isWritable = Files.isWritable(path);
+      if (!isDir) {
+        return String.format("Path '%s' provided is not a directory.", value);
+      }
+      if (!isWritable) {
+        return String.format("Path '%s' provided is not writable.", value);
+      }
+      return null;
+    }
+
+    @Override
+    public String toDescription() {
+      return "Expects a writable directory on the local filesystem";
+    }
+  }
+
 }

@@ -22,8 +22,8 @@ import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.sql.Date;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.hive.serde2.io.DateWritable;
 import org.apache.hadoop.hive.serde2.lazy.objectinspector.primitive.LazyDateObjectInspector;
 import org.apache.hadoop.io.Text;
@@ -37,7 +37,7 @@ import org.apache.hadoop.io.Text;
  *
  */
 public class LazyDate extends LazyPrimitive<LazyDateObjectInspector, DateWritable> {
-  private static final Log LOG = LogFactory.getLog(LazyDate.class);
+  private static final Logger LOG = LoggerFactory.getLogger(LazyDate.class);
 
   public LazyDate(LazyDateObjectInspector oi) {
     super(oi);
@@ -59,6 +59,10 @@ public class LazyDate extends LazyPrimitive<LazyDateObjectInspector, DateWritabl
   @Override
   public void init(ByteArrayRef bytes, int start, int length) {
     String s = null;
+    if (!LazyUtils.isDateMaybe(bytes.getData(), start, length)) {
+      isNull = true;
+      return;
+    }
     try {
       s = Text.decode(bytes.getData(), start, length);
       data.set(Date.valueOf(s));

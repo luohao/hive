@@ -1,3 +1,4 @@
+set hive.compute.query.using.stats=false;
 drop table if exists partcoltypenum;
 create table partcoltypenum (key int, value string) partitioned by (tint tinyint, sint smallint, bint bigint);
 
@@ -32,8 +33,13 @@ analyze table partcoltypenum partition (tint=110Y, sint=22000S, bint=33000000000
 describe extended partcoltypenum partition (tint=110Y, sint=22000S, bint=330000000000L);
 
 analyze table partcoltypenum partition (tint=110Y, sint=22000S, bint=330000000000L) compute statistics for columns;
-describe formatted partcoltypenum.key partition (tint=110Y, sint=22000S, bint=330000000000L);
-describe formatted partcoltypenum.value partition (tint=110Y, sint=22000S, bint=330000000000L);
+describe formatted partcoltypenum partition (tint=110Y, sint=22000S, bint=330000000000L) key;
+describe formatted partcoltypenum partition (tint=110Y, sint=22000S, bint=330000000000L) value;
+
+-- desc on partition column
+describe formatted partcoltypenum tint;
+describe formatted partcoltypenum sint;
+describe formatted partcoltypenum bint;
 
 -- change table column type for partition
 alter table partcoltypenum change key key decimal(10,0);
@@ -43,6 +49,7 @@ describe formatted partcoltypenum partition (tint=110Y, sint=22000S, bint=330000
 -- change partititon column type
 alter table partcoltypenum partition column (tint decimal(3,0));
 describe formatted partcoltypenum partition (tint=110BD, sint=22000S, bint=330000000000L);
+describe formatted partcoltypenum tint;
 
 -- show partition
 show partitions partcoltypenum partition (tint=110BD, sint=22000S, bint=330000000000L);

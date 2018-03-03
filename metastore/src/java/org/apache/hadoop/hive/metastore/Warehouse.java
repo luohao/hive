@@ -32,10 +32,9 @@ import java.util.Map.Entry;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-
 import org.apache.commons.lang.StringUtils;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.ContentSummary;
 import org.apache.hadoop.fs.FileStatus;
@@ -63,10 +62,11 @@ public class Warehouse {
   private final Configuration conf;
   private final String whRootString;
 
-  public static final Log LOG = LogFactory.getLog("hive.metastore.warehouse");
+  public static final Logger LOG = LoggerFactory.getLogger("hive.metastore.warehouse");
 
   private MetaStoreFS fsHandler = null;
   private boolean storageAuthCheck = false;
+  private ReplChangeManager cm = null;
 
   public Warehouse(Configuration conf) throws MetaException {
     this.conf = conf;
@@ -76,6 +76,7 @@ public class Warehouse {
           + " is not set in the config or blank");
     }
     fsHandler = getMetaStoreFsHandler(conf);
+    cm = ReplChangeManager.getInstance((HiveConf)conf);
     storageAuthCheck = HiveConf.getBoolVar(conf,
         HiveConf.ConfVars.METASTORE_AUTHORIZATION_STORAGE_AUTH_CHECKS);
   }
@@ -110,16 +111,6 @@ public class Warehouse {
 
   public FileSystem getFs(Path f) throws MetaException {
     return getFs(f, conf);
-  }
-
-  public static void closeFs(FileSystem fs) throws MetaException {
-    try {
-      if (fs != null) {
-        fs.close();
-      }
-    } catch (IOException e) {
-      MetaStoreUtils.logAndThrowMetaException(e);
-    }
   }
 
 
@@ -160,11 +151,6 @@ public class Warehouse {
     return whRoot;
   }
 
-  public Path getTablePath(String whRootString, String tableName) throws MetaException {
-    Path whRoot = getDnsPath(new Path(whRootString));
-    return new Path(whRoot, tableName.toLowerCase());
-  }
-
   public Path getDatabasePath(Database db) throws MetaException {
     if (db.getName().equalsIgnoreCase(DEFAULT_DATABASE_NAME)) {
       return getWhRoot();
@@ -179,9 +165,16 @@ public class Warehouse {
     return new Path(getWhRoot(), dbName.toLowerCase() + DATABASE_WAREHOUSE_SUFFIX);
   }
 
-  public Path getTablePath(Database db, String tableName)
+  /**
+   * Returns the default location of the table path using the parent database's location
+   * @param db Database where the table is created
+   * @param tableName table name
+   * @return
+   * @throws MetaException
+   */
+  public Path getDefaultTablePath(Database db, String tableName)
       throws MetaException {
-    return getDnsPath(new Path(getDatabasePath(db), tableName.toLowerCase()));
+    return getDnsPath(new Path(getDatabasePath(db), MetaStoreUtils.encodeTableName(tableName.toLowerCase())));
   }
 
   public static String getQualifiedName(Table table) {
@@ -224,6 +217,7 @@ public class Warehouse {
   }
 
   public boolean deleteDir(Path f, boolean recursive, boolean ifPurge) throws MetaException {
+    cm.recycle(f, ifPurge);
     FileSystem fs = getFs(f);
     return fsHandler.deleteDir(fs, f, recursive, ifPurge, conf);
   }
@@ -458,14 +452,65 @@ public class Warehouse {
     return partSpec;
   }
 
-  public Path getPartitionPath(Database db, String tableName,
-      LinkedHashMap<String, String> pm) throws MetaException {
-    return new Path(getTablePath(db, tableName), makePartPath(pm));
+  /**
+   * Returns the default partition path of a table within a given database and partition key value
+   * pairs. It uses the database location and appends it the table name and the partition key,value
+   * pairs to create the Path for the partition directory
+   *
+   * @param db - parent database which is used to get the base location of the partition directory
+   * @param tableName - table name for the partitions
+   * @param pm - Partition key value pairs
+   * @return
+   * @throws MetaException
+   */
+  public Path getDefaultPartitionPath(Database db, String tableName,
+      Map<String, String> pm) throws MetaException {
+    return getPartitionPath(getDefaultTablePath(db, tableName), pm);
   }
 
-  public Path getPartitionPath(Path tblPath, LinkedHashMap<String, String> pm)
+  /**
+   * Returns the path object for the given partition key-value pairs and the base location
+   *
+   * @param tblPath - the base location for the partitions. Typically the table location
+   * @param pm - Partition key value pairs
+   * @return
+   * @throws MetaException
+   */
+  public Path getPartitionPath(Path tblPath, Map<String, String> pm)
       throws MetaException {
     return new Path(tblPath, makePartPath(pm));
+  }
+
+  /**
+   * Given a database, a table and the partition key value pairs this method returns the Path object
+   * corresponding to the partition key value pairs. It uses the table location if available else
+   * uses the database location for constructing the path corresponding to the partition key-value
+   * pairs
+   *
+   * @param db - Parent database of the given table
+   * @param table - Table for which the partition key-values are given
+   * @param vals - List of values for the partition keys
+   * @return Path corresponding to the partition key-value pairs
+   * @throws MetaException
+   */
+  public Path getPartitionPath(Database db, Table table, List<String> vals)
+      throws MetaException {
+    List<FieldSchema> partKeys = table.getPartitionKeys();
+    if (partKeys == null || (partKeys.size() != vals.size())) {
+      throw new MetaException("Invalid number of partition keys found for " + table.getTableName());
+    }
+    Map<String, String> pm = new LinkedHashMap<>(vals.size());
+    int i = 0;
+    for (FieldSchema key : partKeys) {
+      pm.put(key.getName(), vals.get(i));
+      i++;
+    }
+
+    if (table.getSd().getLocation() != null) {
+      return getPartitionPath(getDnsPath(new Path(table.getSd().getLocation())), pm);
+    } else {
+      return getDefaultPartitionPath(db, table.getTableName(), pm);
+    }
   }
 
   public boolean isDir(Path f) throws MetaException {

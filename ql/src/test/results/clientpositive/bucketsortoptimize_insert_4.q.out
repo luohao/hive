@@ -1,11 +1,9 @@
-PREHOOK: query: -- Create two bucketed and sorted tables
-CREATE TABLE test_table1 (key INT, value STRING) PARTITIONED BY (ds STRING)
+PREHOOK: query: CREATE TABLE test_table1 (key INT, value STRING) PARTITIONED BY (ds STRING)
 CLUSTERED BY (key) SORTED BY (key) INTO 2 BUCKETS
 PREHOOK: type: CREATETABLE
 PREHOOK: Output: database:default
 PREHOOK: Output: default@test_table1
-POSTHOOK: query: -- Create two bucketed and sorted tables
-CREATE TABLE test_table1 (key INT, value STRING) PARTITIONED BY (ds STRING)
+POSTHOOK: query: CREATE TABLE test_table1 (key INT, value STRING) PARTITIONED BY (ds STRING)
 CLUSTERED BY (key) SORTED BY (key) INTO 2 BUCKETS
 POSTHOOK: type: CREATETABLE
 POSTHOOK: Output: database:default
@@ -54,17 +52,13 @@ POSTHOOK: Input: default@src
 POSTHOOK: Output: default@test_table2@ds=1
 POSTHOOK: Lineage: test_table2 PARTITION(ds=1).key EXPRESSION [(src)src.FieldSchema(name:key, type:string, comment:default), ]
 POSTHOOK: Lineage: test_table2 PARTITION(ds=1).value SIMPLE [(src)src.FieldSchema(name:value, type:string, comment:default), ]
-PREHOOK: query: -- Insert data into the bucketed table by selecting from another bucketed table
--- This should be a map-only operation, since the insert is happening on the bucketing position
-EXPLAIN
+PREHOOK: query: EXPLAIN
 INSERT OVERWRITE TABLE test_table3 PARTITION (ds = '1')
 SELECT a.key, a.key, concat(a.value, b.value) 
 FROM test_table1 a JOIN test_table2 b 
 ON a.key = b.key WHERE a.ds = '1' and b.ds = '1'
 PREHOOK: type: QUERY
-POSTHOOK: query: -- Insert data into the bucketed table by selecting from another bucketed table
--- This should be a map-only operation, since the insert is happening on the bucketing position
-EXPLAIN
+POSTHOOK: query: EXPLAIN
 INSERT OVERWRITE TABLE test_table3 PARTITION (ds = '1')
 SELECT a.key, a.key, concat(a.value, b.value) 
 FROM test_table1 a JOIN test_table2 b 
@@ -97,7 +91,7 @@ STAGE PLANS:
             Statistics: Num rows: 84 Data size: 736 Basic stats: COMPLETE Column stats: NONE
             Filter Operator
               predicate: key is not null (type: boolean)
-              Statistics: Num rows: 42 Data size: 368 Basic stats: COMPLETE Column stats: NONE
+              Statistics: Num rows: 84 Data size: 736 Basic stats: COMPLETE Column stats: NONE
               HashTable Sink Operator
                 keys:
                   0 key (type: int)
@@ -111,7 +105,7 @@ STAGE PLANS:
             Statistics: Num rows: 10 Data size: 70 Basic stats: COMPLETE Column stats: NONE
             Filter Operator
               predicate: key is not null (type: boolean)
-              Statistics: Num rows: 5 Data size: 35 Basic stats: COMPLETE Column stats: NONE
+              Statistics: Num rows: 10 Data size: 70 Basic stats: COMPLETE Column stats: NONE
               Map Join Operator
                 condition map:
                      Inner Join 0 to 1
@@ -169,7 +163,7 @@ STAGE PLANS:
             Statistics: Num rows: 10 Data size: 70 Basic stats: COMPLETE Column stats: NONE
             Filter Operator
               predicate: key is not null (type: boolean)
-              Statistics: Num rows: 5 Data size: 35 Basic stats: COMPLETE Column stats: NONE
+              Statistics: Num rows: 10 Data size: 70 Basic stats: COMPLETE Column stats: NONE
               HashTable Sink Operator
                 keys:
                   0 key (type: int)
@@ -183,7 +177,7 @@ STAGE PLANS:
             Statistics: Num rows: 84 Data size: 736 Basic stats: COMPLETE Column stats: NONE
             Filter Operator
               predicate: key is not null (type: boolean)
-              Statistics: Num rows: 42 Data size: 368 Basic stats: COMPLETE Column stats: NONE
+              Statistics: Num rows: 84 Data size: 736 Basic stats: COMPLETE Column stats: NONE
               Map Join Operator
                 condition map:
                      Inner Join 0 to 1
@@ -221,7 +215,7 @@ STAGE PLANS:
             Statistics: Num rows: 10 Data size: 70 Basic stats: COMPLETE Column stats: NONE
             Filter Operator
               predicate: key is not null (type: boolean)
-              Statistics: Num rows: 5 Data size: 35 Basic stats: COMPLETE Column stats: NONE
+              Statistics: Num rows: 10 Data size: 70 Basic stats: COMPLETE Column stats: NONE
               Sorted Merge Bucket Map Join Operator
                 condition map:
                      Inner Join 0 to 1
@@ -332,17 +326,13 @@ CLUSTERED BY (value) SORTED BY (value) INTO 2 BUCKETS
 POSTHOOK: type: CREATETABLE
 POSTHOOK: Output: database:default
 POSTHOOK: Output: default@test_table3
-PREHOOK: query: -- Insert data into the bucketed table by selecting from another bucketed table
--- This should be a map-reduce operation, since the insert is happening on a non-bucketing position
-EXPLAIN
+PREHOOK: query: EXPLAIN
 INSERT OVERWRITE TABLE test_table3 PARTITION (ds = '1')
 SELECT a.key, a.value
 FROM test_table1 a JOIN test_table2 b 
 ON a.key = b.key WHERE a.ds = '1' and b.ds = '1'
 PREHOOK: type: QUERY
-POSTHOOK: query: -- Insert data into the bucketed table by selecting from another bucketed table
--- This should be a map-reduce operation, since the insert is happening on a non-bucketing position
-EXPLAIN
+POSTHOOK: query: EXPLAIN
 INSERT OVERWRITE TABLE test_table3 PARTITION (ds = '1')
 SELECT a.key, a.value
 FROM test_table1 a JOIN test_table2 b 
@@ -365,21 +355,25 @@ STAGE PLANS:
   Stage: Stage-7
     Map Reduce Local Work
       Alias -> Map Local Tables:
-        b 
+        $hdt$_1:b 
           Fetch Operator
             limit: -1
       Alias -> Map Local Operator Tree:
-        b 
+        $hdt$_1:b 
           TableScan
             alias: b
             Statistics: Num rows: 84 Data size: 736 Basic stats: COMPLETE Column stats: NONE
             Filter Operator
               predicate: key is not null (type: boolean)
-              Statistics: Num rows: 42 Data size: 368 Basic stats: COMPLETE Column stats: NONE
-              HashTable Sink Operator
-                keys:
-                  0 key (type: int)
-                  1 key (type: int)
+              Statistics: Num rows: 84 Data size: 736 Basic stats: COMPLETE Column stats: NONE
+              Select Operator
+                expressions: key (type: int)
+                outputColumnNames: _col0
+                Statistics: Num rows: 84 Data size: 736 Basic stats: COMPLETE Column stats: NONE
+                HashTable Sink Operator
+                  keys:
+                    0 _col0 (type: int)
+                    1 _col0 (type: int)
 
   Stage: Stage-4
     Map Reduce
@@ -389,19 +383,23 @@ STAGE PLANS:
             Statistics: Num rows: 10 Data size: 70 Basic stats: COMPLETE Column stats: NONE
             Filter Operator
               predicate: key is not null (type: boolean)
-              Statistics: Num rows: 5 Data size: 35 Basic stats: COMPLETE Column stats: NONE
-              Map Join Operator
-                condition map:
-                     Inner Join 0 to 1
-                keys:
-                  0 key (type: int)
-                  1 key (type: int)
+              Statistics: Num rows: 10 Data size: 70 Basic stats: COMPLETE Column stats: NONE
+              Select Operator
+                expressions: key (type: int), value (type: string)
                 outputColumnNames: _col0, _col1
-                Reduce Output Operator
-                  key expressions: _col1 (type: string)
-                  sort order: +
-                  Map-reduce partition columns: _col1 (type: string)
-                  value expressions: _col0 (type: int)
+                Statistics: Num rows: 10 Data size: 70 Basic stats: COMPLETE Column stats: NONE
+                Map Join Operator
+                  condition map:
+                       Inner Join 0 to 1
+                  keys:
+                    0 _col0 (type: int)
+                    1 _col0 (type: int)
+                  outputColumnNames: _col0, _col1
+                  Reduce Output Operator
+                    key expressions: _col1 (type: string)
+                    sort order: +
+                    Map-reduce partition columns: _col1 (type: string)
+                    value expressions: _col0 (type: int)
       Local Work:
         Map Reduce Local Work
       Reduce Operator Tree:
@@ -434,21 +432,25 @@ STAGE PLANS:
   Stage: Stage-8
     Map Reduce Local Work
       Alias -> Map Local Tables:
-        a 
+        $hdt$_0:a 
           Fetch Operator
             limit: -1
       Alias -> Map Local Operator Tree:
-        a 
+        $hdt$_0:a 
           TableScan
             alias: a
             Statistics: Num rows: 10 Data size: 70 Basic stats: COMPLETE Column stats: NONE
             Filter Operator
               predicate: key is not null (type: boolean)
-              Statistics: Num rows: 5 Data size: 35 Basic stats: COMPLETE Column stats: NONE
-              HashTable Sink Operator
-                keys:
-                  0 key (type: int)
-                  1 key (type: int)
+              Statistics: Num rows: 10 Data size: 70 Basic stats: COMPLETE Column stats: NONE
+              Select Operator
+                expressions: key (type: int), value (type: string)
+                outputColumnNames: _col0, _col1
+                Statistics: Num rows: 10 Data size: 70 Basic stats: COMPLETE Column stats: NONE
+                HashTable Sink Operator
+                  keys:
+                    0 _col0 (type: int)
+                    1 _col0 (type: int)
 
   Stage: Stage-5
     Map Reduce
@@ -458,19 +460,23 @@ STAGE PLANS:
             Statistics: Num rows: 84 Data size: 736 Basic stats: COMPLETE Column stats: NONE
             Filter Operator
               predicate: key is not null (type: boolean)
-              Statistics: Num rows: 42 Data size: 368 Basic stats: COMPLETE Column stats: NONE
-              Map Join Operator
-                condition map:
-                     Inner Join 0 to 1
-                keys:
-                  0 key (type: int)
-                  1 key (type: int)
-                outputColumnNames: _col0, _col1
-                Reduce Output Operator
-                  key expressions: _col1 (type: string)
-                  sort order: +
-                  Map-reduce partition columns: _col1 (type: string)
-                  value expressions: _col0 (type: int)
+              Statistics: Num rows: 84 Data size: 736 Basic stats: COMPLETE Column stats: NONE
+              Select Operator
+                expressions: key (type: int)
+                outputColumnNames: _col0
+                Statistics: Num rows: 84 Data size: 736 Basic stats: COMPLETE Column stats: NONE
+                Map Join Operator
+                  condition map:
+                       Inner Join 0 to 1
+                  keys:
+                    0 _col0 (type: int)
+                    1 _col0 (type: int)
+                  outputColumnNames: _col0, _col1
+                  Reduce Output Operator
+                    key expressions: _col1 (type: string)
+                    sort order: +
+                    Map-reduce partition columns: _col1 (type: string)
+                    value expressions: _col0 (type: int)
       Local Work:
         Map Reduce Local Work
       Reduce Operator Tree:
@@ -493,19 +499,23 @@ STAGE PLANS:
             Statistics: Num rows: 10 Data size: 70 Basic stats: COMPLETE Column stats: NONE
             Filter Operator
               predicate: key is not null (type: boolean)
-              Statistics: Num rows: 5 Data size: 35 Basic stats: COMPLETE Column stats: NONE
-              Sorted Merge Bucket Map Join Operator
-                condition map:
-                     Inner Join 0 to 1
-                keys:
-                  0 key (type: int)
-                  1 key (type: int)
+              Statistics: Num rows: 10 Data size: 70 Basic stats: COMPLETE Column stats: NONE
+              Select Operator
+                expressions: key (type: int), value (type: string)
                 outputColumnNames: _col0, _col1
-                Reduce Output Operator
-                  key expressions: _col1 (type: string)
-                  sort order: +
-                  Map-reduce partition columns: _col1 (type: string)
-                  value expressions: _col0 (type: int)
+                Statistics: Num rows: 10 Data size: 70 Basic stats: COMPLETE Column stats: NONE
+                Sorted Merge Bucket Map Join Operator
+                  condition map:
+                       Inner Join 0 to 1
+                  keys:
+                    0 _col0 (type: int)
+                    1 _col0 (type: int)
+                  outputColumnNames: _col0, _col1
+                  Reduce Output Operator
+                    key expressions: _col1 (type: string)
+                    sort order: +
+                    Map-reduce partition columns: _col1 (type: string)
+                    value expressions: _col0 (type: int)
       Reduce Operator Tree:
         Select Operator
           expressions: VALUE._col0 (type: int), KEY.reducesinkkey0 (type: string)

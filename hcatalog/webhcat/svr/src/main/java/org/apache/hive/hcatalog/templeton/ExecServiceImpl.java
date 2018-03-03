@@ -37,8 +37,8 @@ import org.apache.commons.exec.DefaultExecutor;
 import org.apache.commons.exec.ExecuteException;
 import org.apache.commons.exec.ExecuteWatchdog;
 import org.apache.commons.exec.PumpStreamHandler;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.util.Shell;
 
 class StreamOutputWriter extends Thread
@@ -78,7 +78,7 @@ class StreamOutputWriter extends Thread
  * ExecService.run and ExecService.runUnlimited for details.
  */
 public class ExecServiceImpl implements ExecService {
-  private static final Log LOG = LogFactory.getLog(ExecServiceImpl.class);
+  private static final Logger LOG = LoggerFactory.getLogger(ExecServiceImpl.class);
   private static AppConfig appConf = Main.getAppConfigInstance();
 
   private static volatile ExecServiceImpl theSingleton;
@@ -175,52 +175,7 @@ public class ExecServiceImpl implements ExecService {
     LOG.info("Running: " + cmd);
     ExecBean res = new ExecBean();
 
-    if(Shell.WINDOWS){
-      //The default executor is sometimes causing failure on windows. hcat
-      // command sometimes returns non zero exit status with it. It seems
-      // to hit some race conditions on windows.
-      env = execEnv(env);
-      String[] envVals = new String[env.size()];
-      int i=0;
-      for( Entry<String, String> kv : env.entrySet()){
-        envVals[i++] = kv.getKey() + "=" + kv.getValue();
-        LOG.info("Setting " +  kv.getKey() + "=" + kv.getValue());
-      }
-
-      Process proc;
-      synchronized (WindowsProcessLaunchLock) {
-        // To workaround the race condition issue with child processes
-        // inheriting unintended handles during process launch that can
-        // lead to hangs on reading output and error streams, we
-        // serialize process creation. More info available at:
-        // http://support.microsoft.com/kb/315939
-        proc = Runtime.getRuntime().exec(cmd.toStrings(), envVals);
-      }
-
-      //consume stderr
-      StreamOutputWriter errorGobbler = new
-        StreamOutputWriter(proc.getErrorStream(), "ERROR", errStream);
-
-      //consume stdout
-      StreamOutputWriter outputGobbler = new
-        StreamOutputWriter(proc.getInputStream(), "OUTPUT", outStream);
-
-      //start collecting input streams
-      errorGobbler.start();
-      outputGobbler.start();
-      //execute
-      try{
-        res.exitcode = proc.waitFor();
-      } catch (InterruptedException e) {
-        throw new IOException(e);
-      }
-      //flush
-      errorGobbler.out.flush();
-      outputGobbler.out.flush();
-    }
-    else {
-      res.exitcode = executor.execute(cmd, execEnv(env));
-    }
+    res.exitcode = executor.execute(cmd, execEnv(env));
 
     String enc = appConf.get(AppConfig.EXEC_ENCODING_NAME);
     res.stdout = outStream.toString(enc);

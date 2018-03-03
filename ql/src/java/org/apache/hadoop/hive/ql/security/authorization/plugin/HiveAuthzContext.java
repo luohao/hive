@@ -17,6 +17,8 @@
  */
 package org.apache.hadoop.hive.ql.security.authorization.plugin;
 
+import java.util.List;
+
 import org.apache.hadoop.hive.common.classification.InterfaceAudience.LimitedPrivate;
 import org.apache.hadoop.hive.common.classification.InterfaceStability.Evolving;
 
@@ -30,40 +32,51 @@ import org.apache.hadoop.hive.common.classification.InterfaceStability.Evolving;
 public final class HiveAuthzContext {
 
   public static class Builder {
-    private String userIpAddress;
     private String commandString;
+    private List<String> forwardedAddresses;
+    private String userIpAddress;
 
     /**
-     * Get user's ip address. This is set only if the authorization
-     * api is invoked from a HiveServer2 instance in standalone mode.
+     * Get user's ip address. This is set only if the authorization api is
+     * invoked from a HiveServer2 instance in standalone mode.
+     *
      * @return ip address
      */
     public String getUserIpAddress() {
       return userIpAddress;
     }
+
     public void setUserIpAddress(String userIpAddress) {
       this.userIpAddress = userIpAddress;
     }
+
     public String getCommandString() {
       return commandString;
     }
     public void setCommandString(String commandString) {
       this.commandString = commandString;
     }
+
+    public List<String> getForwardedAddresses() {
+      return forwardedAddresses;
+    }
+    public void setForwardedAddresses(List<String> forwardedAddresses) {
+      this.forwardedAddresses = forwardedAddresses;
+    }
+
     public HiveAuthzContext build(){
       return new HiveAuthzContext(this);
     }
-
-
   }
 
   private final String userIpAddress;
   private final String commandString;
+  private final List<String> forwardedAddresses;
 
   private HiveAuthzContext(Builder builder) {
     this.userIpAddress = builder.userIpAddress;
     this.commandString = builder.commandString;
-
+    this.forwardedAddresses = builder.forwardedAddresses;
   }
 
   public String getIpAddress() {
@@ -74,10 +87,13 @@ public final class HiveAuthzContext {
     return commandString;
   }
 
+  public List<String> getForwardedAddresses() {
+    return forwardedAddresses;
+  }
+
   @Override
   public String toString() {
-    return "HiveAuthzContext [userIpAddress=" + userIpAddress + ", commandString=" + commandString
-        + "]";
+    return "QueryContext [commandString=" + commandString + ", forwardedAddresses=" + forwardedAddresses + "]";
   }
 
 }

@@ -19,6 +19,8 @@
 package org.apache.hadoop.hive.ql.exec.persistence;
 
 
+import java.io.File;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.ObjectOutputStream;
@@ -29,13 +31,13 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hive.common.FileUtils;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.ql.exec.ExprNodeEvaluator;
 import org.apache.hadoop.hive.ql.exec.JoinUtil;
-import org.apache.hadoop.hive.ql.exec.Utilities;
+import org.apache.hadoop.hive.ql.exec.JoinUtil.JoinResult;
+import org.apache.hadoop.hive.ql.exec.SerializationUtilities;
 import org.apache.hadoop.hive.ql.exec.persistence.MapJoinBytesTableContainer.KeyValueHelper;
 import org.apache.hadoop.hive.ql.exec.vector.VectorHashKeyWrapper;
 import org.apache.hadoop.hive.ql.exec.vector.VectorHashKeyWrapperBatch;
@@ -43,8 +45,9 @@ import org.apache.hadoop.hive.ql.exec.vector.expressions.VectorExpressionWriter;
 import org.apache.hadoop.hive.ql.exec.vector.mapjoin.VectorMapJoinRowBytesContainer;
 import org.apache.hadoop.hive.ql.io.HiveKey;
 import org.apache.hadoop.hive.ql.metadata.HiveException;
+import org.apache.hadoop.hive.ql.metadata.HiveUtils;
 import org.apache.hadoop.hive.serde2.ByteStream.Output;
-import org.apache.hadoop.hive.serde2.SerDe;
+import org.apache.hadoop.hive.serde2.AbstractSerDe;
 import org.apache.hadoop.hive.serde2.SerDeException;
 import org.apache.hadoop.hive.serde2.WriteBuffers;
 import org.apache.hadoop.hive.serde2.binarysortable.BinarySortableSerDe;
@@ -55,6 +58,10 @@ import org.apache.hadoop.hive.serde2.lazybinary.objectinspector.LazyBinaryStruct
 import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspector;
 import org.apache.hadoop.io.BytesWritable;
 import org.apache.hadoop.io.Writable;
+import org.apache.hive.common.util.BloomFilter;
+import org.apache.hive.common.util.HashCodeUtil;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import com.esotericsoftware.kryo.Kryo;
 
@@ -70,13 +77,12 @@ import com.esotericsoftware.kryo.Kryo;
  */
 public class HybridHashTableContainer
       implements MapJoinTableContainer, MapJoinTableContainerDirectAccess {
-  private static final Log LOG = LogFactory.getLog(HybridHashTableContainer.class);
+  private static final Logger LOG = LoggerFactory.getLogger(HybridHashTableContainer.class);
 
   private final HashPartition[] hashPartitions; // an array of partitions holding the triplets
   private int totalInMemRowCount = 0;           // total number of small table rows in memory
   private long memoryThreshold;                 // the max memory limit that can be allocated
   private long memoryUsed;                      // the actual memory used
-  private int writeBufferSize;                  // write buffer size for this HybridHashTableContainer
   private final long tableRowSize;              // row size of the small table
   private boolean isSpilled;                    // whether there's any spilled partition
   private int toSpillPartitionId;               // the partition into which to spill the big table row;
@@ -84,15 +90,33 @@ public class HybridHashTableContainer
   private int numPartitionsSpilled;             // number of spilled partitions
   private boolean lastPartitionInMem;           // only one (last one) partition is left in memory
   private final int memoryCheckFrequency;       // how often (# of rows apart) to check if memory is full
-  private HybridHashTableConf nwayConf;         // configuration for n-way join
+  private final HybridHashTableConf nwayConf;         // configuration for n-way join
+  private int writeBufferSize;                  // write buffer size for BytesBytesMultiHashMap
 
   /** The OI used to deserialize values. We never deserialize keys. */
   private LazyBinaryStructObjectInspector internalValueOi;
   private boolean[] sortableSortOrders;
+  private byte[] nullMarkers;
+  private byte[] notNullMarkers;
   private MapJoinBytesTableContainer.KeyValueHelper writeHelper;
-  private MapJoinBytesTableContainer.DirectKeyValueWriter directWriteHelper;
+  private final MapJoinBytesTableContainer.DirectKeyValueWriter directWriteHelper;
+  /*
+   * this is not a real bloom filter, but is a cheap version of the 1-memory
+   * access bloom filters
+   *
+   * In several cases, we'll have map-join spills because the value columns are
+   * a few hundred columns of Text each, while there are very few keys in total
+   * (a few thousand).
+   *
+   * This is a cheap exit option to prevent spilling the big-table in such a
+   * scenario.
+   */
+  private transient BloomFilter bloom1 = null;
+  private final int BLOOM_FILTER_MAX_SIZE = 300000000;
 
   private final List<Object> EMPTY_LIST = new ArrayList<Object>(0);
+
+  private final String spillLocalDirs;
 
   /**
    * This class encapsulates the triplet together since they are closely related to each other
@@ -107,25 +131,27 @@ public class HybridHashTableContainer
     Path hashMapLocalPath;                  // Local file system path for spilled hashMap
     boolean hashMapOnDisk;                  // Status of hashMap. true: on disk, false: in memory
     boolean hashMapSpilledOnCreation;       // When there's no enough memory, cannot create hashMap
-    int threshold;                          // Used to create an empty BytesBytesMultiHashMap
+    int initialCapacity;                    // Used to create an empty BytesBytesMultiHashMap
     float loadFactor;                       // Same as above
     int wbSize;                             // Same as above
     int rowsOnDisk;                         // How many rows saved to the on-disk hashmap (if on disk)
+    private final String spillLocalDirs;
 
     /* It may happen that there's not enough memory to instantiate a hashmap for the partition.
      * In that case, we don't create the hashmap, but pretend the hashmap is directly "spilled".
      */
-    public HashPartition(int threshold, float loadFactor, int wbSize, long memUsage,
-                         boolean createHashMap) {
+    public HashPartition(int initialCapacity, float loadFactor, int wbSize, long maxProbeSize,
+                         boolean createHashMap, String spillLocalDirs) {
       if (createHashMap) {
-        // Hash map should be at least the size of our designated wbSize
-        memUsage = Math.max(memUsage, wbSize);
-        hashMap = new BytesBytesMultiHashMap(threshold, loadFactor, wbSize, memUsage);
+        // Probe space should be at least equal to the size of our designated wbSize
+        maxProbeSize = Math.max(maxProbeSize, wbSize);
+        hashMap = new BytesBytesMultiHashMap(initialCapacity, loadFactor, wbSize, maxProbeSize);
       } else {
         hashMapSpilledOnCreation = true;
         hashMapOnDisk = true;
       }
-      this.threshold = threshold;
+      this.spillLocalDirs = spillLocalDirs;
+      this.initialCapacity = initialCapacity;
       this.loadFactor = loadFactor;
       this.wbSize = wbSize;
     }
@@ -138,18 +164,23 @@ public class HybridHashTableContainer
     /* Restore the hashmap from disk by deserializing it.
      * Currently Kryo is used for this purpose.
      */
-    public BytesBytesMultiHashMap getHashMapFromDisk(int initialCapacity)
+    public BytesBytesMultiHashMap getHashMapFromDisk(int rowCount)
         throws IOException, ClassNotFoundException {
       if (hashMapSpilledOnCreation) {
-        return new BytesBytesMultiHashMap(Math.max(threshold, initialCapacity) , loadFactor, wbSize, -1);
+        return new BytesBytesMultiHashMap(rowCount, loadFactor, wbSize, -1);
       } else {
         InputStream inputStream = Files.newInputStream(hashMapLocalPath);
         com.esotericsoftware.kryo.io.Input input = new com.esotericsoftware.kryo.io.Input(inputStream);
-        Kryo kryo = Utilities.runtimeSerializationKryo.get();
-        BytesBytesMultiHashMap restoredHashMap = kryo.readObject(input, BytesBytesMultiHashMap.class);
+        Kryo kryo = SerializationUtilities.borrowKryo();
+        BytesBytesMultiHashMap restoredHashMap = null;
+        try {
+          restoredHashMap = kryo.readObject(input, BytesBytesMultiHashMap.class);
+        } finally {
+          SerializationUtilities.releaseKryo(kryo);
+        }
 
-        if (initialCapacity > 0) {
-          restoredHashMap.expandAndRehashToTarget(initialCapacity);
+        if (rowCount > 0) {
+          restoredHashMap.expandAndRehashToTarget(rowCount);
         }
 
         // some bookkeeping
@@ -166,7 +197,7 @@ public class HybridHashTableContainer
     /* Get the small table key/value container */
     public KeyValueContainer getSidefileKVContainer() {
       if (sidefileKVContainer == null) {
-        sidefileKVContainer = new KeyValueContainer();
+        sidefileKVContainer = new KeyValueContainer(spillLocalDirs);
       }
       return sidefileKVContainer;
     }
@@ -174,7 +205,7 @@ public class HybridHashTableContainer
     /* Get the big table row container */
     public ObjectContainer getMatchfileObjContainer() {
       if (matchfileObjContainer == null) {
-        matchfileObjContainer = new ObjectContainer();
+        matchfileObjContainer = new ObjectContainer(spillLocalDirs);
       }
       return matchfileObjContainer;
     }
@@ -182,7 +213,7 @@ public class HybridHashTableContainer
     /* Get the big table row bytes container for native vector map join */
     public VectorMapJoinRowBytesContainer getMatchfileRowBytesContainer() {
       if (matchfileRowBytesContainer == null) {
-        matchfileRowBytesContainer = new VectorMapJoinRowBytesContainer();
+        matchfileRowBytesContainer = new VectorMapJoinRowBytesContainer(spillLocalDirs);
       }
       return matchfileRowBytesContainer;
     }
@@ -237,20 +268,24 @@ public class HybridHashTableContainer
 
   public HybridHashTableContainer(Configuration hconf, long keyCount, long memoryAvailable,
                                   long estimatedTableSize, HybridHashTableConf nwayConf)
- throws SerDeException, IOException {
+      throws SerDeException, IOException {
     this(HiveConf.getFloatVar(hconf, HiveConf.ConfVars.HIVEHASHTABLEKEYCOUNTADJUSTMENT),
         HiveConf.getIntVar(hconf, HiveConf.ConfVars.HIVEHASHTABLETHRESHOLD),
-        HiveConf.getFloatVar(hconf,HiveConf.ConfVars.HIVEHASHTABLELOADFACTOR),
-        HiveConf.getIntVar(hconf,HiveConf.ConfVars.HIVEHYBRIDGRACEHASHJOINMEMCHECKFREQ),
-        HiveConf.getIntVar(hconf,HiveConf.ConfVars.HIVEHYBRIDGRACEHASHJOINMINWBSIZE),
-        HiveConf.getIntVar(hconf,HiveConf.ConfVars.HIVEHASHTABLEWBSIZE),
-        HiveConf.getIntVar(hconf,HiveConf.ConfVars.HIVEHYBRIDGRACEHASHJOINMINNUMPARTITIONS),
-        estimatedTableSize, keyCount, memoryAvailable, nwayConf);
+        HiveConf.getFloatVar(hconf, HiveConf.ConfVars.HIVEHASHTABLELOADFACTOR),
+        HiveConf.getIntVar(hconf, HiveConf.ConfVars.HIVEHYBRIDGRACEHASHJOINMEMCHECKFREQ),
+        HiveConf.getIntVar(hconf, HiveConf.ConfVars.HIVEHYBRIDGRACEHASHJOINMINWBSIZE),
+        HiveConf.getIntVar(hconf, HiveConf.ConfVars.HIVEHASHTABLEWBSIZE),
+        HiveConf.getIntVar(hconf, HiveConf.ConfVars.HIVEHYBRIDGRACEHASHJOINMINNUMPARTITIONS),
+        HiveConf.getFloatVar(hconf, HiveConf.ConfVars.HIVEMAPJOINOPTIMIZEDTABLEPROBEPERCENT),
+        HiveConf.getBoolVar(hconf, HiveConf.ConfVars.HIVEHYBRIDGRACEHASHJOINBLOOMFILTER),
+        estimatedTableSize, keyCount, memoryAvailable, nwayConf,
+        HiveUtils.getLocalDirList(hconf));
   }
 
   private HybridHashTableContainer(float keyCountAdj, int threshold, float loadFactor,
-      int memCheckFreq, int minWbSize, int maxWbSize, int minNumParts, long estimatedTableSize,
-      long keyCount, long memoryAvailable, HybridHashTableConf nwayConf)
+      int memCheckFreq, int minWbSize, int maxWbSize, int minNumParts, float probePercent,
+      boolean useBloomFilter, long estimatedTableSize, long keyCount, long memoryAvailable,
+      HybridHashTableConf nwayConf, String spillLocalDirs)
       throws SerDeException, IOException {
     directWriteHelper = new MapJoinBytesTableContainer.DirectKeyValueWriter();
 
@@ -260,12 +295,12 @@ public class HybridHashTableContainer
     memoryThreshold = memoryAvailable;
     tableRowSize = estimatedTableSize / (keyCount != 0 ? keyCount : 1);
     memoryCheckFrequency = memCheckFreq;
+    this.spillLocalDirs = spillLocalDirs;
 
     this.nwayConf = nwayConf;
     int numPartitions;
     if (nwayConf == null) { // binary join
-      numPartitions = calcNumPartitions(memoryThreshold, estimatedTableSize, minNumParts, minWbSize,
-          nwayConf);
+      numPartitions = calcNumPartitions(memoryThreshold, estimatedTableSize, minNumParts, minWbSize);
       writeBufferSize = (int)(estimatedTableSize / numPartitions);
     } else {                // n-way join
       // It has been calculated in HashTableLoader earlier, so just need to retrieve that number
@@ -283,40 +318,74 @@ public class HybridHashTableContainer
           } else {
             LOG.info("Total available memory was: " + memoryThreshold);
             memoryThreshold += memFreed;
-            LOG.info("Total available memory is: " + memoryThreshold);
           }
         }
         writeBufferSize = (int)(memoryThreshold / numPartitions);
       }
     }
+    LOG.info("Total available memory is: " + memoryThreshold);
 
     // Round to power of 2 here, as is required by WriteBuffers
     writeBufferSize = Integer.bitCount(writeBufferSize) == 1 ?
         writeBufferSize : Integer.highestOneBit(writeBufferSize);
 
     // Cap WriteBufferSize to avoid large preallocations
-    writeBufferSize = writeBufferSize < minWbSize ? minWbSize : Math.min(maxWbSize, writeBufferSize);
+    // We also want to limit the size of writeBuffer, because we normally have 16 partitions, that
+    // makes spilling prediction (isMemoryFull) to be too defensive which results in unnecessary spilling
+    writeBufferSize = writeBufferSize < minWbSize ? minWbSize : Math.min(maxWbSize / numPartitions, writeBufferSize);
     LOG.info("Write buffer size: " + writeBufferSize);
+    memoryUsed = 0;
+
+    if (useBloomFilter) {
+      if (newKeyCount <= BLOOM_FILTER_MAX_SIZE) {
+        this.bloom1 = new BloomFilter(newKeyCount);
+      } else {
+        // To avoid having a huge BloomFilter we need to scale up False Positive Probability
+        double fpp = calcFPP(newKeyCount);
+        assert fpp < 1 : "Too many keys! BloomFilter False Positive Probability is 1!";
+        if (fpp >= 0.5) {
+          LOG.warn("BloomFilter FPP is greater than 0.5!");
+        }
+        LOG.info("BloomFilter is using FPP: " + fpp);
+        this.bloom1 = new BloomFilter(newKeyCount, fpp);
+      }
+      LOG.info(String.format("Using a bloom-1 filter %d keys of size %d bytes",
+        newKeyCount, bloom1.sizeInBytes()));
+      memoryUsed = bloom1.sizeInBytes();
+    }
 
     hashPartitions = new HashPartition[numPartitions];
     int numPartitionsSpilledOnCreation = 0;
-    memoryUsed = 0;
     int initialCapacity = Math.max(newKeyCount / numPartitions, threshold / numPartitions);
+    // maxCapacity should be calculated based on a percentage of memoryThreshold, which is to divide
+    // row size using long size
+    float probePercentage = (float) 8 / (tableRowSize + 8); // long_size / tableRowSize + long_size
+    if (probePercentage == 1) {
+      probePercentage = probePercent;
+    }
+    int maxCapacity = (int)(memoryThreshold * probePercentage);
     for (int i = 0; i < numPartitions; i++) {
       if (this.nwayConf == null ||                          // binary join
           nwayConf.getLoadedContainerList().size() == 0) {  // n-way join, first (biggest) small table
         if (i == 0) { // We unconditionally create a hashmap for the first hash partition
-          hashPartitions[i] = new HashPartition(initialCapacity, loadFactor, writeBufferSize, memoryThreshold, true);
+          hashPartitions[i] = new HashPartition(initialCapacity, loadFactor, writeBufferSize,
+              maxCapacity, true, spillLocalDirs);
+          LOG.info("Each new partition will require memory: " + hashPartitions[0].hashMap.memorySize());
         } else {
-          hashPartitions[i] = new HashPartition(initialCapacity, loadFactor, writeBufferSize, memoryThreshold,
-              memoryUsed + writeBufferSize < memoryThreshold);
+          // To check whether we have enough memory to allocate for another hash partition,
+          // we need to get the size of the first hash partition to get an idea.
+          hashPartitions[i] = new HashPartition(initialCapacity, loadFactor, writeBufferSize,
+              maxCapacity, memoryUsed + hashPartitions[0].hashMap.memorySize() < memoryThreshold,
+              spillLocalDirs);
         }
-      } else {                      // n-way join
+      } else {                                              // n-way join, all later small tables
         // For all later small tables, follow the same pattern of the previously loaded tables.
         if (this.nwayConf.doSpillOnCreation(i)) {
-          hashPartitions[i] = new HashPartition(threshold, loadFactor, writeBufferSize, memoryThreshold, false);
+          hashPartitions[i] = new HashPartition(initialCapacity, loadFactor, writeBufferSize,
+              maxCapacity, false, spillLocalDirs);
         } else {
-          hashPartitions[i] = new HashPartition(threshold, loadFactor, writeBufferSize, memoryThreshold, true);
+          hashPartitions[i] = new HashPartition(initialCapacity, loadFactor, writeBufferSize,
+              maxCapacity, true, spillLocalDirs);
         }
       }
 
@@ -327,9 +396,16 @@ public class HybridHashTableContainer
         if (this.nwayConf != null && this.nwayConf.getNextSpillPartition() == numPartitions - 1) {
           this.nwayConf.setNextSpillPartition(i - 1);
         }
+        LOG.info("Hash partition " + i + " is spilled on creation.");
       } else {
         memoryUsed += hashPartitions[i].hashMap.memorySize();
+        LOG.info("Hash partition " + i + " is created in memory. Total memory usage so far: " + memoryUsed);
       }
+    }
+
+    if (writeBufferSize * (numPartitions - numPartitionsSpilledOnCreation) > memoryThreshold) {
+      LOG.error("There is not enough memory to allocate " +
+          (numPartitions - numPartitionsSpilledOnCreation) + " hash partitions.");
     }
     assert numPartitionsSpilledOnCreation != numPartitions : "All partitions are directly spilled!" +
         " It is not supported now.";
@@ -343,6 +419,22 @@ public class HybridHashTableContainer
     }
   }
 
+  /**
+   * Calculate the proper False Positive Probability so that the BloomFilter won't grow too big
+   * @param keyCount number of keys
+   * @return FPP
+   */
+  private double calcFPP(int keyCount) {
+    int n = keyCount;
+    double p = 0.05;
+
+    // Calculation below is consistent with BloomFilter.optimalNumOfBits().
+    // Also, we are capping the BloomFilter size below 100 MB (800000000/8)
+    while ((-n * Math.log(p) / (Math.log(2) * Math.log(2))) > 800000000) {
+      p += 0.05;
+    }
+    return p;
+  }
 
   public MapJoinBytesTableContainer.KeyValueHelper getWriteHelper() {
     return writeHelper;
@@ -360,11 +452,16 @@ public class HybridHashTableContainer
    * Get the current memory usage by recalculating it.
    * @return current memory usage
    */
-  public long refreshMemoryUsed() {
-    long memUsed = 0;
+  private long refreshMemoryUsed() {
+    long memUsed = bloom1 != null ? bloom1.sizeInBytes() : 0;
     for (HashPartition hp : hashPartitions) {
       if (hp.hashMap != null) {
         memUsed += hp.hashMap.memorySize();
+      } else {
+        // also include the still-in-memory sidefile, before it has been truely spilled
+        if (hp.sidefileKVContainer != null) {
+          memUsed += hp.sidefileKVContainer.numRowsInReadBuffer() * tableRowSize;
+        }
       }
     }
     return memoryUsed = memUsed;
@@ -378,6 +475,14 @@ public class HybridHashTableContainer
     return sortableSortOrders;
   }
 
+  public byte[] getNullMarkers() {
+    return nullMarkers;
+  }
+
+  public byte[] getNotNullMarkers() {
+    return notNullMarkers;
+  }
+
   /* For a given row, put it into proper partition based on its hash value.
    * When memory threshold is reached, the biggest hash table in memory will be spilled to disk.
    * If the hash table of a specific partition is already on disk, all later rows will be put into
@@ -385,27 +490,8 @@ public class HybridHashTableContainer
    */
   @SuppressWarnings("deprecation")
   @Override
-  public MapJoinKey putRow(MapJoinObjectSerDeContext keyContext, Writable currentKey,
-      MapJoinObjectSerDeContext valueContext, Writable currentValue)
+  public MapJoinKey putRow(Writable currentKey, Writable currentValue)
       throws SerDeException, HiveException, IOException {
-    SerDe keySerde = keyContext.getSerDe(), valSerde = valueContext.getSerDe();
-
-    if (writeHelper == null) {
-      LOG.info("Initializing container with "
-          + keySerde.getClass().getName() + " and " + valSerde.getClass().getName());
-
-      // We assume this hashtable is loaded only when tez is enabled
-      LazyBinaryStructObjectInspector valSoi =
-          (LazyBinaryStructObjectInspector) valSerde.getObjectInspector();
-      writeHelper = new MapJoinBytesTableContainer.LazyBinaryKvWriter(keySerde, valSoi,
-                                                                      valueContext.hasFilterTag());
-      if (internalValueOi == null) {
-        internalValueOi = valSoi;
-      }
-      if (sortableSortOrders == null) {
-        sortableSortOrders = ((BinarySortableSerDe) keySerde).getSortOrders();
-      }
-    }
     writeHelper.setKeyValue(currentKey, currentValue);
     return internalPutRow(writeHelper, currentKey, currentValue);
   }
@@ -413,20 +499,24 @@ public class HybridHashTableContainer
   private MapJoinKey internalPutRow(KeyValueHelper keyValueHelper,
           Writable currentKey, Writable currentValue) throws SerDeException, IOException {
 
+    boolean putToSidefile = false; // by default we put row into partition in memory
+
     // Next, put row into corresponding hash partition
     int keyHash = keyValueHelper.getHashFromKey();
     int partitionId = keyHash & (hashPartitions.length - 1);
     HashPartition hashPartition = hashPartitions[partitionId];
 
-    if (isOnDisk(partitionId) || isHashMapSpilledOnCreation(partitionId)) {
-      KeyValueContainer kvContainer = hashPartition.getSidefileKVContainer();
-      kvContainer.add((HiveKey) currentKey, (BytesWritable) currentValue);
-    } else {
-      hashPartition.hashMap.put(keyValueHelper, keyHash); // Pass along hashcode to avoid recalculation
-      totalInMemRowCount++;
+    if (bloom1 != null) {
+      bloom1.addLong(keyHash);
+    }
 
-      if ((totalInMemRowCount & (this.memoryCheckFrequency - 1)) == 0 &&  // check periodically
-          !lastPartitionInMem) { // If this is the only partition in memory, proceed without check
+    if (isOnDisk(partitionId) || isHashMapSpilledOnCreation(partitionId)) { // destination on disk
+      putToSidefile = true;
+    } else {  // destination in memory
+      if (!lastPartitionInMem &&        // If this is the only partition in memory, proceed without check
+          (hashPartition.size() == 0 || // Destination partition being empty indicates a write buffer
+                                        // will be allocated, thus need to check if memory is full
+           (totalInMemRowCount & (this.memoryCheckFrequency - 1)) == 0)) {  // check periodically
         if (isMemoryFull()) {
           if ((numPartitionsSpilled == hashPartitions.length - 1) ) {
             LOG.warn("This LAST partition in memory won't be spilled!");
@@ -436,15 +526,31 @@ public class HybridHashTableContainer
               int biggest = biggestPartition();
               spillPartition(biggest);
               this.setSpill(true);
+              if (partitionId == biggest) { // destination hash partition has just be spilled
+                putToSidefile = true;
+              }
             } else {                // n-way join
               LOG.info("N-way spilling: spill tail partition from previously loaded small tables");
+              int biggest = nwayConf.getNextSpillPartition();
               memoryThreshold += nwayConf.spill();
+              if (biggest != 0 && partitionId == biggest) { // destination hash partition has just be spilled
+                putToSidefile = true;
+              }
               LOG.info("Memory threshold has been increased to: " + memoryThreshold);
             }
             numPartitionsSpilled++;
           }
         }
       }
+    }
+
+    // Now we know where to put row
+    if (putToSidefile) {
+      KeyValueContainer kvContainer = hashPartition.getSidefileKVContainer();
+      kvContainer.add((HiveKey) currentKey, (BytesWritable) currentValue);
+    } else {
+      hashPartition.hashMap.put(keyValueHelper, keyHash); // Pass along hashcode to avoid recalculation
+      totalInMemRowCount++;
     }
 
     return null; // there's no key to return
@@ -470,11 +576,23 @@ public class HybridHashTableContainer
   }
 
   /**
-   * Check if the memory threshold is reached
+   * Check if the memory threshold is about to be reached.
+   * Since all the write buffer will be lazily allocated in BytesBytesMultiHashMap, we need to
+   * consider those as well.
+   * We also need to count in the next 1024 rows to be loaded.
    * @return true if memory is full, false if not
    */
   private boolean isMemoryFull() {
-    return refreshMemoryUsed() >= memoryThreshold;
+    int numPartitionsInMem = 0;
+
+    for (HashPartition hp : hashPartitions) {
+      if (!hp.isHashMapOnDisk()) {
+        numPartitionsInMem++;
+      }
+    }
+
+    return refreshMemoryUsed() + this.memoryCheckFrequency * getTableRowSize() +
+        writeBufferSize * numPartitionsInMem >= memoryThreshold;
   }
 
   /**
@@ -482,7 +600,7 @@ public class HybridHashTableContainer
    * @return the biggest partition number
    */
   private int biggestPartition() {
-    int res = 0;
+    int res = -1;
     int maxSize = 0;
 
     // If a partition has been spilled to disk, its size will be 0, i.e. it won't be picked
@@ -498,6 +616,17 @@ public class HybridHashTableContainer
         res = i;
       }
     }
+
+    // It can happen that although there're some partitions in memory, but their sizes are all 0.
+    // In that case we just pick one and spill.
+    if (res == -1) {
+      for (int i = 0; i < hashPartitions.length; i++) {
+        if (!isOnDisk(i)) {
+          return i;
+        }
+      }
+    }
+
     return res;
   }
 
@@ -509,21 +638,32 @@ public class HybridHashTableContainer
   public long spillPartition(int partitionId) throws IOException {
     HashPartition partition = hashPartitions[partitionId];
     int inMemRowCount = partition.hashMap.getNumValues();
+    if (inMemRowCount == 0) {
+      LOG.warn("Trying to spill an empty hash partition! It may be due to " +
+          "hive.auto.convert.join.noconditionaltask.size being set too low.");
+    }
 
-    Path path = Files.createTempFile("partition-" + partitionId + "-", null);
-    OutputStream outputStream = Files.newOutputStream(path);
+    File file = FileUtils.createLocalDirsTempFile(
+        spillLocalDirs, "partition-" + partitionId + "-", null, false);
+    OutputStream outputStream = new FileOutputStream(file, false);
 
-    com.esotericsoftware.kryo.io.Output output = new com.esotericsoftware.kryo.io.Output(outputStream);
-    Kryo kryo = Utilities.runtimeSerializationKryo.get();
-    kryo.writeObject(output, partition.hashMap);  // use Kryo to serialize hashmap
-    output.close();
-    outputStream.close();
+    com.esotericsoftware.kryo.io.Output output =
+        new com.esotericsoftware.kryo.io.Output(outputStream);
+    Kryo kryo = SerializationUtilities.borrowKryo();
+    try {
+      LOG.info("Trying to spill hash partition " + partitionId + " ...");
+      kryo.writeObject(output, partition.hashMap);  // use Kryo to serialize hashmap
+      output.close();
+      outputStream.close();
+    } finally {
+      SerializationUtilities.releaseKryo(kryo);
+    }
 
-    partition.hashMapLocalPath = path;
+    partition.hashMapLocalPath = file.toPath();
     partition.hashMapOnDisk = true;
 
     LOG.info("Spilling hash partition " + partitionId + " (Rows: " + inMemRowCount +
-        ", Mem size: " + partition.hashMap.memorySize() + "): " + path);
+        ", Mem size: " + partition.hashMap.memorySize() + "): " + file);
     LOG.info("Memory usage before spilling: " + memoryUsed);
 
     long memFreed = partition.hashMap.memorySize();
@@ -533,6 +673,7 @@ public class HybridHashTableContainer
     partition.rowsOnDisk = inMemRowCount;
     totalInMemRowCount -= inMemRowCount;
     partition.hashMap.clear();
+    partition.hashMap = null;
     return memFreed;
   }
 
@@ -545,18 +686,18 @@ public class HybridHashTableContainer
    * @param dataSize total data size for the table
    * @param minNumParts minimum required number of partitions
    * @param minWbSize minimum required write buffer size
-   * @param nwayConf the n-way join configuration
    * @return number of partitions needed
    */
   public static int calcNumPartitions(long memoryThreshold, long dataSize, int minNumParts,
-      int minWbSize, HybridHashTableConf nwayConf) throws IOException {
+      int minWbSize) throws IOException {
     int numPartitions = minNumParts;
 
     if (memoryThreshold < minNumParts * minWbSize) {
       LOG.warn("Available memory is not enough to create a HybridHashTableContainer!");
     }
-    if (memoryThreshold < dataSize) {
-      while (dataSize / numPartitions > memoryThreshold) {
+
+    if (memoryThreshold / 2 < dataSize) { // The divided-by-2 logic is consistent to MapJoinOperator.reloadHashTable
+      while (dataSize / numPartitions > memoryThreshold / 2) {
         numPartitions *= 2;
       }
     }
@@ -606,8 +747,10 @@ public class HybridHashTableContainer
 
   @Override
   public void clear() {
-    for (HashPartition hp : hashPartitions) {
+    for (int i = 0; i < hashPartitions.length; i++) {
+      HashPartition hp = hashPartitions[i];
       if (hp != null) {
+        LOG.info("Going to clear hash partition " + i);
         hp.clear();
       }
     }
@@ -682,7 +825,8 @@ public class HybridHashTableContainer
         nulls[i] = currentKey[i] == null;
       }
       return currentValue.setFromOutput(
-          MapJoinKey.serializeRow(output, currentKey, vectorKeyOIs, sortableSortOrders));
+          MapJoinKey.serializeRow(output, currentKey, vectorKeyOIs,
+                  sortableSortOrders, nullMarkers, notNullMarkers));
     }
 
     @Override
@@ -697,7 +841,8 @@ public class HybridHashTableContainer
         nulls[keyIndex] = currentKey[keyIndex] == null;
       }
       return currentValue.setFromOutput(
-          MapJoinKey.serializeRow(output, currentKey, ois, sortableSortOrders));
+          MapJoinKey.serializeRow(output, currentKey, ois,
+                  sortableSortOrders, nullMarkers, notNullMarkers));
     }
 
     @Override
@@ -748,7 +893,7 @@ public class HybridHashTableContainer
   private class ReusableRowContainer
     implements MapJoinRowContainer, AbstractRowContainer.RowIterator<List<Object>> {
     private byte aliasFilter;
-    private BytesBytesMultiHashMap.Result hashMapResult;
+    private final BytesBytesMultiHashMap.Result hashMapResult;
 
     /**
      * Sometimes, when container is empty in multi-table mapjoin, we need to add a dummy row.
@@ -793,7 +938,19 @@ public class HybridHashTableContainer
      *        the evaluation for this big table row will be postponed.
      */
     public JoinUtil.JoinResult setFromOutput(Output output) throws HiveException {
-      int keyHash = WriteBuffers.murmurHash(output.getData(), 0, output.getLength());
+      int keyHash = HashCodeUtil.murmurHash(output.getData(), 0, output.getLength());
+
+      if (bloom1 != null && !bloom1.testLong(keyHash)) {
+        /*
+         * if the keyHash is missing in the bloom filter, then the value cannot
+         * exist in any of the spilled partition - return NOMATCH
+         */
+        dummyRow = null;
+        aliasFilter = (byte) 0xff;
+        hashMapResult.forget();
+        return JoinResult.NOMATCH;
+      }
+
       partitionId = keyHash & (hashPartitions.length - 1);
 
       // If the target hash table is on disk, spill this row to disk as well to be processed later
@@ -803,7 +960,8 @@ public class HybridHashTableContainer
         return JoinUtil.JoinResult.SPILL;
       }
       else {
-        aliasFilter = hashPartitions[partitionId].hashMap.getValueResult(output.getData(), 0, output.getLength(), hashMapResult);
+        aliasFilter = hashPartitions[partitionId].hashMap.getValueResult(output.getData(), 0,
+            output.getLength(), hashMapResult);
         dummyRow = null;
         if (hashMapResult.hasRows()) {
           return JoinUtil.JoinResult.MATCH;
@@ -933,15 +1091,27 @@ public class HybridHashTableContainer
     public JoinUtil.JoinResult setDirect(byte[] bytes, int offset, int length,
         BytesBytesMultiHashMap.Result hashMapResult) {
 
-      int keyHash = WriteBuffers.murmurHash(bytes, offset, length);
+      int keyHash = HashCodeUtil.murmurHash(bytes, offset, length);
       partitionId = keyHash & (hashPartitions.length - 1);
+
+      if (bloom1 != null && !bloom1.testLong(keyHash)) {
+        /*
+         * if the keyHash is missing in the bloom filter, then the value cannot exist in any of the
+         * spilled partition - return NOMATCH
+         */
+        dummyRow = null;
+        aliasFilter = (byte) 0xff;
+        hashMapResult.forget();
+        return JoinResult.NOMATCH;
+      }
 
       // If the target hash table is on disk, spill this row to disk as well to be processed later
       if (isOnDisk(partitionId)) {
         return JoinUtil.JoinResult.SPILL;
       }
       else {
-        aliasFilter = hashPartitions[partitionId].hashMap.getValueResult(bytes, offset, length, hashMapResult);
+        aliasFilter = hashPartitions[partitionId].hashMap.getValueResult(bytes, offset, length,
+            hashMapResult);
         dummyRow = null;
         if (hashMapResult.hasRows()) {
           return JoinUtil.JoinResult.MATCH;
@@ -991,5 +1161,34 @@ public class HybridHashTableContainer
       totalSize += hashPartition.size();
     }
     return totalSize;
+  }
+
+  @Override
+  public void setSerde(MapJoinObjectSerDeContext keyCtx, MapJoinObjectSerDeContext valCtx)
+      throws SerDeException {
+    AbstractSerDe keySerde = keyCtx.getSerDe(), valSerde = valCtx.getSerDe();
+
+    if (writeHelper == null) {
+      LOG.info("Initializing container with " + keySerde.getClass().getName() + " and "
+          + valSerde.getClass().getName());
+
+      // We assume this hashtable is loaded only when tez is enabled
+      LazyBinaryStructObjectInspector valSoi =
+          (LazyBinaryStructObjectInspector) valSerde.getObjectInspector();
+      writeHelper = new MapJoinBytesTableContainer.LazyBinaryKvWriter(keySerde, valSoi,
+          valCtx.hasFilterTag());
+      if (internalValueOi == null) {
+        internalValueOi = valSoi;
+      }
+      if (sortableSortOrders == null) {
+        sortableSortOrders = ((BinarySortableSerDe) keySerde).getSortOrders();
+      }
+      if (nullMarkers == null) {
+        nullMarkers = ((BinarySortableSerDe) keySerde).getNullMarkers();
+      }
+      if (notNullMarkers == null) {
+        notNullMarkers = ((BinarySortableSerDe) keySerde).getNotNullMarkers();
+      }
+    }
   }
 }

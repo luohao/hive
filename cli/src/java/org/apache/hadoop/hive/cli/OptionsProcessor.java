@@ -29,15 +29,16 @@ import org.apache.commons.cli.Option;
 import org.apache.commons.cli.OptionBuilder;
 import org.apache.commons.cli.Options;
 import org.apache.commons.cli.ParseException;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.hive.common.cli.CommonCliOptions;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * OptionsProcessor.
  *
  */
 public class OptionsProcessor {
-  protected static final Log l4j = LogFactory.getLog(OptionsProcessor.class.getName());
+  protected static final Logger l4j = LoggerFactory.getLogger(OptionsProcessor.class.getName());
   private final Options options = new Options();
   private org.apache.commons.cli.CommandLine commandLine;
   Map<String, String> hiveVariables = new HashMap<String, String>();
@@ -89,7 +90,7 @@ public class OptionsProcessor {
         .hasArgs(2)
         .withArgName("key=value")
         .withLongOpt("define")
-        .withDescription("Variable subsitution to apply to hive commands. e.g. -d A=B or --define A=B")
+        .withDescription("Variable substitution to apply to Hive commands. e.g. -d A=B or --define A=B")
         .create('d'));
 
     // Substitution option --hivevar
@@ -98,7 +99,7 @@ public class OptionsProcessor {
         .hasArgs(2)
         .withArgName("key=value")
         .withLongOpt("hivevar")
-        .withDescription("Variable subsitution to apply to hive commands. e.g. --hivevar A=B")
+        .withDescription("Variable substitution to apply to Hive commands. e.g. --hivevar A=B")
         .create());
 
     // [-S|--silent]
@@ -117,7 +118,14 @@ public class OptionsProcessor {
       commandLine = new GnuParser().parse(options, argv);
       Properties confProps = commandLine.getOptionProperties("hiveconf");
       for (String propKey : confProps.stringPropertyNames()) {
-        System.setProperty(propKey, confProps.getProperty(propKey));
+        // with HIVE-11304, hive.root.logger cannot have both logger name and log level.
+        // if we still see it, split logger and level separately for hive.root.logger
+        // and hive.log.level respectively
+        if (propKey.equalsIgnoreCase("hive.root.logger")) {
+          CommonCliOptions.splitAndSetLogger(propKey, confProps);
+        } else {
+          System.setProperty(propKey, confProps.getProperty(propKey));
+        }
       }
 
       Properties hiveVars = commandLine.getOptionProperties("define");

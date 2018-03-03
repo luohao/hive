@@ -18,15 +18,15 @@
 
 package org.apache.hadoop.hive.ql.exec.vector;
 
-import java.util.Collection;
-import java.util.concurrent.Future;
-
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hive.ql.CompilationOpContext;
 import org.apache.hadoop.hive.ql.exec.FileSinkOperator;
 import org.apache.hadoop.hive.ql.metadata.HiveException;
 import org.apache.hadoop.hive.ql.plan.FileSinkDesc;
 import org.apache.hadoop.hive.ql.plan.OperatorDesc;
 import org.apache.hadoop.hive.serde2.objectinspector.StructObjectInspector;
+
+import com.google.common.annotations.VisibleForTesting;
 
 /**
  * File Sink operator implementation.
@@ -43,66 +43,63 @@ public class VectorFileSinkOperator extends FileSinkOperator {
 
   private transient boolean firstBatch;
 
-  private transient VectorExtractRowDynBatch vectorExtractRowDynBatch;
+  private transient VectorExtractRow vectorExtractRow;
 
   protected transient Object[] singleRow;
 
-  public VectorFileSinkOperator(VectorizationContext vContext,
-      OperatorDesc conf) {
-    super();
+  public VectorFileSinkOperator(CompilationOpContext ctx,
+      VectorizationContext vContext, OperatorDesc conf) {
+    this(ctx);
     this.conf = (FileSinkDesc) conf;
     this.vContext = vContext;
   }
 
+  /** Kryo ctor. */
+  @VisibleForTesting
   public VectorFileSinkOperator() {
+    super();
+  }
 
+  public VectorFileSinkOperator(CompilationOpContext ctx) {
+    super(ctx);
   }
 
   @Override
-  protected Collection<Future<?>> initializeOp(Configuration hconf) throws HiveException {
+  protected void initializeOp(Configuration hconf) throws HiveException {
 
     // We need a input object inspector that is for the row we will extract out of the
     // vectorized row batch, not for example, an original inspector for an ORC table, etc.
     inputObjInspectors[0] =
         VectorizedBatchUtil.convertToStandardStructObjectInspector((StructObjectInspector) inputObjInspectors[0]);
-
-    // Call FileSinkOperator with new input inspector.
-    Collection<Future<?>> result = super.initializeOp(hconf);
-    assert result.isEmpty();
+    super.initializeOp(hconf);
 
     firstBatch = true;
-
-    return result;
   }
 
   @Override
   public void process(Object data, int tag) throws HiveException {
     VectorizedRowBatch batch = (VectorizedRowBatch) data;
     if (firstBatch) {
-      vectorExtractRowDynBatch = new VectorExtractRowDynBatch();
-      vectorExtractRowDynBatch.init((StructObjectInspector) inputObjInspectors[0], vContext.getProjectedColumns());
+      vectorExtractRow = new VectorExtractRow();
+      vectorExtractRow.init((StructObjectInspector) inputObjInspectors[0], vContext.getProjectedColumns());
 
-      singleRow = new Object[vectorExtractRowDynBatch.getCount()];
+      singleRow = new Object[vectorExtractRow.getCount()];
 
       firstBatch = false;
     }
-
-    vectorExtractRowDynBatch.setBatchOnEntry(batch);
 
     if (batch.selectedInUse) {
       int selected[] = batch.selected;
       for (int logical = 0 ; logical < batch.size; logical++) {
         int batchIndex = selected[logical];
-        vectorExtractRowDynBatch.extractRow(batchIndex, singleRow);
+        vectorExtractRow.extractRow(batch, batchIndex, singleRow);
         super.process(singleRow, tag);
       }
     } else {
       for (int batchIndex = 0 ; batchIndex < batch.size; batchIndex++) {
-        vectorExtractRowDynBatch.extractRow(batchIndex, singleRow);
+        vectorExtractRow.extractRow(batch, batchIndex, singleRow);
         super.process(singleRow, tag);
       }
     }
-
-    vectorExtractRowDynBatch.forgetBatchOnExit();
   }
 }

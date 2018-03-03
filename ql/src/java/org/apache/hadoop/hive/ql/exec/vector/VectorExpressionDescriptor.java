@@ -18,8 +18,8 @@
 
 package org.apache.hadoop.hive.ql.exec.vector;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.hive.ql.exec.vector.expressions.VectorExpression;
 import org.apache.hadoop.hive.ql.metadata.HiveException;
 import org.apache.hadoop.hive.serde.serdeConstants;
@@ -31,7 +31,7 @@ import org.apache.hive.common.util.AnnotationUtils;
  */
 public class VectorExpressionDescriptor {
 
-  private static final Log LOG = LogFactory.getLog(
+  private static final Logger LOG = LoggerFactory.getLogger(
             VectorExpressionDescriptor.class.getName());
 
   final static int MAX_NUM_ARGUMENTS = 3;
@@ -43,7 +43,7 @@ public class VectorExpressionDescriptor {
   // LongColumnVector -->
   //    INT_FAMILY
   //    DATE
-  //    TIMESTAMP
+  //    INTERVAL_FAMILY
   //
   // DoubleColumnVector -->
   //    FLOAT_FAMILY
@@ -55,6 +55,12 @@ public class VectorExpressionDescriptor {
   //    STRING
   //    CHAR
   //    VARCHAR
+  //
+  // TimestampColumnVector -->
+  //    TIMESTAMP
+  //
+  // IntervalDayTimeColumnVector -->
+  //    INTERVAL_DAY_TIME
   //
   public enum ArgumentType {
     NONE                    (0x000),
@@ -69,11 +75,11 @@ public class VectorExpressionDescriptor {
     TIMESTAMP               (0x080),
     INTERVAL_YEAR_MONTH     (0x100),
     INTERVAL_DAY_TIME       (0x200),
+    BINARY                  (0x400),
     DATETIME_FAMILY         (DATE.value | TIMESTAMP.value),
     INTERVAL_FAMILY         (INTERVAL_YEAR_MONTH.value | INTERVAL_DAY_TIME.value),
-    INT_TIMESTAMP_FAMILY    (INT_FAMILY.value | TIMESTAMP.value),
-    INT_INTERVAL_FAMILY     (INT_FAMILY.value | INTERVAL_FAMILY.value),
-    INT_DATETIME_INTERVAL_FAMILY  (INT_FAMILY.value | DATETIME_FAMILY.value | INTERVAL_FAMILY.value),
+    INT_INTERVAL_YEAR_MONTH     (INT_FAMILY.value | INTERVAL_YEAR_MONTH.value),
+    INT_DATE_INTERVAL_YEAR_MONTH  (INT_FAMILY.value | DATE.value | INTERVAL_YEAR_MONTH.value),
     STRING_DATETIME_FAMILY  (STRING_FAMILY.value | DATETIME_FAMILY.value),
     ALL_FAMILY              (0xFFF);
 
@@ -104,6 +110,8 @@ public class VectorExpressionDescriptor {
         return CHAR;
       } else if (VectorizationContext.varcharTypePattern.matcher(lower).matches()) {
         return VARCHAR;
+      } else if (lower.equals("binary")) {
+        return BINARY;
       } else if (VectorizationContext.decimalTypePattern.matcher(lower).matches()) {
         return DECIMAL;
       } else if (lower.equals("timestamp")) {
@@ -146,17 +154,20 @@ public class VectorExpressionDescriptor {
     public static String getVectorColumnSimpleName(ArgumentType argType) {
       if (argType == INT_FAMILY ||
           argType == DATE ||
-          argType == TIMESTAMP ||
-          argType == INTERVAL_YEAR_MONTH ||
-          argType == INTERVAL_DAY_TIME) {
+          argType == INTERVAL_YEAR_MONTH
+          ) {
         return "Long";
+      } else if (argType == TIMESTAMP ||
+                 argType == INTERVAL_DAY_TIME) {
+        return "Timestamp";
       } else if (argType == FLOAT_FAMILY) {
         return "Double";
       } else if (argType == DECIMAL) {
         return "Decimal";
       } else if (argType == STRING ||
                  argType == CHAR ||
-                 argType == VARCHAR) {
+                 argType == VARCHAR ||
+                 argType == BINARY) {
         return "String";
       } else {
         return "None";
@@ -172,7 +183,8 @@ public class VectorExpressionDescriptor {
   public enum InputExpressionType {
     NONE(0),
     COLUMN(1),
-    SCALAR(2);
+    SCALAR(2),
+    DYNAMICVALUE(3);
 
     private final int value;
 
@@ -341,7 +353,7 @@ public class VectorExpressionDescriptor {
           return ve;
         }
       } catch (Exception ex) {
-        throw new HiveException(ex);
+        throw new HiveException("Could not instantiate VectorExpression class " + ve.getSimpleName(), ex);
       }
     }
     if (LOG.isDebugEnabled()) {

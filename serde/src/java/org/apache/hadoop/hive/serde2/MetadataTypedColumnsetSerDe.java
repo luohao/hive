@@ -24,8 +24,8 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Properties;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hive.serde.serdeConstants;
 import org.apache.hadoop.hive.serde2.objectinspector.MetadataListStructObjectInspector;
@@ -49,8 +49,8 @@ import org.apache.hadoop.io.Writable;
     serdeConstants.SERIALIZATION_LAST_COLUMN_TAKES_REST })
 public class MetadataTypedColumnsetSerDe extends AbstractSerDe {
 
-  public static final Log LOG = LogFactory
-      .getLog(MetadataTypedColumnsetSerDe.class.getName());
+  public static final Logger LOG = LoggerFactory
+      .getLogger(MetadataTypedColumnsetSerDe.class.getName());
 
   public static final String DefaultSeparator = "\001";
   private String separator;
@@ -77,7 +77,7 @@ public class MetadataTypedColumnsetSerDe extends AbstractSerDe {
     if (altValue != null && altValue.length() > 0) {
       try {
         byte[] b = new byte[1];
-        b[0] = Byte.valueOf(altValue).byteValue();
+        b[0] = Byte.parseByte(altValue);
         return new String(b);
       } catch (NumberFormatException e) {
         return altValue;
@@ -103,6 +103,8 @@ public class MetadataTypedColumnsetSerDe extends AbstractSerDe {
         && serdeName.equals("org.apache.hadoop.hive.serde.thrift.columnsetSerDe")) {
       columnsetSerDe = true;
     }
+    final String columnNameDelimiter = tbl.containsKey(serdeConstants.COLUMN_NAME_DELIMITER) ? tbl
+        .getProperty(serdeConstants.COLUMN_NAME_DELIMITER) : String.valueOf(SerDeUtils.COMMA);
     if (columnProperty == null || columnProperty.length() == 0
         || columnsetSerDe) {
       // Hack for tables with no columns
@@ -111,7 +113,7 @@ public class MetadataTypedColumnsetSerDe extends AbstractSerDe {
           .getReflectionObjectInspector(ColumnSet.class,
           ObjectInspectorFactory.ObjectInspectorOptions.JAVA);
     } else {
-      columnNames = Arrays.asList(columnProperty.split(","));
+      columnNames = Arrays.asList(columnProperty.split(columnNameDelimiter));
       cachedObjectInspector = MetadataListStructObjectInspector
           .getInstance(columnNames);
     }

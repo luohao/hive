@@ -1,7 +1,4 @@
-PREHOOK: query: -- SORT_QUERY_RESULTS
--- union :map-reduce sub-queries followed by join
-
-explain 
+PREHOOK: query: explain 
 SELECT unionsrc1.key, unionsrc1.value, unionsrc2.key, unionsrc2.value
 FROM (select 'tst1' as key, cast(count(1) as string) as value from src s1
                          UNION  ALL  
@@ -12,10 +9,7 @@ JOIN
       select s4.key as key, s4.value as value from src s4 where s4.key < 10) unionsrc2
 ON (unionsrc1.key = unionsrc2.key)
 PREHOOK: type: QUERY
-POSTHOOK: query: -- SORT_QUERY_RESULTS
--- union :map-reduce sub-queries followed by join
-
-explain 
+POSTHOOK: query: explain 
 SELECT unionsrc1.key, unionsrc1.value, unionsrc2.key, unionsrc2.value
 FROM (select 'tst1' as key, cast(count(1) as string) as value from src s1
                          UNION  ALL  
@@ -36,7 +30,7 @@ STAGE PLANS:
       Edges:
         Reducer 2 <- Map 1 (GROUP, 1)
         Reducer 3 <- Map 4 (PARTITION-LEVEL SORT, 2), Map 7 (PARTITION-LEVEL SORT, 2), Reducer 2 (PARTITION-LEVEL SORT, 2), Reducer 6 (PARTITION-LEVEL SORT, 2)
-        Reducer 6 <- Map 1 (GROUP, 1)
+        Reducer 6 <- Map 5 (GROUP, 1)
 #### A masked pattern was here ####
       Vertices:
         Map 1 
@@ -58,7 +52,7 @@ STAGE PLANS:
         Map 4 
             Map Operator Tree:
                 TableScan
-                  alias: s1
+                  alias: s2
                   Statistics: Num rows: 500 Data size: 5312 Basic stats: COMPLETE Column stats: NONE
                   Filter Operator
                     predicate: (UDFToDouble(key) < 10.0) (type: boolean)
@@ -73,10 +67,26 @@ STAGE PLANS:
                         Map-reduce partition columns: _col0 (type: string)
                         Statistics: Num rows: 167 Data size: 2035 Basic stats: COMPLETE Column stats: PARTIAL
                         value expressions: _col1 (type: string)
+        Map 5 
+            Map Operator Tree:
+                TableScan
+                  alias: s3
+                  Statistics: Num rows: 500 Data size: 5312 Basic stats: COMPLETE Column stats: COMPLETE
+                  Select Operator
+                    Statistics: Num rows: 500 Data size: 5312 Basic stats: COMPLETE Column stats: COMPLETE
+                    Group By Operator
+                      aggregations: count(1)
+                      mode: hash
+                      outputColumnNames: _col0
+                      Statistics: Num rows: 1 Data size: 8 Basic stats: COMPLETE Column stats: COMPLETE
+                      Reduce Output Operator
+                        sort order: 
+                        Statistics: Num rows: 1 Data size: 8 Basic stats: COMPLETE Column stats: COMPLETE
+                        value expressions: _col0 (type: bigint)
         Map 7 
             Map Operator Tree:
                 TableScan
-                  alias: s1
+                  alias: s4
                   Statistics: Num rows: 500 Data size: 5312 Basic stats: COMPLETE Column stats: NONE
                   Filter Operator
                     predicate: (UDFToDouble(key) < 10.0) (type: boolean)
@@ -122,8 +132,8 @@ STAGE PLANS:
                   compressed: false
                   Statistics: Num rows: 27889 Data size: 15171616 Basic stats: COMPLETE Column stats: PARTIAL
                   table:
-                      input format: org.apache.hadoop.mapred.TextInputFormat
-                      output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
+                      input format: org.apache.hadoop.mapred.SequenceFileInputFormat
+                      output format: org.apache.hadoop.hive.ql.io.HiveSequenceFileOutputFormat
                       serde: org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe
         Reducer 6 
             Reduce Operator Tree:

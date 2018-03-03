@@ -29,8 +29,8 @@ import java.util.Map;
 import java.util.Set;
 import java.util.Stack;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hive.common.ObjectPair;
 import org.apache.hadoop.hive.conf.HiveConf;
@@ -80,19 +80,21 @@ import org.apache.hadoop.hive.ql.plan.TableDesc;
 import org.apache.hadoop.hive.serde.serdeConstants;
 import org.apache.hadoop.hive.serde2.typeinfo.TypeInfoFactory;
 
+import com.clearspring.analytics.util.Lists;
+
 /**
  * Implementation of one of the rule-based map join optimization. User passes hints to specify
  * map-joins and during this optimization, all user specified map joins are converted to MapJoins -
  * the reduce sink operator above the join are converted to map sink operators. In future, once
  * statistics are implemented, this transformation can also be done based on costs.
  */
-public class MapJoinProcessor implements Transform {
+public class MapJoinProcessor extends Transform {
 
   // mapjoin table descriptor contains a key descriptor which needs the field schema
   // (column type + column name). The column name is not really used anywhere, but it
   // needs to be passed. Use the string defined below for that.
   private static final String MAPJOINKEY_FIELDPREFIX = "mapjoinkey";
-  private static final Log LOG = LogFactory.getLog(MapJoinProcessor.class.getName());
+  private static final Logger LOG = LoggerFactory.getLogger(MapJoinProcessor.class.getName());
 
   public MapJoinProcessor() {
   }
@@ -144,13 +146,13 @@ public class MapJoinProcessor implements Transform {
       smallTableAliasList.add(alias);
       // get input path and remove this alias from pathToAlias
       // because this file will be fetched by fetch operator
-      LinkedHashMap<String, ArrayList<String>> pathToAliases = newWork.getMapWork().getPathToAliases();
+      LinkedHashMap<Path, ArrayList<String>> pathToAliases = newWork.getMapWork().getPathToAliases();
 
       // keep record all the input path for this alias
-      HashSet<String> pathSet = new HashSet<String>();
-      HashSet<String> emptyPath = new HashSet<String>();
-      for (Map.Entry<String, ArrayList<String>> entry2 : pathToAliases.entrySet()) {
-        String path = entry2.getKey();
+      HashSet<Path> pathSet = new HashSet<>();
+      HashSet<Path> emptyPath = new HashSet<>();
+      for (Map.Entry<Path, ArrayList<String>> entry2 : pathToAliases.entrySet()) {
+        Path path = entry2.getKey();
         ArrayList<String> list = entry2.getValue();
         if (list.contains(alias)) {
           // add to path set
@@ -163,8 +165,8 @@ public class MapJoinProcessor implements Transform {
         }
       }
       //remove the path, with which no alias associates
-      for (String path : emptyPath) {
-        pathToAliases.remove(path);
+      for (Path path : emptyPath) {
+        newWork.getMapWork().removePathToAlias(path);
       }
 
       // create fetch work
@@ -172,15 +174,15 @@ public class MapJoinProcessor implements Transform {
       List<Path> partDir = new ArrayList<Path>();
       List<PartitionDesc> partDesc = new ArrayList<PartitionDesc>();
 
-      for (String tablePath : pathSet) {
+      for (Path tablePath : pathSet) {
         PartitionDesc partitionDesc = newWork.getMapWork().getPathToPartitionInfo().get(tablePath);
         // create fetchwork for non partitioned table
         if (partitionDesc.getPartSpec() == null || partitionDesc.getPartSpec().size() == 0) {
-          fetchWork = new FetchWork(new Path(tablePath), partitionDesc.getTableDesc());
+          fetchWork = new FetchWork(tablePath, partitionDesc.getTableDesc());
           break;
         }
         // if table is partitioned,add partDir and partitionDesc
-        partDir.add(new Path(tablePath));
+        partDir.add(tablePath);
         partDesc.add(partitionDesc);
       }
       // create fetchwork for partitioned table
@@ -376,7 +378,8 @@ public class MapJoinProcessor implements Transform {
     RowSchema outputRS = op.getSchema();
 
     MapJoinOperator mapJoinOp = (MapJoinOperator) OperatorFactory.getAndMakeChild(
-        mapJoinDescriptor, new RowSchema(outputRS.getSignature()), op.getParentOperators());
+        op.getCompilationOpContext(), mapJoinDescriptor,
+        new RowSchema(outputRS.getSignature()), op.getParentOperators());
 
     mapJoinOp.getConf().setReversedExprs(op.getConf().getReversedExprs());
     Map<String, ExprNodeDesc> colExprMap = op.getColumnExprMap();
@@ -438,7 +441,8 @@ public class MapJoinProcessor implements Transform {
     RowSchema joinRS = smbJoinOp.getSchema();
     // The mapjoin has the same schema as the join operator
     MapJoinOperator mapJoinOp = (MapJoinOperator) OperatorFactory.getAndMakeChild(
-        mapJoinDesc, joinRS, new ArrayList<Operator<? extends OperatorDesc>>());
+        smbJoinOp.getCompilationOpContext(), mapJoinDesc, joinRS,
+        new ArrayList<Operator<? extends OperatorDesc>>());
 
     // change the children of the original join operator to point to the map
     // join operator
@@ -601,8 +605,8 @@ public class MapJoinProcessor implements Transform {
 
     SelectDesc select = new SelectDesc(exprs, outputs, false);
 
-    SelectOperator sel = (SelectOperator) OperatorFactory.getAndMakeChild(select,
-            new RowSchema(outputRS), input);
+    SelectOperator sel = (SelectOperator) OperatorFactory.getAndMakeChild(
+        select, new RowSchema(outputRS), input);
 
     sel.setColumnExprMap(colExprMap);
 
@@ -1188,6 +1192,7 @@ public class MapJoinProcessor implements Transform {
     mapJoinDescriptor.setTagOrder(tagOrder);
     mapJoinDescriptor.setNullSafes(desc.getNullSafes());
     mapJoinDescriptor.setFilterMap(desc.getFilterMap());
+    mapJoinDescriptor.setResidualFilterExprs(desc.getResidualFilterExprs());
     if (!valueIndices.isEmpty()) {
       mapJoinDescriptor.setValueIndices(valueIndices);
     }

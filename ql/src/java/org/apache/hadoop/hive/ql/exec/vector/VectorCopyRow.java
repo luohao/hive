@@ -18,12 +18,10 @@
 
 package org.apache.hadoop.hive.ql.exec.vector;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.hive.ql.exec.vector.ColumnVector.Type;
 import org.apache.hadoop.hive.ql.metadata.HiveException;
-import org.apache.hadoop.hive.serde2.objectinspector.PrimitiveObjectInspector.PrimitiveCategory;
-import org.apache.hadoop.hive.serde2.typeinfo.PrimitiveTypeInfo;
 import org.apache.hadoop.hive.serde2.typeinfo.TypeInfo;
 import org.apache.hadoop.hive.serde2.typeinfo.TypeInfoUtils;
 
@@ -32,7 +30,7 @@ import org.apache.hadoop.hive.serde2.typeinfo.TypeInfoUtils;
  */
 public class VectorCopyRow {
 
-  protected static transient final Log LOG = LogFactory.getLog(VectorCopyRow.class);
+  protected static transient final Logger LOG = LoggerFactory.getLogger(VectorCopyRow.class);
 
   private abstract class CopyRow {
     protected int inColumnIndex;
@@ -60,12 +58,14 @@ public class VectorCopyRow {
       if (inColVector.isRepeating) {
         if (inColVector.noNulls || !inColVector.isNull[0]) {
           outColVector.vector[outBatchIndex] = inColVector.vector[0];
+          outColVector.isNull[outBatchIndex] = false;
         } else {
           VectorizedBatchUtil.setNullColIsNullValue(outColVector, outBatchIndex);
         }
       } else {
         if (inColVector.noNulls || !inColVector.isNull[inBatchIndex]) {
           outColVector.vector[outBatchIndex] = inColVector.vector[inBatchIndex];
+          outColVector.isNull[outBatchIndex] = false;
         } else {
           VectorizedBatchUtil.setNullColIsNullValue(outColVector, outBatchIndex);
         }
@@ -87,12 +87,14 @@ public class VectorCopyRow {
       if (inColVector.isRepeating) {
         if (inColVector.noNulls || !inColVector.isNull[0]) {
           outColVector.vector[outBatchIndex] = inColVector.vector[0];
+          outColVector.isNull[outBatchIndex] = false;
         } else {
           VectorizedBatchUtil.setNullColIsNullValue(outColVector, outBatchIndex);
         }
       } else {
         if (inColVector.noNulls || !inColVector.isNull[inBatchIndex]) {
           outColVector.vector[outBatchIndex] = inColVector.vector[inBatchIndex];
+          outColVector.isNull[outBatchIndex] = false;
         } else {
           VectorizedBatchUtil.setNullColIsNullValue(outColVector, outBatchIndex);
         }
@@ -122,12 +124,14 @@ public class VectorCopyRow {
       if (inColVector.isRepeating) {
         if (inColVector.noNulls || !inColVector.isNull[0]) {
           outColVector.setVal(outBatchIndex, inColVector.vector[0], inColVector.start[0], inColVector.length[0]);
+          outColVector.isNull[outBatchIndex] = false;
         } else {
           VectorizedBatchUtil.setNullColIsNullValue(outColVector, outBatchIndex);
         }
       } else {
         if (inColVector.noNulls || !inColVector.isNull[inBatchIndex]) {
           outColVector.setVal(outBatchIndex, inColVector.vector[inBatchIndex], inColVector.start[inBatchIndex], inColVector.length[inBatchIndex]);
+          outColVector.isNull[outBatchIndex] = false;
         } else {
           VectorizedBatchUtil.setNullColIsNullValue(outColVector, outBatchIndex);
         }
@@ -149,12 +153,14 @@ public class VectorCopyRow {
       if (inColVector.isRepeating) {
         if (inColVector.noNulls || !inColVector.isNull[0]) {
           outColVector.setRef(outBatchIndex, inColVector.vector[0], inColVector.start[0], inColVector.length[0]);
+          outColVector.isNull[outBatchIndex] = false;
         } else {
           VectorizedBatchUtil.setNullColIsNullValue(outColVector, outBatchIndex);
         }
       } else {
         if (inColVector.noNulls || !inColVector.isNull[inBatchIndex]) {
           outColVector.setRef(outBatchIndex, inColVector.vector[inBatchIndex], inColVector.start[inBatchIndex], inColVector.length[inBatchIndex]);
+          outColVector.isNull[outBatchIndex] = false;
         } else {
           VectorizedBatchUtil.setNullColIsNullValue(outColVector, outBatchIndex);
         }
@@ -175,13 +181,69 @@ public class VectorCopyRow {
 
       if (inColVector.isRepeating) {
         if (inColVector.noNulls || !inColVector.isNull[0]) {
+          outColVector.isNull[outBatchIndex] = false;
           outColVector.set(outBatchIndex, inColVector.vector[0]);
         } else {
           VectorizedBatchUtil.setNullColIsNullValue(outColVector, outBatchIndex);
         }
       } else {
         if (inColVector.noNulls || !inColVector.isNull[inBatchIndex]) {
+          outColVector.isNull[outBatchIndex] = false;
           outColVector.set(outBatchIndex, inColVector.vector[inBatchIndex]);
+        } else {
+          VectorizedBatchUtil.setNullColIsNullValue(outColVector, outBatchIndex);
+        }
+      }
+    }
+  }
+
+  private class TimestampCopyRow extends CopyRow {
+
+    TimestampCopyRow(int inColumnIndex, int outColumnIndex) {
+      super(inColumnIndex, outColumnIndex);
+    }
+
+    @Override
+    void copy(VectorizedRowBatch inBatch, int inBatchIndex, VectorizedRowBatch outBatch, int outBatchIndex) {
+      TimestampColumnVector inColVector = (TimestampColumnVector) inBatch.cols[inColumnIndex];
+      TimestampColumnVector outColVector = (TimestampColumnVector) outBatch.cols[outColumnIndex];
+
+      if (inColVector.isRepeating) {
+        if (inColVector.noNulls || !inColVector.isNull[0]) {
+          outColVector.setElement(outBatchIndex, 0, inColVector);
+        } else {
+          VectorizedBatchUtil.setNullColIsNullValue(outColVector, outBatchIndex);
+        }
+      } else {
+        if (inColVector.noNulls || !inColVector.isNull[inBatchIndex]) {
+          outColVector.setElement(outBatchIndex, inBatchIndex, inColVector);
+        } else {
+          VectorizedBatchUtil.setNullColIsNullValue(outColVector, outBatchIndex);
+        }
+      }
+    }
+  }
+
+  private class IntervalDayTimeCopyRow extends CopyRow {
+
+    IntervalDayTimeCopyRow(int inColumnIndex, int outColumnIndex) {
+      super(inColumnIndex, outColumnIndex);
+    }
+
+    @Override
+    void copy(VectorizedRowBatch inBatch, int inBatchIndex, VectorizedRowBatch outBatch, int outBatchIndex) {
+      IntervalDayTimeColumnVector inColVector = (IntervalDayTimeColumnVector) inBatch.cols[inColumnIndex];
+      IntervalDayTimeColumnVector outColVector = (IntervalDayTimeColumnVector) outBatch.cols[outColumnIndex];
+
+      if (inColVector.isRepeating) {
+        if (inColVector.noNulls || !inColVector.isNull[0]) {
+          outColVector.setElement(outBatchIndex, 0, inColVector);
+        } else {
+          VectorizedBatchUtil.setNullColIsNullValue(outColVector, outBatchIndex);
+        }
+      } else {
+        if (inColVector.noNulls || !inColVector.isNull[inBatchIndex]) {
+          outColVector.setElement(outBatchIndex, inBatchIndex, inColVector);
         } else {
           VectorizedBatchUtil.setNullColIsNullValue(outColVector, outBatchIndex);
         }
@@ -200,8 +262,7 @@ public class VectorCopyRow {
     for (int i = 0; i < count; i++) {
       int inputColumn = columnMapping.getInputColumns()[i];
       int outputColumn = columnMapping.getOutputColumns()[i];
-      String typeName = columnMapping.getTypeNames()[i].toLowerCase();
-      TypeInfo typeInfo = TypeInfoUtils.getTypeInfoFromTypeString(typeName);
+      TypeInfo typeInfo = columnMapping.getTypeInfos()[i];
       Type columnVectorType = VectorizationContext.getColumnVectorTypeFromTypeInfo(typeInfo);
 
       CopyRow copyRowByValue = null;
@@ -210,6 +271,14 @@ public class VectorCopyRow {
       switch (columnVectorType) {
       case LONG:
         copyRowByValue = new LongCopyRow(inputColumn, outputColumn);
+        break;
+
+      case TIMESTAMP:
+        copyRowByValue = new TimestampCopyRow(inputColumn, outputColumn);
+        break;
+
+      case INTERVAL_DAY_TIME:
+        copyRowByValue = new IntervalDayTimeCopyRow(inputColumn, outputColumn);
         break;
 
       case DOUBLE:
@@ -259,5 +328,20 @@ public class VectorCopyRow {
     for (CopyRow copyRow : subRowToBatchCopiersByReference) {
       copyRow.copy(inBatch, inBatchIndex, outBatch, outBatchIndex);
     }
+  }
+
+  @Override
+  public String toString() {
+    StringBuilder sb = new StringBuilder();
+    sb.append("VectorCopyRow ");
+    for (CopyRow copyRow : subRowToBatchCopiersByValue) {
+      if (sb.length() > 0) {
+        sb.append(", ");
+      }
+      sb.append(copyRow.getClass().getName());
+      sb.append(" inColumnIndex " + copyRow.inColumnIndex);
+      sb.append(" outColumnIndex " + copyRow.outColumnIndex);
+    }
+    return sb.toString();
   }
 }

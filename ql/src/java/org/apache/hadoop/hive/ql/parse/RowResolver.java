@@ -27,8 +27,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.hive.ql.exec.ColumnInfo;
 import org.apache.hadoop.hive.ql.exec.RowSchema;
 
@@ -38,10 +38,10 @@ import org.apache.hadoop.hive.ql.exec.RowSchema;
  */
 public class RowResolver implements Serializable{
   private static final long serialVersionUID = 1L;
-  private  RowSchema rowSchema;
-  private  HashMap<String, LinkedHashMap<String, ColumnInfo>> rslvMap;
+  private RowSchema rowSchema;
+  private LinkedHashMap<String, LinkedHashMap<String, ColumnInfo>> rslvMap;
 
-  private  HashMap<String, String[]> invRslvMap;
+  private HashMap<String, String[]> invRslvMap;
   /*
    * now a Column can have an alternate mapping.
    * This captures the alternate mapping.
@@ -54,11 +54,13 @@ public class RowResolver implements Serializable{
   // TODO: Refactor this and do in a more object oriented manner
   private boolean isExprResolver;
 
-  private static final Log LOG = LogFactory.getLog(RowResolver.class.getName());
+  private static final Logger LOG = LoggerFactory.getLogger(RowResolver.class.getName());
+
+  private NamedJoinInfo namedJoinInfo;
 
   public RowResolver() {
     rowSchema = new RowSchema();
-    rslvMap = new HashMap<String, LinkedHashMap<String, ColumnInfo>>();
+    rslvMap = new LinkedHashMap<String, LinkedHashMap<String, ColumnInfo>>();
     invRslvMap = new HashMap<String, String[]>();
     altInvRslvMap = new HashMap<String, String[]>();
     expressionMap = new HashMap<String, ASTNode>();
@@ -112,7 +114,6 @@ public class RowResolver implements Serializable{
     if (tab_alias != null) {
       tab_alias = tab_alias.toLowerCase();
     }
-    col_alias = col_alias.toLowerCase();
 
     /*
      * allow multiple mappings to the same ColumnInfo.
@@ -169,7 +170,6 @@ public class RowResolver implements Serializable{
    * @throws SemanticException
    */
   public ColumnInfo get(String tab_alias, String col_alias) throws SemanticException {
-    col_alias = col_alias.toLowerCase();
     ColumnInfo ret = null;
 
     if (tab_alias != null) {
@@ -252,7 +252,7 @@ public class RowResolver implements Serializable{
     return new ArrayList<String>(columnNames);
   }
 
-  public HashMap<String, ColumnInfo> getFieldMap(String tabAlias) {
+  public LinkedHashMap<String, ColumnInfo> getFieldMap(String tabAlias) {
     if (tabAlias == null) {
       return rslvMap.get(null);
     } else {
@@ -317,12 +317,8 @@ public class RowResolver implements Serializable{
     return rowSchema;
   }
 
-  public HashMap<String, LinkedHashMap<String, ColumnInfo>> getRslvMap() {
+  public LinkedHashMap<String, LinkedHashMap<String, ColumnInfo>> getRslvMap() {
     return rslvMap;
-  }
-
-  public HashMap<String, String[]> getInvRslvMap() {
-    return invRslvMap;
   }
 
   public Map<String, ASTNode> getExpressionMap() {
@@ -333,17 +329,12 @@ public class RowResolver implements Serializable{
     this.isExprResolver = isExprResolver;
   }
 
+  public boolean doesInvRslvMapContain(String column) {
+    return getInvRslvMap().containsKey(column);
+  }
 
   public void setRowSchema(RowSchema rowSchema) {
     this.rowSchema = rowSchema;
-  }
-
-  public void setRslvMap(HashMap<String, LinkedHashMap<String, ColumnInfo>> rslvMap) {
-    this.rslvMap = rslvMap;
-  }
-
-  public void setInvRslvMap(HashMap<String, String[]> invRslvMap) {
-    this.invRslvMap = invRslvMap;
   }
 
   public void setExpressionMap(Map<String, ASTNode> expressionMap) {
@@ -475,5 +466,17 @@ public class RowResolver implements Serializable{
     resolver.expressionMap.putAll(expressionMap);
     resolver.isExprResolver = isExprResolver;
     return resolver;
+  }
+
+  private HashMap<String, String[]> getInvRslvMap() {
+    return invRslvMap; // If making this public, note that its ordering is undefined.
+  }
+
+  public NamedJoinInfo getNamedJoinInfo() {
+    return namedJoinInfo;
+  }
+
+  public void setNamedJoinInfo(NamedJoinInfo namedJoinInfo) {
+    this.namedJoinInfo = namedJoinInfo;
   }
 }

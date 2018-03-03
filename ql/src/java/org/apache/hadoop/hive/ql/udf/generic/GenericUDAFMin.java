@@ -17,8 +17,8 @@
  */
 package org.apache.hadoop.hive.ql.udf.generic;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.hive.ql.exec.Description;
 import org.apache.hadoop.hive.ql.exec.UDFArgumentTypeException;
 import org.apache.hadoop.hive.ql.metadata.HiveException;
@@ -26,9 +26,13 @@ import org.apache.hadoop.hive.ql.parse.SemanticException;
 import org.apache.hadoop.hive.ql.plan.ptf.BoundaryDef;
 import org.apache.hadoop.hive.ql.plan.ptf.WindowFrameDef;
 import org.apache.hadoop.hive.ql.udf.UDFType;
+import org.apache.hadoop.hive.ql.udf.generic.GenericUDAFEvaluator.AggregationType;
 import org.apache.hadoop.hive.ql.udf.generic.GenericUDAFMax.MaxStreamingFixedWindow;
+import org.apache.hadoop.hive.ql.util.JavaDataModel;
 import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspector;
+import org.apache.hadoop.hive.serde2.objectinspector.FullMapEqualComparer;
 import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspectorUtils;
+import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspectorUtils.NullValueOption;
 import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspectorUtils.ObjectInspectorCopyOption;
 import org.apache.hadoop.hive.serde2.typeinfo.TypeInfo;
 import org.apache.hadoop.hive.serde2.typeinfo.TypeInfoUtils;
@@ -36,7 +40,7 @@ import org.apache.hadoop.hive.serde2.typeinfo.TypeInfoUtils;
 @Description(name = "min", value = "_FUNC_(expr) - Returns the minimum value of expr")
 public class GenericUDAFMin extends AbstractGenericUDAFResolver {
 
-  static final Log LOG = LogFactory.getLog(GenericUDAFMin.class.getName());
+  static final Logger LOG = LoggerFactory.getLogger(GenericUDAFMin.class.getName());
 
   @Override
   public GenericUDAFEvaluator getEvaluator(TypeInfo[] parameters)
@@ -74,8 +78,13 @@ public class GenericUDAFMin extends AbstractGenericUDAFResolver {
     }
 
     /** class for storing the current max value */
+    @AggregationType(estimable = true)
     static class MinAgg extends AbstractAggregationBuffer {
       Object o;
+      @Override
+      public int estimate() {
+        return JavaDataModel.PRIMITIVES2;
+      }
     }
 
     @Override
@@ -109,7 +118,7 @@ public class GenericUDAFMin extends AbstractGenericUDAFResolver {
         throws HiveException {
       if (partial != null) {
         MinAgg myagg = (MinAgg) agg;
-        int r = ObjectInspectorUtils.compare(myagg.o, outputOI, partial, inputOI);
+        int r = ObjectInspectorUtils.compare(myagg.o, outputOI, partial, inputOI, new FullMapEqualComparer(), NullValueOption.MAXVALUE);
         if (myagg.o == null || r > 0) {
           myagg.o = ObjectInspectorUtils.copyToStandardObject(partial, inputOI,
               ObjectInspectorCopyOption.JAVA);
@@ -137,14 +146,17 @@ public class GenericUDAFMin extends AbstractGenericUDAFResolver {
       super(wrappedEval, wFrmDef);
     }
 
+    @Override
     protected ObjectInspector inputOI() {
       return ((GenericUDAFMinEvaluator) wrappedEval).inputOI;
     }
 
+    @Override
     protected ObjectInspector outputOI() {
       return ((GenericUDAFMinEvaluator) wrappedEval).outputOI;
     }
 
+    @Override
     protected boolean removeLast(Object in, Object last) {
       return isLess(in, last);
     }

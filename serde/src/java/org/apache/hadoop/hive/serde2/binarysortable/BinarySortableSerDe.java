@@ -28,9 +28,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hive.common.type.HiveDecimalV1;
 import org.apache.hadoop.hive.common.type.HiveDecimal;
 import org.apache.hadoop.hive.common.type.HiveIntervalDayTime;
 import org.apache.hadoop.hive.common.type.HiveIntervalYearMonth;
@@ -42,6 +41,7 @@ import org.apache.hadoop.hive.serde2.ByteStream.RandomAccessOutput;
 import org.apache.hadoop.hive.serde2.SerDeException;
 import org.apache.hadoop.hive.serde2.SerDeSpec;
 import org.apache.hadoop.hive.serde2.SerDeStats;
+import org.apache.hadoop.hive.serde2.SerDeUtils;
 import org.apache.hadoop.hive.serde2.io.ByteWritable;
 import org.apache.hadoop.hive.serde2.io.DateWritable;
 import org.apache.hadoop.hive.serde2.io.DoubleWritable;
@@ -92,16 +92,18 @@ import org.apache.hadoop.io.IntWritable;
 import org.apache.hadoop.io.LongWritable;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.io.Writable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * BinarySortableSerDe can be used to write data in a way that the data can be
  * compared byte-by-byte with the same order.
  *
- * The data format: NULL: a single byte \0 NON-NULL Primitives: ALWAYS prepend a
- * single byte \1, and then: Boolean: FALSE = \1, TRUE = \2 Byte: flip the
- * sign-bit to make sure negative comes before positive Short: flip the sign-bit
- * to make sure negative comes before positive Int: flip the sign-bit to make
- * sure negative comes before positive Long: flip the sign-bit to make sure
+ * The data format: NULL: a single byte (\0 or \1, check below) NON-NULL Primitives:
+ * ALWAYS prepend a single byte (\0 or \1), and then: Boolean: FALSE = \1, TRUE = \2
+ * Byte: flip the sign-bit to make sure negative comes before positive Short: flip the
+ * sign-bit to make sure negative comes before positive Int: flip the sign-bit to
+ * make sure negative comes before positive Long: flip the sign-bit to make sure
  * negative comes before positive Double: flip the sign-bit for positive double,
  * and all bits for negative double values String: NULL-terminated UTF-8 string,
  * with NULL escaped to \1 \1, and \1 escaped to \1 \2 NON-NULL Complex Types:
@@ -115,13 +117,22 @@ import org.apache.hadoop.io.Writable;
  * field should be sorted ascendingly, and "-" means descendingly. The sub
  * fields in the same top-level field will have the same sort order.
  *
+ * This SerDe takes an additional parameter SERIALIZATION_NULL_SORT_ORDER which is a
+ * string containing only "a" and "z". The length of the string should equal to
+ * the number of fields in the top-level struct for serialization. "a" means that
+ * NULL should come first (thus, single byte is \0 for ascending order, \1
+ * for descending order), while "z" means that NULL should come last (thus, single
+ * byte is \1 for ascending order, \0 for descending order).
  */
 @SerDeSpec(schemaProps = {
     serdeConstants.LIST_COLUMNS, serdeConstants.LIST_COLUMN_TYPES,
-    serdeConstants.SERIALIZATION_SORT_ORDER})
+    serdeConstants.SERIALIZATION_SORT_ORDER, serdeConstants.SERIALIZATION_NULL_SORT_ORDER})
 public class BinarySortableSerDe extends AbstractSerDe {
 
-  public static final Log LOG = LogFactory.getLog(BinarySortableSerDe.class.getName());
+  public static final Logger LOG = LoggerFactory.getLogger(BinarySortableSerDe.class.getName());
+
+  public static final byte ZERO = (byte) 0;
+  public static final byte ONE = (byte) 1;
 
   List<String> columnNames;
   List<TypeInfo> columnTypes;
@@ -130,8 +141,9 @@ public class BinarySortableSerDe extends AbstractSerDe {
   StructObjectInspector rowObjectInspector;
 
   boolean[] columnSortOrderIsDesc;
+  byte[] columnNullMarker;
+  byte[] columnNotNullMarker;
 
-  private static byte[] decimalBuffer = null;
   public static Charset decimalCharSet = Charset.forName("US-ASCII");
 
   @Override
@@ -141,10 +153,12 @@ public class BinarySortableSerDe extends AbstractSerDe {
     // Get column names and sort order
     String columnNameProperty = tbl.getProperty(serdeConstants.LIST_COLUMNS);
     String columnTypeProperty = tbl.getProperty(serdeConstants.LIST_COLUMN_TYPES);
+    final String columnNameDelimiter = tbl.containsKey(serdeConstants.COLUMN_NAME_DELIMITER) ? tbl
+        .getProperty(serdeConstants.COLUMN_NAME_DELIMITER) : String.valueOf(SerDeUtils.COMMA);
     if (columnNameProperty.length() == 0) {
       columnNames = new ArrayList<String>();
     } else {
-      columnNames = Arrays.asList(columnNameProperty.split(","));
+      columnNames = Arrays.asList(columnNameProperty.split(columnNameDelimiter));
     }
     if (columnTypeProperty.length() == 0) {
       columnTypes = new ArrayList<TypeInfo>();
@@ -171,6 +185,37 @@ public class BinarySortableSerDe extends AbstractSerDe {
       columnSortOrderIsDesc[i] = (columnSortOrder != null && columnSortOrder
           .charAt(i) == '-');
     }
+
+    // Null first/last
+    String columnNullOrder = tbl
+        .getProperty(serdeConstants.SERIALIZATION_NULL_SORT_ORDER);
+    columnNullMarker = new byte[columnNames.size()];
+    columnNotNullMarker = new byte[columnNames.size()];
+    for (int i = 0; i < columnSortOrderIsDesc.length; i++) {
+      if (columnSortOrderIsDesc[i]) {
+        // Descending
+        if (columnNullOrder != null && columnNullOrder.charAt(i) == 'a') {
+          // Null first
+          columnNullMarker[i] = ONE;
+          columnNotNullMarker[i] = ZERO;
+        } else {
+          // Null last (default for descending order)
+          columnNullMarker[i] = ZERO;
+          columnNotNullMarker[i] = ONE;
+        }
+      } else {
+        // Ascending
+        if (columnNullOrder != null && columnNullOrder.charAt(i) == 'z') {
+          // Null last
+          columnNullMarker[i] = ONE;
+          columnNotNullMarker[i] = ZERO;
+        } else {
+          // Null first (default for ascending order)
+          columnNullMarker[i] = ZERO;
+          columnNotNullMarker[i] = ONE;
+        }
+      }
+    }
   }
 
   @Override
@@ -194,7 +239,7 @@ public class BinarySortableSerDe extends AbstractSerDe {
     try {
       for (int i = 0; i < columnNames.size(); i++) {
         row.set(i, deserialize(inputByteBuffer, columnTypes.get(i),
-            columnSortOrderIsDesc[i], row.get(i)));
+            columnSortOrderIsDesc[i], columnNullMarker[i], columnNotNullMarker[i], row.get(i)));
       }
     } catch (IOException e) {
       throw new SerDeException(e);
@@ -204,14 +249,14 @@ public class BinarySortableSerDe extends AbstractSerDe {
   }
 
   static Object deserialize(InputByteBuffer buffer, TypeInfo type,
-      boolean invert, Object reuse) throws IOException {
+      boolean invert, byte nullMarker, byte notNullMarker, Object reuse) throws IOException {
 
     // Is this field a null?
     byte isNull = buffer.read(invert);
-    if (isNull == 0) {
+    if (isNull == nullMarker) {
       return null;
     }
-    assert (isNull == 1);
+    assert (isNull == notNullMarker);
 
     switch (type.getCategory()) {
     case PRIMITIVE: {
@@ -426,9 +471,7 @@ public class BinarySortableSerDe extends AbstractSerDe {
           length++;
         } while (true);
 
-        if(decimalBuffer == null || decimalBuffer.length < length) {
-          decimalBuffer = new byte[length];
-        }
+        final byte[] decimalBuffer = new byte[length];
 
         buffer.seek(start);
         for (int i = 0; i < length; ++i) {
@@ -478,7 +521,7 @@ public class BinarySortableSerDe extends AbstractSerDe {
         if (size == r.size()) {
           r.add(null);
         }
-        r.set(size, deserialize(buffer, etype, invert, r.get(size)));
+        r.set(size, deserialize(buffer, etype, invert, nullMarker, notNullMarker, r.get(size)));
         size++;
       }
       // Remove additional elements if the list is reused
@@ -509,8 +552,8 @@ public class BinarySortableSerDe extends AbstractSerDe {
         }
         // \1 followed by each key and then each value
         assert (more == 1);
-        Object k = deserialize(buffer, ktype, invert, null);
-        Object v = deserialize(buffer, vtype, invert, null);
+        Object k = deserialize(buffer, ktype, invert, nullMarker, notNullMarker, null);
+        Object v = deserialize(buffer, vtype, invert, nullMarker, notNullMarker, null);
         r.put(k, v);
       }
       return r;
@@ -530,7 +573,7 @@ public class BinarySortableSerDe extends AbstractSerDe {
       // Read one field by one field
       for (int eid = 0; eid < size; eid++) {
         r
-            .set(eid, deserialize(buffer, fieldTypes.get(eid), invert, r
+            .set(eid, deserialize(buffer, fieldTypes.get(eid), invert, nullMarker, notNullMarker, r
             .get(eid)));
       }
       return r;
@@ -543,7 +586,7 @@ public class BinarySortableSerDe extends AbstractSerDe {
       byte tag = buffer.read(invert);
       r.setTag(tag);
       r.setObject(deserialize(buffer, utype.getAllUnionObjectTypeInfos().get(tag),
-          invert, null));
+          invert, nullMarker, notNullMarker, null));
       return r;
     }
     default: {
@@ -629,7 +672,8 @@ public class BinarySortableSerDe extends AbstractSerDe {
 
     for (int i = 0; i < columnNames.size(); i++) {
       serialize(output, soi.getStructFieldData(obj, fields.get(i)),
-          fields.get(i).getFieldObjectInspector(), columnSortOrderIsDesc[i]);
+          fields.get(i).getFieldObjectInspector(), columnSortOrderIsDesc[i],
+          columnNullMarker[i], columnNotNullMarker[i]);
     }
 
     serializeBytesWritable.set(output.getData(), 0, output.getLength());
@@ -644,14 +688,14 @@ public class BinarySortableSerDe extends AbstractSerDe {
   }
 
   static void serialize(ByteStream.Output buffer, Object o, ObjectInspector oi,
-      boolean invert) throws SerDeException {
+      boolean invert, byte nullMarker, byte notNullMarker) throws SerDeException {
     // Is this field a null?
     if (o == null) {
-      writeByte(buffer, (byte) 0, invert);
+      writeByte(buffer, nullMarker, invert);
       return;
     }
     // This field is not a null.
-    writeByte(buffer, (byte) 1, invert);
+    writeByte(buffer, notNullMarker, invert);
 
     switch (oi.getCategory()) {
     case PRIMITIVE: {
@@ -757,18 +801,6 @@ public class BinarySortableSerDe extends AbstractSerDe {
         return;
       }
       case DECIMAL: {
-        // decimals are encoded in three pieces:
-        // sign: 1, 2 or 3 for smaller, equal or larger than 0 respectively
-        // factor: Number that indicates the amount of digits you have to move
-        // the decimal point left or right until the resulting number is smaller
-        // than zero but has something other than 0 as the first digit.
-        // digits: which is a string of all the digits in the decimal. If the number
-        // is negative the binary string will be inverted to get the correct ordering.
-        // Example: 0.00123
-        // Sign is 3 (bigger than 0)
-        // Factor is -2 (move decimal point 2 positions right)
-        // Digits are: 123
-
         HiveDecimalObjectInspector boi = (HiveDecimalObjectInspector) poi;
         HiveDecimal dec = boi.getPrimitiveJavaObject(o);
         serializeHiveDecimal(buffer, dec, invert);
@@ -789,7 +821,7 @@ public class BinarySortableSerDe extends AbstractSerDe {
       int size = loi.getListLength(o);
       for (int eid = 0; eid < size; eid++) {
         writeByte(buffer, (byte) 1, invert);
-        serialize(buffer, loi.getListElement(o, eid), eoi, invert);
+        serialize(buffer, loi.getListElement(o, eid), eoi, invert, nullMarker, notNullMarker);
       }
       // and \0 to terminate
       writeByte(buffer, (byte) 0, invert);
@@ -804,8 +836,8 @@ public class BinarySortableSerDe extends AbstractSerDe {
       Map<?, ?> map = moi.getMap(o);
       for (Map.Entry<?, ?> entry : map.entrySet()) {
         writeByte(buffer, (byte) 1, invert);
-        serialize(buffer, entry.getKey(), koi, invert);
-        serialize(buffer, entry.getValue(), voi, invert);
+        serialize(buffer, entry.getKey(), koi, invert, nullMarker, notNullMarker);
+        serialize(buffer, entry.getValue(), voi, invert, nullMarker, notNullMarker);
       }
       // and \0 to terminate
       writeByte(buffer, (byte) 0, invert);
@@ -817,7 +849,7 @@ public class BinarySortableSerDe extends AbstractSerDe {
 
       for (int i = 0; i < fields.size(); i++) {
         serialize(buffer, soi.getStructFieldData(o, fields.get(i)), fields.get(
-            i).getFieldObjectInspector(), invert);
+            i).getFieldObjectInspector(), invert, nullMarker, notNullMarker);
       }
       return;
     }
@@ -826,7 +858,7 @@ public class BinarySortableSerDe extends AbstractSerDe {
       byte tag = uoi.getTag(o);
       writeByte(buffer, tag, invert);
       serialize(buffer, uoi.getField(o), uoi.getObjectInspectors().get(tag),
-          invert);
+          invert, nullMarker, notNullMarker);
       return;
     }
     default: {
@@ -940,22 +972,22 @@ public class BinarySortableSerDe extends AbstractSerDe {
     serializeInt(buffer, nanos, invert);
   }
 
-  public static void serializeHiveDecimal(ByteStream.Output buffer, HiveDecimal dec, boolean invert) {
+  public static void serializeOldHiveDecimal(ByteStream.Output buffer, HiveDecimalV1 oldDec, boolean invert) {
     // get the sign of the big decimal
-    int sign = dec.compareTo(HiveDecimal.ZERO);
+    int sign = oldDec.compareTo(HiveDecimalV1.ZERO);
 
     // we'll encode the absolute value (sign is separate)
-    dec = dec.abs();
+    oldDec = oldDec.abs();
 
     // get the scale factor to turn big decimal into a decimal < 1
     // This relies on the BigDecimal precision value, which as of HIVE-10270
     // is now different from HiveDecimal.precision()
-    int factor = dec.bigDecimalValue().precision() - dec.bigDecimalValue().scale();
+    int factor = oldDec.bigDecimalValue().precision() - oldDec.bigDecimalValue().scale();
     factor = sign == 1 ? factor : -factor;
 
     // convert the absolute big decimal to string
-    dec.scaleByPowerOfTen(Math.abs(dec.scale()));
-    String digits = dec.unscaledValue().toString();
+    oldDec.scaleByPowerOfTen(Math.abs(oldDec.scale()));
+    String digits = oldDec.unscaledValue().toString();
 
     // finally write out the pieces (sign, scale, digits)
     writeByte(buffer, (byte) ( sign + 1), invert);
@@ -967,6 +999,119 @@ public class BinarySortableSerDe extends AbstractSerDe {
         digits.length(), sign == -1 ? !invert : invert);
   }
 
+  // See comments for next method.
+  public static void serializeHiveDecimal(ByteStream.Output buffer, HiveDecimal dec, boolean invert) {
+
+    byte[] scratchBuffer = new byte[HiveDecimal.SCRATCH_BUFFER_LEN_TO_BYTES];
+    serializeHiveDecimal(buffer, dec, invert, scratchBuffer);
+  }
+
+  /**
+   * Decimals are encoded in three pieces:Decimals are encoded in three pieces:
+   *
+   * Sign:   1, 2 or 3 for smaller, equal or larger than 0 respectively
+   * Factor: Number that indicates the amount of digits you have to move
+   *         the decimal point left or right until the resulting number is smaller
+   *         than zero but has something other than 0 as the first digit.
+   * Digits: which is a string of all the digits in the decimal. If the number
+   *         is negative the binary string will be inverted to get the correct ordering.
+   *
+   * UNDONE: Is this example correct?
+   *   Example: 0.00123
+   *   Sign is 3 (bigger than 0)
+   *   Factor is -2 (move decimal point 2 positions right)
+   *   Digits are: 123
+   *
+   * @param buffer
+   * @param dec
+   * @param invert
+   * @param scratchBuffer
+   */
+  public static void serializeHiveDecimal(
+    ByteStream.Output buffer, HiveDecimal dec, boolean invert,
+    byte[] scratchBuffer) {
+
+    // Get the sign of the decimal.
+    int signum = dec.signum();
+
+    // Get the 10^N power to turn digits into the desired decimal with a possible
+    // fractional part.
+    // To be compatible with the OldHiveDecimal version, zero has factor 1.
+    int factor;
+    if (signum == 0) {
+      factor = 1;
+    } else {
+      factor = dec.rawPrecision() - dec.scale();
+    }
+
+    // To make comparisons work properly, the "factor" gets the decimal's sign, too.
+    factor = signum == 1 ? factor : -factor;
+
+    // Convert just the decimal digits (no dot, sign, etc) into bytes.
+    //
+    // This is much faster than converting the BigInteger value from unscaledValue() which is no
+    // longer part of the HiveDecimal representation anymore to string, then bytes.
+    int index = dec.toDigitsOnlyBytes(scratchBuffer);
+
+    /*
+     * Finally write out the pieces (sign, power, digits)
+     */
+    writeByte(buffer, (byte) ( signum + 1), invert);
+    writeByte(buffer, (byte) ((factor >> 24) ^ 0x80), invert);
+    writeByte(buffer, (byte) ( factor >> 16), invert);
+    writeByte(buffer, (byte) ( factor >> 8), invert);
+    writeByte(buffer, (byte)   factor, invert);
+
+    // The toDigitsOnlyBytes stores digits at the end of the scratch buffer.
+    serializeBytes(
+        buffer,
+        scratchBuffer, index, scratchBuffer.length - index,
+        signum == -1 ? !invert : invert);
+  }
+
+  // A HiveDecimalWritable version.
+  public static void serializeHiveDecimal(
+      ByteStream.Output buffer, HiveDecimalWritable decWritable, boolean invert,
+      byte[] scratchBuffer) {
+
+      // Get the sign of the decimal.
+      int signum = decWritable.signum();
+
+      // Get the 10^N power to turn digits into the desired decimal with a possible
+      // fractional part.
+      // To be compatible with the OldHiveDecimal version, zero has factor 1.
+      int factor;
+      if (signum == 0) {
+        factor = 1;
+      } else {
+        factor = decWritable.rawPrecision() - decWritable.scale();
+      }
+
+      // To make comparisons work properly, the "factor" gets the decimal's sign, too.
+      factor = signum == 1 ? factor : -factor;
+
+      // Convert just the decimal digits (no dot, sign, etc) into bytes.
+      //
+      // This is much faster than converting the BigInteger value from unscaledValue() which is no
+      // longer part of the HiveDecimal representation anymore to string, then bytes.
+      int index = decWritable.toDigitsOnlyBytes(scratchBuffer);
+
+      /*
+       * Finally write out the pieces (sign, power, digits)
+       */
+      writeByte(buffer, (byte) ( signum + 1), invert);
+      writeByte(buffer, (byte) ((factor >> 24) ^ 0x80), invert);
+      writeByte(buffer, (byte) ( factor >> 16), invert);
+      writeByte(buffer, (byte) ( factor >> 8), invert);
+      writeByte(buffer, (byte)   factor, invert);
+
+      // The toDigitsOnlyBytes stores digits at the end of the scratch buffer.
+      serializeBytes(
+          buffer,
+          scratchBuffer, index, scratchBuffer.length - index,
+          signum == -1 ? !invert : invert);
+  }
+
   @Override
   public SerDeStats getSerDeStats() {
     // no support for statistics
@@ -974,13 +1119,24 @@ public class BinarySortableSerDe extends AbstractSerDe {
   }
 
   public static void serializeStruct(Output byteStream, Object[] fieldData,
-      List<ObjectInspector> fieldOis, boolean[] sortableSortOrders) throws SerDeException {
+      List<ObjectInspector> fieldOis, boolean[] sortableSortOrders,
+      byte[] nullMarkers, byte[] notNullMarkers) throws SerDeException {
     for (int i = 0; i < fieldData.length; i++) {
-      serialize(byteStream, fieldData[i], fieldOis.get(i), sortableSortOrders[i]);
+      serialize(byteStream, fieldData[i], fieldOis.get(i), sortableSortOrders[i],
+              nullMarkers[i], notNullMarkers[i]);
     }
   }
 
   public boolean[] getSortOrders() {
     return columnSortOrderIsDesc;
   }
+
+  public byte[] getNullMarkers() {
+    return columnNullMarker;
+  }
+
+  public byte[] getNotNullMarkers() {
+    return columnNotNullMarker;
+  }
+
 }

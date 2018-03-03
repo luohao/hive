@@ -23,28 +23,31 @@ import org.apache.hadoop.io.BytesWritable;
 import org.apache.spark.HashPartitioner;
 import org.apache.spark.Partitioner;
 import org.apache.spark.api.java.JavaPairRDD;
-import org.apache.spark.api.java.function.PairFlatMapFunction;
-import scala.Tuple2;
+import org.apache.spark.storage.StorageLevel;
 
-import java.util.*;
-
-public class SortByShuffler implements SparkShuffler {
+public class SortByShuffler implements SparkShuffler<BytesWritable> {
 
   private final boolean totalOrder;
+  private final SparkPlan sparkPlan;
 
   /**
    * @param totalOrder whether this shuffler provides total order shuffle.
    */
-  public SortByShuffler(boolean totalOrder) {
+  public SortByShuffler(boolean totalOrder, SparkPlan sparkPlan) {
     this.totalOrder = totalOrder;
+    this.sparkPlan = sparkPlan;
   }
 
   @Override
-  public JavaPairRDD<HiveKey, Iterable<BytesWritable>> shuffle(
+  public JavaPairRDD<HiveKey, BytesWritable> shuffle(
       JavaPairRDD<HiveKey, BytesWritable> input, int numPartitions) {
     JavaPairRDD<HiveKey, BytesWritable> rdd;
     if (totalOrder) {
       if (numPartitions > 0) {
+        if (numPartitions > 1 && input.getStorageLevel() == StorageLevel.NONE()) {
+          input.persist(StorageLevel.DISK_ONLY());
+          sparkPlan.addCachedRDDId(input.id());
+        }
         rdd = input.sortByKey(true, numPartitions);
       } else {
         rdd = input.sortByKey(true);
@@ -53,77 +56,12 @@ public class SortByShuffler implements SparkShuffler {
       Partitioner partitioner = new HashPartitioner(numPartitions);
       rdd = input.repartitionAndSortWithinPartitions(partitioner);
     }
-    return rdd.mapPartitionsToPair(new ShuffleFunction());
+    return rdd;
   }
 
   @Override
   public String getName() {
     return "SortBy";
-  }
-
-  private static class ShuffleFunction implements
-      PairFlatMapFunction<Iterator<Tuple2<HiveKey, BytesWritable>>,
-          HiveKey, Iterable<BytesWritable>> {
-    // make eclipse happy
-    private static final long serialVersionUID = 1L;
-
-    @Override
-    public Iterable<Tuple2<HiveKey, Iterable<BytesWritable>>> call(
-        final Iterator<Tuple2<HiveKey, BytesWritable>> it) throws Exception {
-      // Use input iterator to back returned iterable object.
-      final Iterator<Tuple2<HiveKey, Iterable<BytesWritable>>> resultIt =
-          new Iterator<Tuple2<HiveKey, Iterable<BytesWritable>>>() {
-            HiveKey curKey = null;
-            List<BytesWritable> curValues = new ArrayList<BytesWritable>();
-
-            @Override
-            public boolean hasNext() {
-              return it.hasNext() || curKey != null;
-            }
-
-            @Override
-            public Tuple2<HiveKey, Iterable<BytesWritable>> next() {
-              // TODO: implement this by accumulating rows with the same key into a list.
-              // Note that this list needs to improved to prevent excessive memory usage, but this
-              // can be done in later phase.
-              while (it.hasNext()) {
-                Tuple2<HiveKey, BytesWritable> pair = it.next();
-                if (curKey != null && !curKey.equals(pair._1())) {
-                  HiveKey key = curKey;
-                  List<BytesWritable> values = curValues;
-                  curKey = pair._1();
-                  curValues = new ArrayList<BytesWritable>();
-                  curValues.add(pair._2());
-                  return new Tuple2<HiveKey, Iterable<BytesWritable>>(key, values);
-                }
-                curKey = pair._1();
-                curValues.add(pair._2());
-              }
-              if (curKey == null) {
-                throw new NoSuchElementException();
-              }
-              // if we get here, this should be the last element we have
-              HiveKey key = curKey;
-              curKey = null;
-              return new Tuple2<HiveKey, Iterable<BytesWritable>>(key, curValues);
-            }
-
-            @Override
-            public void remove() {
-              // Not implemented.
-              // throw Unsupported Method Invocation Exception.
-              throw new UnsupportedOperationException();
-            }
-
-          };
-
-      return new Iterable<Tuple2<HiveKey, Iterable<BytesWritable>>>() {
-        @Override
-        public Iterator<Tuple2<HiveKey, Iterable<BytesWritable>>> iterator() {
-          return resultIt;
-        }
-      };
-    }
   }
 
 }

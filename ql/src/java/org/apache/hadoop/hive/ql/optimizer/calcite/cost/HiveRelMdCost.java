@@ -19,10 +19,14 @@ package org.apache.hadoop.hive.ql.optimizer.calcite.cost;
 
 import org.apache.calcite.plan.RelOptCost;
 import org.apache.calcite.rel.RelNode;
+import org.apache.calcite.rel.metadata.BuiltInMetadata;
 import org.apache.calcite.rel.metadata.ChainedRelMetadataProvider;
+import org.apache.calcite.rel.metadata.MetadataDef;
+import org.apache.calcite.rel.metadata.MetadataHandler;
 import org.apache.calcite.rel.metadata.ReflectiveRelMetadataProvider;
 import org.apache.calcite.rel.metadata.RelMdPercentageOriginalRows;
 import org.apache.calcite.rel.metadata.RelMetadataProvider;
+import org.apache.calcite.rel.metadata.RelMetadataQuery;
 import org.apache.calcite.util.BuiltInMethod;
 import org.apache.hadoop.hive.ql.optimizer.calcite.reloperators.HiveAggregate;
 import org.apache.hadoop.hive.ql.optimizer.calcite.reloperators.HiveJoin;
@@ -33,7 +37,7 @@ import com.google.common.collect.ImmutableList;
 /**
  * HiveRelMdCost supplies the implementation of cost model.
  */
-public class HiveRelMdCost {
+public class HiveRelMdCost implements MetadataHandler<BuiltInMetadata.NonCumulativeCost> {
 
   private final HiveCostModel hiveCostModel;
 
@@ -49,20 +53,25 @@ public class HiveRelMdCost {
                    RelMdPercentageOriginalRows.SOURCE));
   }
 
-  public RelOptCost getNonCumulativeCost(HiveAggregate aggregate) {
+  @Override
+  public MetadataDef<BuiltInMetadata.NonCumulativeCost> getDef() {
+    return BuiltInMetadata.NonCumulativeCost.DEF;
+  }
+
+  public RelOptCost getNonCumulativeCost(HiveAggregate aggregate, RelMetadataQuery mq) {
     return hiveCostModel.getAggregateCost(aggregate);
   }
 
-  public RelOptCost getNonCumulativeCost(HiveJoin join) {
+  public RelOptCost getNonCumulativeCost(HiveJoin join, RelMetadataQuery mq) {
     return hiveCostModel.getJoinCost(join);
   }
 
-  public RelOptCost getNonCumulativeCost(HiveTableScan ts) {
+  public RelOptCost getNonCumulativeCost(HiveTableScan ts, RelMetadataQuery mq) {
     return hiveCostModel.getScanCost(ts);
   }
 
   // Default case
-  public RelOptCost getNonCumulativeCost(RelNode rel) {
+  public RelOptCost getNonCumulativeCost(RelNode rel, RelMetadataQuery mq) {
     return hiveCostModel.getDefaultCost();
   }
 

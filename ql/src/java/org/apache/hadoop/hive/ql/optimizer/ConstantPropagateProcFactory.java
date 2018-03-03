@@ -17,8 +17,8 @@ package org.apache.hadoop.hive.ql.optimizer;
 
 import java.io.Serializable;
 import java.util.ArrayList;
-import java.util.BitSet;
 import java.util.Arrays;
+import java.util.BitSet;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
@@ -29,8 +29,6 @@ import java.util.Set;
 import java.util.Stack;
 
 import org.apache.commons.lang.StringUtils;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.ql.exec.ColumnInfo;
 import org.apache.hadoop.hive.ql.exec.FileSinkOperator;
@@ -50,12 +48,14 @@ import org.apache.hadoop.hive.ql.lib.Node;
 import org.apache.hadoop.hive.ql.lib.NodeProcessor;
 import org.apache.hadoop.hive.ql.lib.NodeProcessorCtx;
 import org.apache.hadoop.hive.ql.metadata.HiveException;
+import org.apache.hadoop.hive.ql.metadata.VirtualColumn;
 import org.apache.hadoop.hive.ql.optimizer.ConstantPropagateProcCtx.ConstantPropagateOption;
 import org.apache.hadoop.hive.ql.parse.SemanticException;
 import org.apache.hadoop.hive.ql.plan.DynamicPartitionCtx;
 import org.apache.hadoop.hive.ql.plan.ExprNodeColumnDesc;
 import org.apache.hadoop.hive.ql.plan.ExprNodeConstantDesc;
 import org.apache.hadoop.hive.ql.plan.ExprNodeDesc;
+import org.apache.hadoop.hive.ql.plan.ExprNodeDescUtils;
 import org.apache.hadoop.hive.ql.plan.ExprNodeGenericFuncDesc;
 import org.apache.hadoop.hive.ql.plan.FileSinkDesc;
 import org.apache.hadoop.hive.ql.plan.GroupByDesc;
@@ -69,37 +69,37 @@ import org.apache.hadoop.hive.ql.udf.generic.GenericUDF.DeferredJavaObject;
 import org.apache.hadoop.hive.ql.udf.generic.GenericUDFBaseCompare;
 import org.apache.hadoop.hive.ql.udf.generic.GenericUDFBridge;
 import org.apache.hadoop.hive.ql.udf.generic.GenericUDFCase;
+import org.apache.hadoop.hive.ql.udf.generic.GenericUDFNvl;
 import org.apache.hadoop.hive.ql.udf.generic.GenericUDFOPAnd;
 import org.apache.hadoop.hive.ql.udf.generic.GenericUDFOPEqual;
-import org.apache.hadoop.hive.ql.udf.generic.GenericUDFOPEqualOrGreaterThan;
-import org.apache.hadoop.hive.ql.udf.generic.GenericUDFOPEqualOrLessThan;
-import org.apache.hadoop.hive.ql.udf.generic.GenericUDFOPGreaterThan;
-import org.apache.hadoop.hive.ql.udf.generic.GenericUDFOPLessThan;
 import org.apache.hadoop.hive.ql.udf.generic.GenericUDFOPNot;
 import org.apache.hadoop.hive.ql.udf.generic.GenericUDFOPNotEqual;
 import org.apache.hadoop.hive.ql.udf.generic.GenericUDFOPNotNull;
 import org.apache.hadoop.hive.ql.udf.generic.GenericUDFOPNull;
 import org.apache.hadoop.hive.ql.udf.generic.GenericUDFOPOr;
 import org.apache.hadoop.hive.ql.udf.generic.GenericUDFStruct;
+import org.apache.hadoop.hive.ql.udf.generic.GenericUDFToUnixTimeStamp;
+import org.apache.hadoop.hive.ql.udf.generic.GenericUDFUnixTimeStamp;
 import org.apache.hadoop.hive.ql.udf.generic.GenericUDFWhen;
 import org.apache.hadoop.hive.serde.serdeConstants;
 import org.apache.hadoop.hive.serde2.objectinspector.ConstantObjectInspector;
 import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspector;
 import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspector.Category;
 import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspectorConverters;
-import org.apache.hadoop.hive.serde2.objectinspector.StandardConstantStructObjectInspector;
 import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspectorConverters.Converter;
 import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspectorUtils;
 import org.apache.hadoop.hive.serde2.objectinspector.PrimitiveObjectInspector;
 import org.apache.hadoop.hive.serde2.objectinspector.PrimitiveObjectInspector.PrimitiveCategory;
+import org.apache.hadoop.hive.serde2.objectinspector.StandardConstantStructObjectInspector;
 import org.apache.hadoop.hive.serde2.objectinspector.primitive.PrimitiveObjectInspectorFactory;
 import org.apache.hadoop.hive.serde2.objectinspector.primitive.PrimitiveObjectInspectorUtils;
 import org.apache.hadoop.hive.serde2.typeinfo.PrimitiveTypeInfo;
 import org.apache.hadoop.hive.serde2.typeinfo.TypeInfo;
 import org.apache.hadoop.hive.serde2.typeinfo.TypeInfoFactory;
 import org.apache.hadoop.hive.serde2.typeinfo.TypeInfoUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Lists;
 
@@ -107,7 +107,7 @@ import com.google.common.collect.Lists;
  * Factory for generating the different node processors used by ConstantPropagate.
  */
 public final class ConstantPropagateProcFactory {
-  protected static final Log LOG = LogFactory.getLog(ConstantPropagateProcFactory.class.getName());
+  protected static final Logger LOG = LoggerFactory.getLogger(ConstantPropagateProcFactory.class.getName());
   protected static Set<Class<?>> propagatableUdfs = new HashSet<Class<?>>();
 
   static {
@@ -139,7 +139,12 @@ public final class ConstantPropagateProcFactory {
 
   private static final Set<PrimitiveCategory> unSupportedTypes = ImmutableSet
       .<PrimitiveCategory>builder()
-      .add(PrimitiveCategory.DECIMAL)
+      .add(PrimitiveCategory.VARCHAR)
+      .add(PrimitiveCategory.CHAR).build();
+
+    private static final Set<PrimitiveCategory> unsafeConversionTypes = ImmutableSet
+      .<PrimitiveCategory>builder()
+      .add(PrimitiveCategory.STRING)
       .add(PrimitiveCategory.VARCHAR)
       .add(PrimitiveCategory.CHAR).build();
 
@@ -151,6 +156,19 @@ public final class ConstantPropagateProcFactory {
    * @return cast constant, or null if the type cast failed.
    */
   private static ExprNodeConstantDesc typeCast(ExprNodeDesc desc, TypeInfo ti) {
+    return typeCast(desc, ti, false);
+  }
+
+  /**
+   * Cast type from expression type to expected type ti.
+   *
+   * @param desc constant expression
+   * @param ti expected type info
+   * @param performSafeTypeCast when true then don't perform typecast because it could be unsafe (loosing leading zeroes etc.)
+   * @return cast constant, or null if the type cast failed.
+   */
+
+  private static ExprNodeConstantDesc typeCast(ExprNodeDesc desc, TypeInfo ti, boolean performSafeTypeCast) {
     if (desc instanceof ExprNodeConstantDesc && null == ((ExprNodeConstantDesc)desc).getValue()) {
       return null;
     }
@@ -161,12 +179,29 @@ public final class ConstantPropagateProcFactory {
     PrimitiveTypeInfo priti = (PrimitiveTypeInfo) ti;
     PrimitiveTypeInfo descti = (PrimitiveTypeInfo) desc.getTypeInfo();
 
+
     if (unSupportedTypes.contains(priti.getPrimitiveCategory())
         || unSupportedTypes.contains(descti.getPrimitiveCategory())) {
-      // FIXME: support template types. It currently has conflict with
-      // ExprNodeConstantDesc
+      // FIXME: support template types. It currently has conflict with ExprNodeConstantDesc
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("Unsupported types " + priti + "; " + descti);
+      }
       return null;
     }
+
+    // We shouldn't cast strings to other types because that can break original data in cases of
+    // leading zeros or zeros trailing after decimal point.
+    // Example: "000126" => 126 => "126"
+    boolean brokenDataTypesCombination = unsafeConversionTypes.contains(
+        priti.getPrimitiveCategory()) && !unsafeConversionTypes.contains(
+            descti.getPrimitiveCategory());
+    if (performSafeTypeCast && brokenDataTypesCombination) {
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("Unsupported cast " + priti + "; " + descti);
+      }
+      return null;
+    }
+
     if (LOG.isDebugEnabled()) {
       LOG.debug("Casting " + desc + " to type " + ti);
     }
@@ -202,7 +237,7 @@ public final class ConstantPropagateProcFactory {
   public static ExprNodeDesc foldExpr(ExprNodeGenericFuncDesc funcDesc) {
 
     GenericUDF udf = funcDesc.getGenericUDF();
-    if (!isDeterministicUdf(udf)) {
+    if (!isDeterministicUdf(udf, funcDesc.getChildren())) {
       return funcDesc;
     }
     return evaluateFunction(funcDesc.getGenericUDF(),funcDesc.getChildren(), funcDesc.getChildren());
@@ -320,9 +355,9 @@ public final class ConstantPropagateProcFactory {
       }
 
       // Don't evaluate nondeterministic function since the value can only calculate during runtime.
-      if (!isDeterministicUdf(udf)) {
+      if (!isDeterministicUdf(udf, newExprs)) {
         if (LOG.isDebugEnabled()) {
-          LOG.debug("Function " + udf.getClass() + " is undeterministic. Don't evalulate immediately.");
+          LOG.debug("Function " + udf.getClass() + " is undeterministic. Don't evaluate immediately.");
         }
         ((ExprNodeGenericFuncDesc) desc).setChildren(newExprs);
         return desc;
@@ -379,7 +414,7 @@ public final class ConstantPropagateProcFactory {
       }
 
       // Don't evaluate nondeterministic function since the value can only calculate during runtime.
-      if (!isDeterministicUdf(udf)) {
+      if (!isDeterministicUdf(udf, newExprs)) {
         if (LOG.isDebugEnabled()) {
           LOG.debug("Function " + udf.getClass() + " is undeterministic. Don't evaluate immediately.");
         }
@@ -430,12 +465,17 @@ public final class ConstantPropagateProcFactory {
     return desc;
   }
 
-  private static boolean isDeterministicUdf(GenericUDF udf) {
+  private static boolean isDeterministicUdf(GenericUDF udf,  List<ExprNodeDesc> children) {
     UDFType udfType = udf.getClass().getAnnotation(UDFType.class);
     if (udf instanceof GenericUDFBridge) {
       udfType = ((GenericUDFBridge) udf).getUdfClass().getAnnotation(UDFType.class);
     }
     if (udfType.deterministic() == false) {
+      if (udf.getClass().equals(GenericUDFUnixTimeStamp.class) 
+          && children != null && children.size() > 0) {
+        // unix_timestamp is polymorphic (ignore class annotations)
+        return true;
+      }
       return false;
     }
 
@@ -491,9 +531,9 @@ public final class ConstantPropagateProcFactory {
         return;
       }
       // If both sides are constants, there is nothing to propagate
-      ExprNodeColumnDesc c = getColumnExpr(lOperand);
+      ExprNodeColumnDesc c = ExprNodeDescUtils.getColumnExpr(lOperand);
       if (null == c) {
-        c = getColumnExpr(rOperand);
+        c = ExprNodeDescUtils.getColumnExpr(rOperand);
       }
       if (null == c) {
         // we need a column expression on other side.
@@ -505,7 +545,7 @@ public final class ConstantPropagateProcFactory {
           LOG.debug("Filter " + udf + " is identified as a value assignment, propagate it.");
         }
         if (!v.getTypeInfo().equals(ci.getType())) {
-          v = typeCast(v, ci.getType());
+          v = typeCast(v, ci.getType(), true);
         }
         if (v != null) {
           constants.put(ci, v);
@@ -524,13 +564,6 @@ public final class ConstantPropagateProcFactory {
         }
       }
     }
-  }
-
-  private static ExprNodeColumnDesc getColumnExpr(ExprNodeDesc expr) {
-    while (FunctionRegistry.isOpCast(expr)) {
-      expr = expr.getChildren().get(0);
-    }
-    return (expr instanceof ExprNodeColumnDesc) ? (ExprNodeColumnDesc)expr : null;
   }
 
   private static ExprNodeDesc shortcutFunction(GenericUDF udf, List<ExprNodeDesc> newExprs,
@@ -568,7 +601,11 @@ public final class ConstantPropagateProcFactory {
          children.set(i, ExprNodeGenericFuncDesc.newInstance(new GenericUDFOPEqual(),
              Lists.newArrayList(children.get(i),newExprs.get(foundUDFInFirst ? 1 : 0))));
        }
-       return caseOrWhenexpr;
+       // after constant folding of child expression the return type of UDFWhen might have changed,
+       // so recreate the expression
+       ExprNodeGenericFuncDesc newCaseOrWhenExpr = ExprNodeGenericFuncDesc.newInstance(childUDF,
+           caseOrWhenexpr.getFuncText(), children);
+       return newCaseOrWhenExpr;
      } else if (childUDF instanceof GenericUDFCase) {
        for (i = 2; i < children.size(); i+=2) {
          children.set(i, ExprNodeGenericFuncDesc.newInstance(new GenericUDFOPEqual(),
@@ -579,7 +616,11 @@ public final class ConstantPropagateProcFactory {
           children.set(i, ExprNodeGenericFuncDesc.newInstance(new GenericUDFOPEqual(),
               Lists.newArrayList(children.get(i),newExprs.get(foundUDFInFirst ? 1 : 0))));
         }
-        return caseOrWhenexpr;
+       // after constant folding of child expression the return type of UDFCase might have changed,
+       // so recreate the expression
+       ExprNodeGenericFuncDesc newCaseOrWhenExpr = ExprNodeGenericFuncDesc.newInstance(childUDF,
+           caseOrWhenexpr.getFuncText(), children);
+       return newCaseOrWhenExpr;
      } else {
        // cant happen
        return null;
@@ -614,9 +655,9 @@ public final class ConstantPropagateProcFactory {
           // Try to fold (key <op> 86) and (key is not null) to (key <op> 86)
           // where <op> can be "=", ">=", "<=", ">", "<".
           // Note: (key <> 86) and (key is not null) cannot be folded
-          ExprNodeColumnDesc colDesc = getColumnExpr(childExpr.getChildren().get(0));
+          ExprNodeColumnDesc colDesc = ExprNodeDescUtils.getColumnExpr(childExpr.getChildren().get(0));
           if (null == colDesc) {
-            colDesc = getColumnExpr(childExpr.getChildren().get(1));
+            colDesc = ExprNodeDescUtils.getColumnExpr(childExpr.getChildren().get(1));
           }
           if (colDesc != null) {
             compareExprs.add(colDesc);
@@ -718,8 +759,18 @@ public final class ConstantPropagateProcFactory {
         } else if(thenVal.equals(elseVal)){
           return thenExpr;
         } else if (thenVal instanceof Boolean && elseVal instanceof Boolean) {
-          return Boolean.TRUE.equals(thenVal) ? whenExpr :
-            ExprNodeGenericFuncDesc.newInstance(new GenericUDFOPNot(), newExprs.subList(0, 1));
+          List<ExprNodeDesc> children = new ArrayList<>();
+          children.add(whenExpr);
+          children.add(new ExprNodeConstantDesc(false));
+          ExprNodeGenericFuncDesc func = ExprNodeGenericFuncDesc.newInstance(new GenericUDFNvl(),
+              children);
+          if (Boolean.TRUE.equals(thenVal)) {
+            return func;
+          } else {
+            List<ExprNodeDesc> exprs = new ArrayList<>();
+            exprs.add(func);
+            return ExprNodeGenericFuncDesc.newInstance(new GenericUDFOPNot(), exprs);
+          }
         } else {
           return null;
         }
@@ -759,11 +810,30 @@ public final class ConstantPropagateProcFactory {
         } else if(thenVal.equals(elseVal)){
           return thenExpr;
         } else if (thenVal instanceof Boolean && elseVal instanceof Boolean) {
-          return Boolean.TRUE.equals(thenVal) ? ExprNodeGenericFuncDesc.newInstance(new GenericUDFOPEqual(), newExprs.subList(0, 2)) :
-            ExprNodeGenericFuncDesc.newInstance(new GenericUDFOPNotEqual(), newExprs.subList(0, 2));
+          ExprNodeGenericFuncDesc equal = ExprNodeGenericFuncDesc.newInstance(
+              new GenericUDFOPEqual(), newExprs.subList(0, 2));
+          List<ExprNodeDesc> children = new ArrayList<>();
+          children.add(equal);
+          children.add(new ExprNodeConstantDesc(false));
+          ExprNodeGenericFuncDesc func = ExprNodeGenericFuncDesc.newInstance(new GenericUDFNvl(),
+              children);
+          if (Boolean.TRUE.equals(thenVal)) {
+            return func;
+          } else {
+            List<ExprNodeDesc> exprs = new ArrayList<>();
+            exprs.add(func);
+            return ExprNodeGenericFuncDesc.newInstance(new GenericUDFOPNot(), exprs);
+          }
         } else {
           return null;
         }
+      }
+    }
+
+    if (udf instanceof GenericUDFUnixTimeStamp) {
+      if (newExprs.size() >= 1) {
+        // unix_timestamp(args) -> to_unix_timestamp(args)
+        return ExprNodeGenericFuncDesc.newInstance(new GenericUDFToUnixTimeStamp(), newExprs);
       }
     }
 
@@ -843,7 +913,7 @@ public final class ConstantPropagateProcFactory {
           }
         }
         if (constant.getTypeInfo().getCategory() != Category.PRIMITIVE) {
-          // nested complex types cannot be folded cleanly 
+          // nested complex types cannot be folded cleanly
           return null;
         }
         Object value = constant.getValue();
@@ -920,7 +990,7 @@ public final class ConstantPropagateProcFactory {
       return new ExprNodeConstantDesc(o).setFoldedFromVal(constStr);
     } catch (HiveException e) {
       LOG.error("Evaluation function " + udf.getClass()
-          + " failed in Constant Propagatation Optimizer.");
+          + " failed in Constant Propagation Optimizer.");
       throw new RuntimeException(e);
     }
   }
@@ -1032,6 +1102,18 @@ public final class ConstantPropagateProcFactory {
       Map<ColumnInfo, ExprNodeDesc> colToConstants = cppCtx.getPropagatedConstants(op);
       cppCtx.getOpToConstantExprs().put(op, colToConstants);
 
+      RowSchema rs = op.getSchema();
+      if (op.getColumnExprMap() != null && rs != null) {
+        for (ColumnInfo colInfo : rs.getSignature()) {
+          if (!VirtualColumn.isVirtualColumnBasedOnAlias(colInfo)) {
+            ExprNodeDesc expr = op.getColumnExprMap().get(colInfo.getInternalName());
+            if (expr instanceof ExprNodeConstantDesc) {
+              colToConstants.put(colInfo, expr);
+            }
+          }
+        }
+      }
+
       if (colToConstants.isEmpty()) {
         return null;
       }
@@ -1069,6 +1151,17 @@ public final class ConstantPropagateProcFactory {
       Operator<? extends Serializable> op = (Operator<? extends Serializable>) nd;
       Map<ColumnInfo, ExprNodeDesc> constants = cppCtx.getPropagatedConstants(op);
       cppCtx.getOpToConstantExprs().put(op, constants);
+      RowSchema rs = op.getSchema();
+      if (op.getColumnExprMap() != null && rs != null) {
+        for (ColumnInfo colInfo : rs.getSignature()) {
+          if (!VirtualColumn.isVirtualColumnBasedOnAlias(colInfo)) {
+            ExprNodeDesc expr = op.getColumnExprMap().get(colInfo.getInternalName());
+            if (expr instanceof ExprNodeConstantDesc) {
+              constants.put(colInfo, expr);
+            }
+          }
+        }
+      }
       if (constants.isEmpty()) {
         return null;
       }
@@ -1121,7 +1214,10 @@ public final class ConstantPropagateProcFactory {
           }
           colList.set(i, newCol);
           if (newCol instanceof ExprNodeConstantDesc && op.getSchema() != null) {
-            constants.put(op.getSchema().getSignature().get(i), newCol);
+            ColumnInfo colInfo = op.getSchema().getSignature().get(i);
+            if (!VirtualColumn.isVirtualColumnBasedOnAlias(colInfo)) {
+              constants.put(colInfo, newCol);
+            }
           }
           if (columnExprMap != null) {
             columnExprMap.put(columnNames.get(i), newCol);
@@ -1163,16 +1259,15 @@ public final class ConstantPropagateProcFactory {
       DynamicPartitionCtx dpCtx = fsdesc.getDynPartCtx();
       if (dpCtx != null) {
 
-        // If all dynamic partitions are propagated as constant, remove DP.
-        Set<String> inputs = dpCtx.getInputToDPCols().keySet();
-
         // Assume only 1 parent for FS operator
         Operator<? extends Serializable> parent = op.getParentOperators().get(0);
         Map<ColumnInfo, ExprNodeDesc> parentConstants = cppCtx.getPropagatedConstants(parent);
         RowSchema rs = parent.getSchema();
         boolean allConstant = true;
-        for (String input : inputs) {
-          ColumnInfo ci = rs.getColumnInfo(input);
+        int dpColStartIdx = Utilities.getDPColOffset(fsdesc);
+        List<ColumnInfo> colInfos = rs.getSignature();
+        for (int i = dpColStartIdx; i < colInfos.size(); i++) {
+          ColumnInfo ci = colInfos.get(i);
           if (parentConstants.get(ci) == null) {
             allConstant = false;
             break;
@@ -1233,6 +1328,17 @@ public final class ConstantPropagateProcFactory {
       Map<ColumnInfo, ExprNodeDesc> constants = cppCtx.getPropagatedConstants(op);
 
       cppCtx.getOpToConstantExprs().put(op, constants);
+      RowSchema rs = op.getSchema();
+      if (op.getColumnExprMap() != null && rs != null) {
+        for (ColumnInfo colInfo : rs.getSignature()) {
+          if (!VirtualColumn.isVirtualColumnBasedOnAlias(colInfo)) {
+            ExprNodeDesc expr = op.getColumnExprMap().get(colInfo.getInternalName());
+            if (expr instanceof ExprNodeConstantDesc) {
+              constants.put(colInfo, expr);
+            }
+          }
+        }
+      }
       if (constants.isEmpty()) {
         return null;
       }
@@ -1298,7 +1404,8 @@ public final class ConstantPropagateProcFactory {
      */
     private boolean skipFolding(JoinDesc joinDesc) {
       for (JoinCondDesc cond : joinDesc.getConds()) {
-        if (cond.getType() == JoinDesc.INNER_JOIN || cond.getType() == JoinDesc.UNIQUE_JOIN) {
+        if (cond.getType() == JoinDesc.INNER_JOIN || cond.getType() == JoinDesc.UNIQUE_JOIN
+            || cond.getType() == JoinDesc.LEFT_SEMI_JOIN) {
           continue;
         }
         return true;

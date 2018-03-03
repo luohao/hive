@@ -1,3 +1,6 @@
+set hive.strict.checks.bucketing=false;
+
+set hive.mapred.mode=nonstrict;
 set datanucleus.cache.collections=false;
 set hive.stats.autogather=true;
 set hive.merge.mapfiles=false;

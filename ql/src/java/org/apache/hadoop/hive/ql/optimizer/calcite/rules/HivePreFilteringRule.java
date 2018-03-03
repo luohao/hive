@@ -18,12 +18,11 @@
 package org.apache.hadoop.hive.ql.optimizer.calcite.rules;
 
 import java.util.ArrayList;
-import java.util.Collection;
+import java.util.EnumSet;
+import java.util.HashSet;
 import java.util.List;
-import java.util.Map.Entry;
 import java.util.Set;
 
-import org.apache.calcite.plan.RelOptPredicateList;
 import org.apache.calcite.plan.RelOptRule;
 import org.apache.calcite.plan.RelOptRuleCall;
 import org.apache.calcite.plan.RelOptUtil;
@@ -31,7 +30,6 @@ import org.apache.calcite.rel.RelNode;
 import org.apache.calcite.rel.core.Filter;
 import org.apache.calcite.rel.core.RelFactories.FilterFactory;
 import org.apache.calcite.rel.core.TableScan;
-import org.apache.calcite.rel.metadata.RelMetadataQuery;
 import org.apache.calcite.rex.RexBuilder;
 import org.apache.calcite.rex.RexCall;
 import org.apache.calcite.rex.RexInputRef;
@@ -39,178 +37,229 @@ import org.apache.calcite.rex.RexLiteral;
 import org.apache.calcite.rex.RexNode;
 import org.apache.calcite.rex.RexUtil;
 import org.apache.calcite.sql.SqlKind;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
-import org.apache.hadoop.hive.ql.exec.Description;
-import org.apache.hadoop.hive.ql.optimizer.calcite.reloperators.HiveFilter;
-import org.apache.hadoop.hive.ql.udf.generic.GenericUDFBetween;
-import org.apache.hadoop.hive.ql.udf.generic.GenericUDFIn;
-import org.apache.hadoop.hive.ql.udf.generic.GenericUDFOPEqual;
-import org.apache.hadoop.hive.ql.udf.generic.GenericUDFOPEqualNS;
-import org.apache.hadoop.hive.ql.udf.generic.GenericUDFOPEqualOrGreaterThan;
-import org.apache.hadoop.hive.ql.udf.generic.GenericUDFOPEqualOrLessThan;
-import org.apache.hadoop.hive.ql.udf.generic.GenericUDFOPGreaterThan;
-import org.apache.hadoop.hive.ql.udf.generic.GenericUDFOPLessThan;
-import org.apache.hadoop.hive.ql.udf.generic.GenericUDFOPNotEqual;
+import org.apache.hadoop.hive.ql.optimizer.calcite.HiveCalciteUtil;
+import org.apache.hadoop.hive.ql.optimizer.calcite.HiveRelFactories;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.LinkedHashMultimap;
 import com.google.common.collect.Multimap;
 import com.google.common.collect.Sets;
 
-
 public class HivePreFilteringRule extends RelOptRule {
 
-  protected static final Log LOG = LogFactory
-          .getLog(HivePreFilteringRule.class.getName());
+  protected static final Logger LOG = LoggerFactory.getLogger(HivePreFilteringRule.class);
 
+  private static final Set<SqlKind>        COMPARISON = EnumSet.of(SqlKind.EQUALS,
+                                                          SqlKind.GREATER_THAN_OR_EQUAL,
+                                                          SqlKind.LESS_THAN_OR_EQUAL,
+                                                          SqlKind.GREATER_THAN, SqlKind.LESS_THAN,
+                                                          SqlKind.NOT_EQUALS);
 
-  public static final HivePreFilteringRule INSTANCE =
-          new HivePreFilteringRule();
+  private final FilterFactory              filterFactory;
 
-  private final FilterFactory filterFactory;
+  // Max number of nodes when converting to CNF
+  private final int maxCNFNodeCount;
 
-
-  private static final Set<String> COMPARISON_UDFS = Sets.newHashSet(
-          GenericUDFOPEqual.class.getAnnotation(Description.class).name(),
-          GenericUDFOPEqualNS.class.getAnnotation(Description.class).name(),
-          GenericUDFOPEqualOrGreaterThan.class.getAnnotation(Description.class).name(),
-          GenericUDFOPEqualOrLessThan.class.getAnnotation(Description.class).name(),
-          GenericUDFOPGreaterThan.class.getAnnotation(Description.class).name(),
-          GenericUDFOPLessThan.class.getAnnotation(Description.class).name(),
-          GenericUDFOPNotEqual.class.getAnnotation(Description.class).name());
-  private static final String IN_UDF =
-          GenericUDFIn.class.getAnnotation(Description.class).name();
-  private static final String BETWEEN_UDF =
-          GenericUDFBetween.class.getAnnotation(Description.class).name();
-
-
-  private HivePreFilteringRule() {
-    super(operand(Filter.class,
-            operand(RelNode.class, any())));
-    this.filterFactory = HiveFilter.DEFAULT_FILTER_FACTORY;
+  public HivePreFilteringRule(int maxCNFNodeCount) {
+    super(operand(Filter.class, operand(RelNode.class, any())));
+    this.filterFactory = HiveRelFactories.HIVE_FILTER_FACTORY;
+    this.maxCNFNodeCount = maxCNFNodeCount;
   }
 
-  public void onMatch(RelOptRuleCall call) {
+  @Override
+  public boolean matches(RelOptRuleCall call) {
     final Filter filter = call.rel(0);
     final RelNode filterChild = call.rel(1);
 
-    // 0. If the filter is already on top of a TableScan,
-    //    we can bail out
+    // If the filter is already on top of a TableScan,
+    // we can bail out
     if (filterChild instanceof TableScan) {
-      return;
+      return false;
+    }
+
+    HiveRulesRegistry registry = call.getPlanner().getContext().unwrap(HiveRulesRegistry.class);
+
+    // If this operator has been visited already by the rule,
+    // we do not need to apply the optimization
+    if (registry != null && registry.getVisited(this).contains(filter)) {
+      return false;
+    }
+
+    return true;
+  }
+
+  @Override
+  public void onMatch(RelOptRuleCall call) {
+    final Filter filter = call.rel(0);
+
+    // 0. Register that we have visited this operator in this rule
+    HiveRulesRegistry registry = call.getPlanner().getContext().unwrap(HiveRulesRegistry.class);
+    if (registry != null) {
+      registry.registerVisited(this, filter);
     }
 
     final RexBuilder rexBuilder = filter.getCluster().getRexBuilder();
 
-    final RexNode condition = RexUtil.pullFactors(rexBuilder, filter.getCondition());
+    // 1. Recompose filter possibly by pulling out common elements from DNF
+    // expressions
+    RexNode topFilterCondition = RexUtil.pullFactors(rexBuilder, filter.getCondition());
 
-    // 1. We extract possible candidates to be pushed down
-    List<RexNode> commonOperands = new ArrayList<>();
-    switch (condition.getKind()) {
-      case AND:
-        ImmutableList<RexNode> operands = RexUtil.flattenAnd(((RexCall) condition).getOperands());
-        for (RexNode operand: operands) {
-          if (operand.getKind() == SqlKind.OR) {
-            commonOperands.addAll(extractCommonOperands(rexBuilder,operand));
+    // 2. We extract possible candidates to be pushed down
+    List<RexNode> operandsToPushDown = new ArrayList<>();
+    List<RexNode> deterministicExprs = new ArrayList<>();
+    List<RexNode> nonDeterministicExprs = new ArrayList<>();
+
+    switch (topFilterCondition.getKind()) {
+    case AND:
+      ImmutableList<RexNode> operands = RexUtil.flattenAnd(((RexCall) topFilterCondition)
+          .getOperands());
+      Set<String> operandsToPushDownDigest = new HashSet<String>();
+      List<RexNode> extractedCommonOperands = null;
+
+      for (RexNode operand : operands) {
+        if (operand.getKind() == SqlKind.OR) {
+          extractedCommonOperands = extractCommonOperands(rexBuilder, operand, maxCNFNodeCount);
+          for (RexNode extractedExpr : extractedCommonOperands) {
+            if (operandsToPushDownDigest.add(extractedExpr.toString())) {
+              operandsToPushDown.add(extractedExpr);
+            }
           }
         }
-        break;
-      case OR:
-        commonOperands = extractCommonOperands(rexBuilder,condition);
-        break;
-      default:
-        return;
+
+        // TODO: Make expr traversal recursive. Extend to traverse inside
+        // elements of DNF/CNF & extract more deterministic pieces out.
+        if (HiveCalciteUtil.isDeterministic(operand)) {
+          deterministicExprs.add(operand);
+        } else {
+          nonDeterministicExprs.add(operand);
+        }
+      }
+
+      // Pull out Deterministic exprs from non-deterministic and push down
+      // deterministic expressions as a separate filter
+      // NOTE: Hive by convention doesn't pushdown non deterministic expressions
+      if (nonDeterministicExprs.size() > 0) {
+        for (RexNode expr : deterministicExprs) {
+          if (!operandsToPushDownDigest.contains(expr.toString())) {
+            operandsToPushDown.add(expr);
+            operandsToPushDownDigest.add(expr.toString());
+          }
+        }
+
+        topFilterCondition = RexUtil.pullFactors(rexBuilder,
+            RexUtil.composeConjunction(rexBuilder, nonDeterministicExprs, false));
+      }
+
+      break;
+
+    case OR:
+      operandsToPushDown = extractCommonOperands(rexBuilder, topFilterCondition, maxCNFNodeCount);
+      break;
+    default:
+      return;
     }
 
     // 2. If we did not generate anything for the new predicate, we bail out
-    if (commonOperands.isEmpty()) {
+    if (operandsToPushDown.isEmpty()) {
       return;
     }
 
     // 3. If the new conjuncts are already present in the plan, we bail out
-    final RelOptPredicateList predicates = RelMetadataQuery.getPulledUpPredicates(filter);
-    final List<RexNode> newConjuncts = new ArrayList<>();
-    for (RexNode commonOperand : commonOperands) {
-      boolean found = false;
-      for (RexNode conjunct : predicates.pulledUpPredicates) {
-        if (commonOperand.toString().equals(conjunct.toString())) {
-          found = true;
-          break;
-        }
-      }
-      if (!found) {
-        newConjuncts.add(commonOperand);
-      }
-    }
-    if (newConjuncts.isEmpty()) {
+    final List<RexNode> newConjuncts = HiveCalciteUtil.getPredsNotPushedAlready(filter.getInput(),
+        operandsToPushDown);
+    RexNode newPredicate = RexUtil.composeConjunction(rexBuilder, newConjuncts, false);
+    if (newPredicate.isAlwaysTrue()) {
       return;
     }
 
     // 4. Otherwise, we create a new condition
-    final RexNode newCondition = RexUtil.pullFactors(rexBuilder,
-            RexUtil.composeConjunction(rexBuilder, newConjuncts, false));
+    final RexNode newChildFilterCondition = RexUtil.pullFactors(rexBuilder, newPredicate);
 
     // 5. We create the new filter that might be pushed down
-    RelNode newFilter = filterFactory.createFilter(filterChild, newCondition);
-    RelNode newTopFilter = filterFactory.createFilter(newFilter, condition);
+    RelNode newChildFilter = filterFactory.createFilter(filter.getInput(), newChildFilterCondition);
+    RelNode newTopFilter = filterFactory.createFilter(newChildFilter, topFilterCondition);
+
+    // 6. We register both so we do not fire the rule on them again
+    if (registry != null) {
+      registry.registerVisited(this, newChildFilter);
+      registry.registerVisited(this, newTopFilter);
+    }
 
     call.transformTo(newTopFilter);
 
   }
 
-  private static List<RexNode> extractCommonOperands(RexBuilder rexBuilder, RexNode condition) {
+  private static List<RexNode> extractCommonOperands(RexBuilder rexBuilder, RexNode condition,
+          int maxCNFNodeCount) {
     assert condition.getKind() == SqlKind.OR;
-    Multimap<String,RexNode> reductionCondition = LinkedHashMultimap.create();
+    Multimap<String, RexNode> reductionCondition = LinkedHashMultimap.create();
 
-    // 1. We extract the information necessary to create the predicate for the new
-    //    filter; currently we support comparison functions, in and between
+    // Data structure to control whether a certain reference is present in every
+    // operand
+    Set<String> refsInAllOperands = null;
+
+    // 1. We extract the information necessary to create the predicate for the
+    // new filter; currently we support comparison functions, in and between
     ImmutableList<RexNode> operands = RexUtil.flattenOr(((RexCall) condition).getOperands());
-    for (RexNode operand: operands) {
-      final RexNode operandCNF = RexUtil.toCnf(rexBuilder, operand);
+    for (int i = 0; i < operands.size(); i++) {
+      final RexNode operand = operands.get(i);
+
+      final RexNode operandCNF = RexUtil.toCnf(rexBuilder, maxCNFNodeCount, operand);
       final List<RexNode> conjunctions = RelOptUtil.conjunctions(operandCNF);
-      boolean addedToReductionCondition = false; // Flag to control whether we have added a new factor
-                                                 // to the reduction predicate
-      for (RexNode conjunction: conjunctions) {
-        if (!(conjunction instanceof RexCall)) {
-          continue;
+
+      Set<String> refsInCurrentOperand = Sets.newHashSet();
+      for (RexNode conjunction : conjunctions) {
+        // We do not know what it is, we bail out for safety
+        if (!(conjunction instanceof RexCall) || !HiveCalciteUtil.isDeterministic(conjunction)) {
+          return new ArrayList<>();
         }
         RexCall conjCall = (RexCall) conjunction;
-        if(COMPARISON_UDFS.contains(conjCall.getOperator().getName())) {
-          if (conjCall.operands.get(0) instanceof RexInputRef &&
-                  conjCall.operands.get(1) instanceof RexLiteral) {
-            reductionCondition.put(conjCall.operands.get(0).toString(),
-                    conjCall);
-            addedToReductionCondition = true;
-          } else if (conjCall.operands.get(1) instanceof RexInputRef &&
-                  conjCall.operands.get(0) instanceof RexLiteral) {
-            reductionCondition.put(conjCall.operands.get(1).toString(),
-                    conjCall);
-            addedToReductionCondition = true;
+        RexNode ref = null;
+        if (COMPARISON.contains(conjCall.getOperator().getKind())) {
+          if (conjCall.operands.get(0) instanceof RexInputRef
+              && conjCall.operands.get(1) instanceof RexLiteral) {
+            ref = conjCall.operands.get(0);
+          } else if (conjCall.operands.get(1) instanceof RexInputRef
+              && conjCall.operands.get(0) instanceof RexLiteral) {
+            ref = conjCall.operands.get(1);
+          } else {
+            // We do not know what it is, we bail out for safety
+            return new ArrayList<>();
           }
-        } else if(conjCall.getOperator().getName().equals(IN_UDF)) {
-          reductionCondition.put(conjCall.operands.get(0).toString(),
-                  conjCall);
-          addedToReductionCondition = true;
-        } else if(conjCall.getOperator().getName().equals(BETWEEN_UDF)) {
-          reductionCondition.put(conjCall.operands.get(1).toString(),
-                  conjCall);
-          addedToReductionCondition = true;
+        } else if (conjCall.getOperator().getKind().equals(SqlKind.IN)) {
+          ref = conjCall.operands.get(0);
+        } else if (conjCall.getOperator().getKind().equals(SqlKind.BETWEEN)) {
+          ref = conjCall.operands.get(1);
+        } else {
+          // We do not know what it is, we bail out for safety
+          return new ArrayList<>();
         }
+
+        String stringRef = ref.toString();
+        reductionCondition.put(stringRef, conjCall);
+        refsInCurrentOperand.add(stringRef);
       }
 
-      // If we did not add any factor, we can bail out
-      if (!addedToReductionCondition) {
+      // Updates the references that are present in every operand up till now
+      if (i == 0) {
+        refsInAllOperands = refsInCurrentOperand;
+      } else {
+        refsInAllOperands = Sets.intersection(refsInAllOperands, refsInCurrentOperand);
+      }
+      // If we did not add any factor or there are no common factors, we can
+      // bail out
+      if (refsInAllOperands.isEmpty()) {
         return new ArrayList<>();
       }
     }
 
     // 2. We gather the common factors and return them
     List<RexNode> commonOperands = new ArrayList<>();
-    for (Entry<String,Collection<RexNode>> pair : reductionCondition.asMap().entrySet()) {
-      if (pair.getValue().size() == operands.size()) {
-        commonOperands.add(RexUtil.composeDisjunction(rexBuilder, pair.getValue(), false));
-      }
+    for (String ref : refsInAllOperands) {
+      commonOperands
+          .add(RexUtil.composeDisjunction(rexBuilder, reductionCondition.get(ref), false));
     }
     return commonOperands;
   }

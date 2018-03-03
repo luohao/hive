@@ -27,6 +27,7 @@ import org.apache.hadoop.hive.ql.exec.ExprNodeEvaluator;
 import org.apache.hadoop.hive.ql.exec.ExprNodeEvaluatorFactory;
 import org.apache.hadoop.hive.ql.exec.FunctionRegistry;
 import org.apache.hadoop.hive.ql.exec.Operator;
+import org.apache.hadoop.hive.ql.exec.ReduceSinkOperator;
 import org.apache.hadoop.hive.ql.exec.UDF;
 import org.apache.hadoop.hive.ql.optimizer.ConstantPropagateProcFactory;
 import org.apache.hadoop.hive.ql.parse.SemanticException;
@@ -109,9 +110,17 @@ public class ExprNodeDescUtils {
    * bind two predicates by AND op
    */
   public static ExprNodeGenericFuncDesc mergePredicates(ExprNodeDesc prev, ExprNodeDesc next) {
-    List<ExprNodeDesc> children = new ArrayList<ExprNodeDesc>(2);
-    children.add(prev);
-    children.add(next);
+    final List<ExprNodeDesc> children = new ArrayList<ExprNodeDesc>(2);
+    if (FunctionRegistry.isOpAnd(prev)) {
+      children.addAll(prev.getChildren());
+    } else {
+      children.add(prev);
+    }
+    if (FunctionRegistry.isOpAnd(next)) {
+      children.addAll(next.getChildren());
+    } else {
+      children.add(next);
+    }
     return new ExprNodeGenericFuncDesc(TypeInfoFactory.booleanTypeInfo,
         FunctionRegistry.getGenericUDFForAnd(), children);
   }
@@ -203,23 +212,37 @@ public class ExprNodeDescUtils {
    */
   public static ArrayList<ExprNodeDesc> backtrack(List<ExprNodeDesc> sources,
       Operator<?> current, Operator<?> terminal) throws SemanticException {
+    return backtrack(sources, current, terminal, false);
+  }
+
+  public static ArrayList<ExprNodeDesc> backtrack(List<ExprNodeDesc> sources,
+      Operator<?> current, Operator<?> terminal, boolean foldExpr) throws SemanticException {
     ArrayList<ExprNodeDesc> result = new ArrayList<ExprNodeDesc>();
     for (ExprNodeDesc expr : sources) {
-      result.add(backtrack(expr, current, terminal));
+      result.add(backtrack(expr, current, terminal, foldExpr));
     }
     return result;
   }
 
   public static ExprNodeDesc backtrack(ExprNodeDesc source, Operator<?> current,
       Operator<?> terminal) throws SemanticException {
+    return backtrack(source, current, terminal, false);
+  }
+
+  public static ExprNodeDesc backtrack(ExprNodeDesc source, Operator<?> current,
+      Operator<?> terminal, boolean foldExpr) throws SemanticException {
     Operator<?> parent = getSingleParent(current, terminal);
     if (parent == null) {
+      return source;
+    }
+    if (!foldExpr && isConstant(source)) {
+      //constant, just return
       return source;
     }
     if (source instanceof ExprNodeGenericFuncDesc) {
       // all children expression should be resolved
       ExprNodeGenericFuncDesc function = (ExprNodeGenericFuncDesc) source.clone();
-      List<ExprNodeDesc> children = backtrack(function.getChildren(), current, terminal);
+      List<ExprNodeDesc> children = backtrack(function.getChildren(), current, terminal, foldExpr);
       for (ExprNodeDesc child : children) {
         if (child == null) {
           // Could not resolve all of the function children, fail
@@ -227,6 +250,13 @@ public class ExprNodeDescUtils {
         }
       }
       function.setChildren(children);
+      if (foldExpr) {
+        // fold after replacing, if possible
+        ExprNodeDesc foldedFunction = ConstantPropagateProcFactory.foldExpr(function);
+        if (foldedFunction != null) {
+          return foldedFunction;
+        }
+      }
       return function;
     }
     if (source instanceof ExprNodeColumnDesc) {
@@ -236,14 +266,14 @@ public class ExprNodeDescUtils {
     if (source instanceof ExprNodeFieldDesc) {
       // field expression should be resolved
       ExprNodeFieldDesc field = (ExprNodeFieldDesc) source.clone();
-      ExprNodeDesc fieldDesc = backtrack(field.getDesc(), current, terminal);
+      ExprNodeDesc fieldDesc = backtrack(field.getDesc(), current, terminal, foldExpr);
       if (fieldDesc == null) {
         return null;
       }
       field.setDesc(fieldDesc);
       return field;
     }
-    // constant or null expr, just return
+    // just return
     return source;
   }
 
@@ -475,8 +505,31 @@ public class ExprNodeDescUtils {
 		} else if (exprDesc instanceof ExprNodeFieldDesc) {
 			getExprNodeColumnDesc(((ExprNodeFieldDesc) exprDesc).getDesc(),
 					hashCodeToColumnDescMap);
-		}
+		} else if( exprDesc instanceof  ExprNodeSubQueryDesc) {
+		    getExprNodeColumnDesc(((ExprNodeSubQueryDesc) exprDesc).getSubQueryLhs(),
+                    hashCodeToColumnDescMap);
+        }
+
 	}
+
+  public static boolean isConstant(ExprNodeDesc value) {
+    if (value instanceof ExprNodeConstantDesc) {
+      return true;
+    }
+    if (value instanceof ExprNodeGenericFuncDesc) {
+      ExprNodeGenericFuncDesc func = (ExprNodeGenericFuncDesc) value;
+      if (!FunctionRegistry.isDeterministic(func.getGenericUDF())) {
+        return false;
+      }
+      for (ExprNodeDesc child : func.getChildren()) {
+        if (!isConstant(child)) {
+          return false;
+        }
+      }
+      return true;
+    }
+    return false;
+  }
 
   public static boolean isAllConstants(List<ExprNodeDesc> value) {
     for (ExprNodeDesc expr : value) {
@@ -485,6 +538,14 @@ public class ExprNodeDescUtils {
       }
     }
     return true;
+  }
+
+  public static boolean isNullConstant(ExprNodeDesc value) {
+    if ((value instanceof ExprNodeConstantDesc)
+        && ((ExprNodeConstantDesc) value).getValue() == null) {
+      return true;
+    }
+    return false;
   }
 
   public static PrimitiveTypeInfo deriveMinArgumentCast(
@@ -597,5 +658,203 @@ public class ExprNodeDescUtils {
     }
     // constant or null expr, just return
     return source;
+  }
+
+  public static String extractColName(ExprNodeDesc root) {
+    if (root instanceof ExprNodeColumnDesc) {
+      return ((ExprNodeColumnDesc) root).getColumn();
+    } else {
+      if (root.getChildren() == null) {
+        return null;
+      }
+
+      String column = null;
+      for (ExprNodeDesc d: root.getChildren()) {
+        String candidate = extractColName(d);
+        if (column != null && candidate != null) {
+          return null;
+        } else if (candidate != null) {
+          column = candidate;
+        }
+      }
+      return column;
+    }
+  }
+
+  public static ExprNodeColumnDesc getColumnExpr(ExprNodeDesc expr) {
+    while (FunctionRegistry.isOpCast(expr)) {
+      expr = expr.getChildren().get(0);
+    }
+    return (expr instanceof ExprNodeColumnDesc) ? (ExprNodeColumnDesc)expr : null;
+  }
+
+  // Find the constant origin of a certain column if it is originated from a constant
+  // Otherwise, it returns the expression that originated the column
+  public static ExprNodeDesc findConstantExprOrigin(String dpCol, Operator<? extends OperatorDesc> op) {
+    ExprNodeDesc expr = op.getColumnExprMap().get(dpCol);
+    ExprNodeDesc foldedExpr;
+    // If it is a function, we try to fold it
+    if (expr instanceof ExprNodeGenericFuncDesc) {
+      foldedExpr = ConstantPropagateProcFactory.foldExpr((ExprNodeGenericFuncDesc)expr);
+      if (foldedExpr == null) {
+        foldedExpr = expr;
+      }
+    } else {
+      foldedExpr = expr;
+    }
+    // If it is a column reference, we will try to resolve it
+    if (foldedExpr instanceof ExprNodeColumnDesc) {
+      Operator<? extends OperatorDesc> originOp = null;
+      for(Operator<? extends OperatorDesc> parentOp : op.getParentOperators()) {
+        if (parentOp.getColumnExprMap() != null) {
+          originOp = parentOp;
+          break;
+        }
+      }
+      if (originOp != null) {
+        return findConstantExprOrigin(((ExprNodeColumnDesc)foldedExpr).getColumn(), originOp);
+      }
+    }
+    // Otherwise, we return the expression
+    return foldedExpr;
+  }
+
+  /**
+   * Checks whether the keys of a parent operator are a prefix of the keys of a
+   * child operator.
+   * @param childKeys keys of the child operator
+   * @param parentKeys keys of the parent operator
+   * @param childOp child operator
+   * @param parentOp parent operator
+   * @return true if the keys are a prefix, false otherwise
+   * @throws SemanticException
+   */
+  public static boolean checkPrefixKeys(List<ExprNodeDesc> childKeys, List<ExprNodeDesc> parentKeys,
+      Operator<? extends OperatorDesc> childOp, Operator<? extends OperatorDesc> parentOp)
+          throws SemanticException {
+    return checkPrefixKeys(childKeys, parentKeys, childOp, parentOp, false);
+  }
+
+  /**
+   * Checks whether the keys of a child operator are a prefix of the keys of a
+   * parent operator.
+   * @param childKeys keys of the child operator
+   * @param parentKeys keys of the parent operator
+   * @param childOp child operator
+   * @param parentOp parent operator
+   * @return true if the keys are a prefix, false otherwise
+   * @throws SemanticException
+   */
+  public static boolean checkPrefixKeysUpstream(List<ExprNodeDesc> childKeys, List<ExprNodeDesc> parentKeys,
+      Operator<? extends OperatorDesc> childOp, Operator<? extends OperatorDesc> parentOp)
+          throws SemanticException {
+    return checkPrefixKeys(childKeys, parentKeys, childOp, parentOp, true);
+  }
+
+  private static boolean checkPrefixKeys(List<ExprNodeDesc> childKeys, List<ExprNodeDesc> parentKeys,
+      Operator<? extends OperatorDesc> childOp, Operator<? extends OperatorDesc> parentOp,
+      boolean upstream) throws SemanticException {
+    if (childKeys == null || childKeys.isEmpty()) {
+      if (parentKeys != null && !parentKeys.isEmpty()) {
+        return false;
+      }
+      return true;
+    }
+    if (parentKeys == null || parentKeys.isEmpty()) {
+      return false;
+    }
+    int size;
+    if (upstream) {
+      if (childKeys.size() > parentKeys.size()) {
+        return false;
+      }
+      size = childKeys.size();
+    } else {
+      if (parentKeys.size() > childKeys.size()) {
+        return false;
+      }
+      size = parentKeys.size();
+    }
+    for (int i = 0; i < size; i++) {
+      ExprNodeDesc expr = ExprNodeDescUtils.backtrack(childKeys.get(i), childOp, parentOp);
+      if (expr == null) {
+        // cKey is not present in parent
+        return false;
+      }
+      if (!expr.isSame(parentKeys.get(i))) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  public static class ColumnOrigin {
+    public ExprNodeColumnDesc col;
+    public Operator<?> op;
+
+    public ColumnOrigin(ExprNodeColumnDesc col, Operator<?> op) {
+      super();
+      this.col = col;
+      this.op = op;
+    }
+  }
+
+  private static ExprNodeDesc findParentExpr(ExprNodeColumnDesc col, Operator<?> op) {
+    if (op instanceof ReduceSinkOperator) {
+      return col;
+    }
+
+    ExprNodeDesc parentExpr = col;
+    Map<String, ExprNodeDesc> mapping = op.getColumnExprMap();
+    if (mapping != null) {
+      parentExpr = mapping.get(col.getColumn());
+    }
+    return parentExpr;
+  }
+
+  public static ColumnOrigin findColumnOrigin(ExprNodeDesc expr, Operator<?> op) {
+    if (expr == null || op == null) {
+      // bad input
+      return null;
+    }
+
+    ExprNodeColumnDesc col = ExprNodeDescUtils.getColumnExpr(expr);
+    if (col == null) {
+      // not a column
+      return null;
+    }
+
+    Operator<?> parentOp = null;
+    int numParents = op.getNumParent();
+    if (numParents == 0) {
+      return new ColumnOrigin(col, op);
+    }
+
+    ExprNodeDesc parentExpr = findParentExpr(col, op);
+    if (parentExpr == null) {
+      // couldn't find proper parent column expr
+      return null;
+    }
+
+    if (numParents == 1) {
+      parentOp = op.getParentOperators().get(0);
+    } else {
+      // Multiple parents - find the right one based on the table alias in the parentExpr
+      ExprNodeColumnDesc parentCol = ExprNodeDescUtils.getColumnExpr(parentExpr);
+      if (parentCol != null) {
+        for (Operator<?> currParent : op.getParentOperators()) {
+          if (currParent.getSchema().getTableNames().contains(parentCol.getTabAlias())) {
+            parentOp = currParent;
+            break;
+          }
+        }
+      }
+    }
+
+    if (parentOp == null) {
+      return null;
+    }
+
+    return findColumnOrigin(parentExpr, parentOp);
   }
 }

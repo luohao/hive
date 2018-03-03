@@ -14,32 +14,42 @@
 package org.apache.hadoop.hive.ql.io.parquet.read;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.ListIterator;
 import java.util.Map;
+import java.util.Set;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.ql.io.IOConstants;
 import org.apache.hadoop.hive.ql.io.parquet.convert.DataWritableRecordConverter;
+import org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe;
 import org.apache.hadoop.hive.ql.metadata.VirtualColumn;
+import org.apache.hadoop.hive.ql.optimizer.FieldNode;
+import org.apache.hadoop.hive.ql.optimizer.NestedColumnFieldPruningUtils;
 import org.apache.hadoop.hive.serde2.ColumnProjectionUtils;
 import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspector;
+import org.apache.hadoop.hive.serde2.typeinfo.ListTypeInfo;
 import org.apache.hadoop.hive.serde2.typeinfo.StructTypeInfo;
 import org.apache.hadoop.hive.serde2.typeinfo.TypeInfo;
+import org.apache.hadoop.hive.serde2.typeinfo.TypeInfoFactory;
 import org.apache.hadoop.hive.serde2.typeinfo.TypeInfoUtils;
 import org.apache.hadoop.io.ArrayWritable;
+import org.apache.hadoop.io.Text;
 import org.apache.hadoop.util.StringUtils;
-
 import org.apache.parquet.hadoop.api.InitContext;
 import org.apache.parquet.hadoop.api.ReadSupport;
 import org.apache.parquet.io.api.RecordMaterializer;
 import org.apache.parquet.schema.GroupType;
 import org.apache.parquet.schema.MessageType;
-import org.apache.parquet.schema.Type;
-import org.apache.parquet.schema.Types;
+import org.apache.parquet.schema.OriginalType;
 import org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName;
+import org.apache.parquet.schema.Type;
+import org.apache.parquet.schema.Type.Repetition;
+import org.apache.parquet.schema.Types;
 
 /**
  *
@@ -52,7 +62,7 @@ public class DataWritableReadSupport extends ReadSupport<ArrayWritable> {
 
   public static final String HIVE_TABLE_AS_PARQUET_SCHEMA = "HIVE_TABLE_SCHEMA";
   public static final String PARQUET_COLUMN_INDEX_ACCESS = "parquet.column.index.access";
-
+  private TypeInfo hiveTypeInfo;
   /**
    * From a string which columns names (including hive column), return a list
    * of string columns
@@ -60,7 +70,7 @@ public class DataWritableReadSupport extends ReadSupport<ArrayWritable> {
    * @param columns comma separated list of columns
    * @return list with virtual columns removed
    */
-  private static List<String> getColumnNames(final String columns) {
+  public static List<String> getColumnNames(final String columns) {
     return (List<String>) VirtualColumn.
         removeVirtualColumns(StringUtils.getStringCollection(columns));
   }
@@ -72,7 +82,7 @@ public class DataWritableReadSupport extends ReadSupport<ArrayWritable> {
    * @param types Comma separated list of types
    * @return A list of TypeInfo objects.
    */
-  private static List<TypeInfo> getColumnTypes(final String types) {
+  public static List<TypeInfo> getColumnTypes(final String types) {
     return TypeInfoUtils.getTypeInfosFromTypeString(types);
   }
 
@@ -106,45 +116,60 @@ public class DataWritableReadSupport extends ReadSupport<ArrayWritable> {
   private static List<Type> getProjectedGroupFields(GroupType schema, List<String> colNames, List<TypeInfo> colTypes) {
     List<Type> schemaTypes = new ArrayList<Type>();
 
-    ListIterator columnIterator = colNames.listIterator();
+    ListIterator<String> columnIterator = colNames.listIterator();
     while (columnIterator.hasNext()) {
       TypeInfo colType = colTypes.get(columnIterator.nextIndex());
-      String colName = (String) columnIterator.next();
+      String colName = columnIterator.next();
 
       Type fieldType = getFieldTypeIgnoreCase(schema, colName);
-      if (fieldType != null) {
-        if (colType.getCategory() == ObjectInspector.Category.STRUCT) {
-          if (fieldType.isPrimitive()) {
-            throw new IllegalStateException("Invalid schema data type, found: PRIMITIVE, expected: STRUCT");
-          }
-
-          GroupType groupFieldType = fieldType.asGroupType();
-
-          List<Type> groupFields = getProjectedGroupFields(
-              groupFieldType,
-              ((StructTypeInfo) colType).getAllStructFieldNames(),
-              ((StructTypeInfo) colType).getAllStructFieldTypeInfos()
-          );
-
-          Type[] typesArray = groupFields.toArray(new Type[0]);
-          schemaTypes.add(Types.buildGroup(groupFieldType.getRepetition())
-              .addFields(typesArray)
-              .named(fieldType.getName())
-          );
-        } else {
-          schemaTypes.add(fieldType);
-        }
-      } else {
-        // Add type for schema evolution
+      if (fieldType == null) {
         schemaTypes.add(Types.optional(PrimitiveTypeName.BINARY).named(colName));
+      } else {
+        schemaTypes.add(getProjectedType(colType, fieldType));
       }
     }
 
     return schemaTypes;
   }
 
+  private static Type getProjectedType(TypeInfo colType, Type fieldType) {
+    switch (colType.getCategory()) {
+      case STRUCT:
+        List<Type> groupFields = getProjectedGroupFields(
+          fieldType.asGroupType(),
+          ((StructTypeInfo) colType).getAllStructFieldNames(),
+          ((StructTypeInfo) colType).getAllStructFieldTypeInfos()
+        );
+
+        Type[] typesArray = groupFields.toArray(new Type[0]);
+        return Types.buildGroup(fieldType.getRepetition())
+          .addFields(typesArray)
+          .named(fieldType.getName());
+      case LIST:
+        TypeInfo elemType = ((ListTypeInfo) colType).getListElementTypeInfo();
+        if (elemType.getCategory() == ObjectInspector.Category.STRUCT) {
+          Type subFieldType = fieldType.asGroupType().getType(0);
+          if (!subFieldType.isPrimitive()) {
+            String subFieldName = subFieldType.getName();
+            Text name = new Text(subFieldName);
+            if (name.equals(ParquetHiveSerDe.ARRAY) || name.equals(ParquetHiveSerDe.LIST)) {
+              subFieldType = new GroupType(Repetition.REPEATED, subFieldName,
+                getProjectedType(elemType, subFieldType.asGroupType().getType(0)));
+            } else {
+              subFieldType = getProjectedType(elemType, subFieldType);
+            }
+            return Types.buildGroup(Repetition.OPTIONAL).as(OriginalType.LIST).addFields(
+              subFieldType).named(fieldType.getName());
+          }
+        }
+        break;
+      default:
+    }
+    return fieldType;
+  }
+
   /**
-   * Searchs column names by name on a given Parquet message schema, and returns its projected
+   * Searches column names by name on a given Parquet message schema, and returns its projected
    * Parquet schema types.
    *
    * @param schema Message type schema where to search for column names.
@@ -152,7 +177,7 @@ public class DataWritableReadSupport extends ReadSupport<ArrayWritable> {
    * @param colTypes List of column types.
    * @return A MessageType object of projected columns.
    */
-  private static MessageType getSchemaByName(MessageType schema, List<String> colNames, List<TypeInfo> colTypes) {
+  public static MessageType getSchemaByName(MessageType schema, List<String> colNames, List<TypeInfo> colTypes) {
     List<Type> projectedFields = getProjectedGroupFields(schema, colNames, colTypes);
     Type[] typesArray = projectedFields.toArray(new Type[0]);
 
@@ -162,7 +187,7 @@ public class DataWritableReadSupport extends ReadSupport<ArrayWritable> {
   }
 
   /**
-   * Searchs column names by index on a given Parquet file schema, and returns its corresponded
+   * Searches column names by indexes on a given Parquet file schema, and returns its corresponded
    * Parquet schema types.
    *
    * @param schema Message schema where to search for column names.
@@ -170,7 +195,7 @@ public class DataWritableReadSupport extends ReadSupport<ArrayWritable> {
    * @param colIndexes List of column indexes.
    * @return A MessageType object of the column names found.
    */
-  private static MessageType getSchemaByIndex(MessageType schema, List<String> colNames, List<Integer> colIndexes) {
+  public static MessageType getSchemaByIndex(MessageType schema, List<String> colNames, List<Integer> colIndexes) {
     List<Type> schemaTypes = new ArrayList<Type>();
 
     for (Integer i : colIndexes) {
@@ -180,12 +205,134 @@ public class DataWritableReadSupport extends ReadSupport<ArrayWritable> {
         } else {
           //prefixing with '_mask_' to ensure no conflict with named
           //columns in the file schema
+          schemaTypes.add(
+            Types.optional(PrimitiveTypeName.BINARY).named("_mask_" + colNames.get(i)));
+        }
+      }
+    }
+
+    return new MessageType(schema.getName(), schemaTypes);
+  }
+
+  /**
+   * Generate the projected schema from colIndexes and nested column paths. If the column is
+   * contained by colIndex, it will be added directly, otherwise it will build a group type which
+   * contains all required sub types using nestedColumnPaths.
+   * @param schema original schema
+   * @param colNames
+   * @param colIndexes the index of needed columns
+   * @param nestedColumnPaths the paths for nested columns
+   * @return
+   */
+  public static MessageType getProjectedSchema(
+    MessageType schema,
+    List<String> colNames,
+    List<Integer> colIndexes,
+    Set<String> nestedColumnPaths) {
+    List<Type> schemaTypes = new ArrayList<Type>();
+
+    Map<String, FieldNode> prunedCols = getPrunedNestedColumns(nestedColumnPaths);
+    for (Integer i : colIndexes) {
+      if (i < colNames.size()) {
+        if (i < schema.getFieldCount()) {
+          Type t = schema.getType(i);
+          String tn = t.getName().toLowerCase();
+          if (!prunedCols.containsKey(tn)) {
+            schemaTypes.add(schema.getType(i));
+          } else {
+            if (t.isPrimitive()) {
+              // For primitive type, add directly.
+              schemaTypes.add(t);
+            } else {
+              // For group type, we need to build the projected group type with required leaves
+              List<Type> g =
+                projectLeafTypes(Arrays.asList(t), Arrays.asList(prunedCols.get(tn)));
+              if (!g.isEmpty()) {
+                schemaTypes.addAll(g);
+              }
+            }
+          }
+        } else {
+          //prefixing with '_mask_' to ensure no conflict with named
+          //columns in the file schema
           schemaTypes.add(Types.optional(PrimitiveTypeName.BINARY).named("_mask_" + colNames.get(i)));
         }
       }
     }
 
     return new MessageType(schema.getName(), schemaTypes);
+  }
+
+  /**
+   * Return the columns which contains required nested attribute level
+   * E.g., given struct a:<x:int, y:int> while 'x' is required and 'y' is not, the method will return
+   * a pruned struct for 'a' which only contains the attribute 'x'
+   *
+   * @param nestedColPaths the paths for required nested attribute
+   * @return a map from the column to its selected nested column paths, of which the keys are all lower-cased.
+   */
+  private static Map<String, FieldNode> getPrunedNestedColumns(Set<String> nestedColPaths) {
+    Map<String, FieldNode> resMap = new HashMap<>();
+    if (nestedColPaths.isEmpty()) {
+      return resMap;
+    }
+    for (String s : nestedColPaths) {
+      String c = StringUtils.split(s, '.')[0].toLowerCase();
+      if (!resMap.containsKey(c)) {
+        FieldNode f = NestedColumnFieldPruningUtils.addNodeByPath(null, s);
+        resMap.put(c, f);
+      } else {
+        resMap.put(c, NestedColumnFieldPruningUtils.addNodeByPath(resMap.get(c), s));
+      }
+    }
+    return resMap;
+  }
+
+  private static GroupType buildProjectedGroupType(
+    GroupType originalType,
+    List<Type> types) {
+    if (types == null || types.isEmpty()) {
+      return null;
+    }
+    return new GroupType(originalType.getRepetition(), originalType.getName(), types);
+  }
+
+  private static List<Type> projectLeafTypes(
+    List<Type> types,
+    List<FieldNode> nodes) {
+    List<Type> res = new ArrayList<>();
+    if (nodes.isEmpty()) {
+      return res;
+    }
+    Map<String, FieldNode> fieldMap = new HashMap<>();
+    for (FieldNode n : nodes) {
+      fieldMap.put(n.getFieldName().toLowerCase(), n);
+    }
+    for (Type type : types) {
+      String tn = type.getName().toLowerCase();
+
+      if (fieldMap.containsKey(tn)) {
+        FieldNode f = fieldMap.get(tn);
+        if (f.getNodes().isEmpty()) {
+          // no child, no need for pruning
+          res.add(type);
+        } else {
+          if (type instanceof GroupType) {
+            GroupType groupType = type.asGroupType();
+            List<Type> ts = projectLeafTypes(groupType.getFields(), f.getNodes());
+            GroupType g = buildProjectedGroupType(groupType, ts);
+            if (g != null) {
+              res.add(g);
+            }
+          } else {
+            throw new RuntimeException(
+              "Primitive type " + f.getFieldName() + "should not " + "doesn't match type" + f
+                .toString());
+          }
+        }
+      }
+    }
+    return res;
   }
 
   /**
@@ -204,6 +351,8 @@ public class DataWritableReadSupport extends ReadSupport<ArrayWritable> {
 
     if (columnNames != null) {
       List<String> columnNamesList = getColumnNames(columnNames);
+      String columnTypes = configuration.get(IOConstants.COLUMNS_TYPES);
+      List<TypeInfo> columnTypesList = getColumnTypes(columnTypes);
 
       MessageType tableSchema;
       if (indexAccess) {
@@ -216,18 +365,19 @@ public class DataWritableReadSupport extends ReadSupport<ArrayWritable> {
 
         tableSchema = getSchemaByIndex(fileSchema, columnNamesList, indexSequence);
       } else {
-        String columnTypes = configuration.get(IOConstants.COLUMNS_TYPES);
-        List<TypeInfo> columnTypesList = getColumnTypes(columnTypes);
 
         tableSchema = getSchemaByName(fileSchema, columnNamesList, columnTypesList);
       }
 
       contextMetadata.put(HIVE_TABLE_AS_PARQUET_SCHEMA, tableSchema.toString());
+      contextMetadata.put(PARQUET_COLUMN_INDEX_ACCESS, String.valueOf(indexAccess));
+      this.hiveTypeInfo = TypeInfoFactory.getStructTypeInfo(columnNamesList, columnTypesList);
 
+      Set<String> groupPaths = ColumnProjectionUtils.getNestedColumnPaths(configuration);
       List<Integer> indexColumnsWanted = ColumnProjectionUtils.getReadColumnIDs(configuration);
       if (!ColumnProjectionUtils.isReadAllColumns(configuration) && !indexColumnsWanted.isEmpty()) {
-        MessageType requestedSchemaByUser =
-            getSchemaByIndex(tableSchema, columnNamesList, indexColumnsWanted);
+        MessageType requestedSchemaByUser = getProjectedSchema(tableSchema, columnNamesList,
+          indexColumnsWanted, groupPaths);
         return new ReadContext(requestedSchemaByUser, contextMetadata);
       } else {
         return new ReadContext(tableSchema, contextMetadata);
@@ -262,6 +412,6 @@ public class DataWritableReadSupport extends ReadSupport<ArrayWritable> {
       metadata.put(key, String.valueOf(HiveConf.getBoolVar(
         configuration, HiveConf.ConfVars.HIVE_PARQUET_TIMESTAMP_SKIP_CONVERSION)));
     }
-    return new DataWritableRecordConverter(readContext.getRequestedSchema(), metadata);
+    return new DataWritableRecordConverter(readContext.getRequestedSchema(), metadata, hiveTypeInfo);
   }
 }

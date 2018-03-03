@@ -20,15 +20,12 @@ package org.apache.hadoop.hive.ql.exec;
 
 import java.io.Serializable;
 import java.util.Arrays;
-import java.util.Collection;
 import java.util.List;
-import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hive.conf.HiveConf;
+import org.apache.hadoop.hive.ql.CompilationOpContext;
 import org.apache.hadoop.hive.ql.metadata.HiveException;
 import org.apache.hadoop.hive.ql.plan.UDTFDesc;
 import org.apache.hadoop.hive.ql.plan.api.OperatorType;
@@ -36,6 +33,8 @@ import org.apache.hadoop.hive.ql.udf.generic.GenericUDTF;
 import org.apache.hadoop.hive.ql.udf.generic.UDTFCollector;
 import org.apache.hadoop.hive.serde2.objectinspector.StructField;
 import org.apache.hadoop.hive.serde2.objectinspector.StructObjectInspector;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * UDTFOperator.
@@ -44,7 +43,7 @@ import org.apache.hadoop.hive.serde2.objectinspector.StructObjectInspector;
 public class UDTFOperator extends Operator<UDTFDesc> implements Serializable {
   private static final long serialVersionUID = 1L;
 
-  protected static final Log LOG = LogFactory.getLog(UDTFOperator.class.getName());
+  protected static final Logger LOG = LoggerFactory.getLogger(UDTFOperator.class.getName());
 
   StructObjectInspector udtfInputOI = null;
   Object[] objToSendToUDTF = null;
@@ -58,9 +57,18 @@ public class UDTFOperator extends Operator<UDTFDesc> implements Serializable {
    */
   transient AutoProgressor autoProgressor;
 
+  /** Kryo ctor. */
+  protected UDTFOperator() {
+    super();
+  }
+
+  public UDTFOperator(CompilationOpContext ctx) {
+    super(ctx);
+  }
+
   @Override
-  protected Collection<Future<?>> initializeOp(Configuration hconf) throws HiveException {
-    Collection<Future<?>> result = super.initializeOp(hconf);
+  protected void initializeOp(Configuration hconf) throws HiveException {
+    super.initializeOp(hconf);
     genericUDTF = conf.getGenericUDTF();
     collector = new UDTFCollector(this);
 
@@ -93,7 +101,6 @@ public class UDTFOperator extends Operator<UDTFDesc> implements Serializable {
               hconf, HiveConf.ConfVars.HIVES_AUTO_PROGRESS_TIMEOUT, TimeUnit.MILLISECONDS));
       autoProgressor.go();
     }
-    return result;
   }
 
   @Override
@@ -128,7 +135,7 @@ public class UDTFOperator extends Operator<UDTFDesc> implements Serializable {
 
   @Override
   public String getName() {
-    return getOperatorName();
+    return UDTFOperator.getOperatorName();
   }
 
   static public String getOperatorName() {
@@ -143,5 +150,6 @@ public class UDTFOperator extends Operator<UDTFDesc> implements Serializable {
   @Override
   protected void closeOp(boolean abort) throws HiveException {
     conf.getGenericUDTF().close();
+    super.closeOp(abort);
   }
 }

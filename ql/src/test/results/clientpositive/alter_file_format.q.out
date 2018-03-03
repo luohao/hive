@@ -24,6 +24,11 @@ Retention:          	0
 #### A masked pattern was here ####
 Table Type:         	MANAGED_TABLE       	 
 Table Parameters:	 	 
+	COLUMN_STATS_ACCURATE	{\"BASIC_STATS\":\"true\"}
+	numFiles            	0                   
+	numRows             	0                   
+	rawDataSize         	0                   
+	totalSize           	0                   
 #### A masked pattern was here ####
 	 	 
 # Storage Information	 	 
@@ -62,11 +67,11 @@ Retention:          	0
 #### A masked pattern was here ####
 Table Type:         	MANAGED_TABLE       	 
 Table Parameters:	 	 
-	COLUMN_STATS_ACCURATE	false               
+	COLUMN_STATS_ACCURATE	{\"BASIC_STATS\":\"true\"}
 #### A masked pattern was here ####
 	numFiles            	0                   
-	numRows             	-1                  
-	rawDataSize         	-1                  
+	numRows             	0                   
+	rawDataSize         	0                   
 	totalSize           	0                   
 #### A masked pattern was here ####
 	 	 
@@ -106,11 +111,11 @@ Retention:          	0
 #### A masked pattern was here ####
 Table Type:         	MANAGED_TABLE       	 
 Table Parameters:	 	 
-	COLUMN_STATS_ACCURATE	false               
+	COLUMN_STATS_ACCURATE	{\"BASIC_STATS\":\"true\"}
 #### A masked pattern was here ####
 	numFiles            	0                   
-	numRows             	-1                  
-	rawDataSize         	-1                  
+	numRows             	0                   
+	rawDataSize         	0                   
 	totalSize           	0                   
 #### A masked pattern was here ####
 	 	 
@@ -150,11 +155,11 @@ Retention:          	0
 #### A masked pattern was here ####
 Table Type:         	MANAGED_TABLE       	 
 Table Parameters:	 	 
-	COLUMN_STATS_ACCURATE	false               
+	COLUMN_STATS_ACCURATE	{\"BASIC_STATS\":\"true\"}
 #### A masked pattern was here ####
 	numFiles            	0                   
-	numRows             	-1                  
-	rawDataSize         	-1                  
+	numRows             	0                   
+	rawDataSize         	0                   
 	totalSize           	0                   
 #### A masked pattern was here ####
 	 	 
@@ -194,11 +199,11 @@ Retention:          	0
 #### A masked pattern was here ####
 Table Type:         	MANAGED_TABLE       	 
 Table Parameters:	 	 
-	COLUMN_STATS_ACCURATE	false               
+	COLUMN_STATS_ACCURATE	{\"BASIC_STATS\":\"true\"}
 #### A masked pattern was here ####
 	numFiles            	0                   
-	numRows             	-1                  
-	rawDataSize         	-1                  
+	numRows             	0                   
+	rawDataSize         	0                   
 	totalSize           	0                   
 #### A masked pattern was here ####
 	 	 
@@ -238,11 +243,11 @@ Retention:          	0
 #### A masked pattern was here ####
 Table Type:         	MANAGED_TABLE       	 
 Table Parameters:	 	 
-	COLUMN_STATS_ACCURATE	false               
+	COLUMN_STATS_ACCURATE	{\"BASIC_STATS\":\"true\"}
 #### A masked pattern was here ####
 	numFiles            	0                   
-	numRows             	-1                  
-	rawDataSize         	-1                  
+	numRows             	0                   
+	rawDataSize         	0                   
 	totalSize           	0                   
 #### A masked pattern was here ####
 	 	 
@@ -282,11 +287,11 @@ Retention:          	0
 #### A masked pattern was here ####
 Table Type:         	MANAGED_TABLE       	 
 Table Parameters:	 	 
-	COLUMN_STATS_ACCURATE	false               
+	COLUMN_STATS_ACCURATE	{\"BASIC_STATS\":\"true\"}
 #### A masked pattern was here ####
 	numFiles            	0                   
-	numRows             	-1                  
-	rawDataSize         	-1                  
+	numRows             	0                   
+	rawDataSize         	0                   
 	totalSize           	0                   
 #### A masked pattern was here ####
 	 	 
@@ -304,13 +309,11 @@ PREHOOK: query: drop table alter_partition_format_test
 PREHOOK: type: DROPTABLE
 POSTHOOK: query: drop table alter_partition_format_test
 POSTHOOK: type: DROPTABLE
-PREHOOK: query: --partitioned table
-create table alter_partition_format_test (key int, value string) partitioned by (ds string)
+PREHOOK: query: create table alter_partition_format_test (key int, value string) partitioned by (ds string)
 PREHOOK: type: CREATETABLE
 PREHOOK: Output: database:default
 PREHOOK: Output: default@alter_partition_format_test
-POSTHOOK: query: --partitioned table
-create table alter_partition_format_test (key int, value string) partitioned by (ds string)
+POSTHOOK: query: create table alter_partition_format_test (key int, value string) partitioned by (ds string)
 POSTHOOK: type: CREATETABLE
 POSTHOOK: Output: database:default
 POSTHOOK: Output: default@alter_partition_format_test
@@ -343,6 +346,11 @@ Database:           	default
 Table:              	alter_partition_format_test	 
 #### A masked pattern was here ####
 Partition Parameters:	 	 
+	COLUMN_STATS_ACCURATE	{\"BASIC_STATS\":\"true\"}
+	numFiles            	0                   
+	numRows             	0                   
+	rawDataSize         	0                   
+	totalSize           	0                   
 #### A masked pattern was here ####
 	 	 
 # Storage Information	 	 
@@ -386,11 +394,11 @@ Database:           	default
 Table:              	alter_partition_format_test	 
 #### A masked pattern was here ####
 Partition Parameters:	 	 
-	COLUMN_STATS_ACCURATE	false               
+	COLUMN_STATS_ACCURATE	{\"BASIC_STATS\":\"true\"}
 #### A masked pattern was here ####
 	numFiles            	0                   
-	numRows             	-1                  
-	rawDataSize         	-1                  
+	numRows             	0                   
+	rawDataSize         	0                   
 	totalSize           	0                   
 #### A masked pattern was here ####
 	 	 
@@ -435,11 +443,11 @@ Database:           	default
 Table:              	alter_partition_format_test	 
 #### A masked pattern was here ####
 Partition Parameters:	 	 
-	COLUMN_STATS_ACCURATE	false               
+	COLUMN_STATS_ACCURATE	{\"BASIC_STATS\":\"true\"}
 #### A masked pattern was here ####
 	numFiles            	0                   
-	numRows             	-1                  
-	rawDataSize         	-1                  
+	numRows             	0                   
+	rawDataSize         	0                   
 	totalSize           	0                   
 #### A masked pattern was here ####
 	 	 
@@ -484,11 +492,11 @@ Database:           	default
 Table:              	alter_partition_format_test	 
 #### A masked pattern was here ####
 Partition Parameters:	 	 
-	COLUMN_STATS_ACCURATE	false               
+	COLUMN_STATS_ACCURATE	{\"BASIC_STATS\":\"true\"}
 #### A masked pattern was here ####
 	numFiles            	0                   
-	numRows             	-1                  
-	rawDataSize         	-1                  
+	numRows             	0                   
+	rawDataSize         	0                   
 	totalSize           	0                   
 #### A masked pattern was here ####
 	 	 
@@ -533,11 +541,11 @@ Database:           	default
 Table:              	alter_partition_format_test	 
 #### A masked pattern was here ####
 Partition Parameters:	 	 
-	COLUMN_STATS_ACCURATE	false               
+	COLUMN_STATS_ACCURATE	{\"BASIC_STATS\":\"true\"}
 #### A masked pattern was here ####
 	numFiles            	0                   
-	numRows             	-1                  
-	rawDataSize         	-1                  
+	numRows             	0                   
+	rawDataSize         	0                   
 	totalSize           	0                   
 #### A masked pattern was here ####
 	 	 
@@ -582,11 +590,11 @@ Database:           	default
 Table:              	alter_partition_format_test	 
 #### A masked pattern was here ####
 Partition Parameters:	 	 
-	COLUMN_STATS_ACCURATE	false               
+	COLUMN_STATS_ACCURATE	{\"BASIC_STATS\":\"true\"}
 #### A masked pattern was here ####
 	numFiles            	0                   
-	numRows             	-1                  
-	rawDataSize         	-1                  
+	numRows             	0                   
+	rawDataSize         	0                   
 	totalSize           	0                   
 #### A masked pattern was here ####
 	 	 

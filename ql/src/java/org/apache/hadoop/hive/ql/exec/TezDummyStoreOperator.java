@@ -18,6 +18,7 @@
 
 package org.apache.hadoop.hive.ql.exec;
 
+import org.apache.hadoop.hive.ql.CompilationOpContext;
 import org.apache.hadoop.hive.ql.metadata.HiveException;
 
 /**
@@ -27,6 +28,16 @@ import org.apache.hadoop.hive.ql.metadata.HiveException;
  *
  */
 public class TezDummyStoreOperator extends DummyStoreOperator {
+  /** Kryo ctor. */
+  protected TezDummyStoreOperator() {
+    super();
+  }
+
+  public TezDummyStoreOperator(CompilationOpContext ctx) {
+    super(ctx);
+  }
+
+  private boolean fetchDone = false;
 
   /**
    * Unlike the MR counterpoint, on Tez we want processOp to forward
@@ -36,5 +47,13 @@ public class TezDummyStoreOperator extends DummyStoreOperator {
   public void process(Object row, int tag) throws HiveException {
     super.process(row, tag);
     forward(result.o, outputObjInspector);
+  }
+
+  public boolean getFetchDone() {
+    return fetchDone;
+  }
+
+  public void setFetchDone(boolean fetchDone) {
+    this.fetchDone = fetchDone;
   }
 }

@@ -257,7 +257,10 @@ public class Utils {
    */
   public static String formatSizeInBytes(long bytes, String postfix) {
     String out; 
-    if (bytes < 1024) {
+    if (bytes == 1) {
+      out = bytes + " byte";
+    }
+    else if (bytes < 1024) {
       out = bytes + " bytes";
     }
     else if (bytes < 1024 * 1024) {
@@ -280,11 +283,51 @@ public class Utils {
   }
   
   /**
+   * Format elasped time
+   */
+  public static String formatTime(long msElapsed) {
+    if (msElapsed < 60000) {
+      return msElapsed/1000 + " sec";
+    }
+    else if (msElapsed < 60000 * 60) {
+      return msElapsed/60000 + " min " + (msElapsed%60000)/1000 + " sec";
+    }
+    return "";
+  }
+  
+  /**
    * Format bytes per second rate
    */
   public static String formatBytesPerSec(long bytes, long msElapsed) {
+    if (msElapsed < 30) {
+      return "n/a";
+    }
     float bytesPerSec = ((float)bytes)/msElapsed*1000;
     return Utils.formatSizeInBytes((long)bytesPerSec, "/sec");
+  }
+  
+  /**
+   * Format percentage
+   */
+  public static String formatPercent(long current, long all) {
+    return String.format("%.1f", ((float)current)/all*100) + "%";
+  }
+  
+  /**
+   * Format count
+   */
+  public static String formatCnt(long value, String suffix) {
+    if (value == 1) {
+      return value + " " + suffix; 
+    }
+    return value + " " + suffix + "s";
+  }
+  
+  public static String formatCnt(long value, String suffix, String suffix2) {
+    if (value == 1) {
+      return value + " " + suffix;
+    }
+    return value + " " + suffix2;
   }
   
   /**

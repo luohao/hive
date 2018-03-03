@@ -21,8 +21,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Callable;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.ql.exec.MapredContext;
@@ -53,8 +53,8 @@ import com.google.common.collect.Lists;
  */
 public class MergeFileRecordProcessor extends RecordProcessor {
 
-  public static final Log LOG = LogFactory
-      .getLog(MergeFileRecordProcessor.class);
+  public static final Logger LOG = LoggerFactory
+      .getLogger(MergeFileRecordProcessor.class);
 
   protected Operator<? extends OperatorDesc> mergeOp;
   private ExecMapperContext execContext = null;
@@ -62,9 +62,8 @@ public class MergeFileRecordProcessor extends RecordProcessor {
   private String cacheKey;
   private MergeFileWork mfWork;
   MRInputLegacy mrInput = null;
-  private boolean abort = false;
   private final Object[] row = new Object[2];
-  ObjectCache cache;
+  org.apache.hadoop.hive.ql.exec.ObjectCache cache;
 
   public MergeFileRecordProcessor(final JobConf jconf, final ProcessorContext context) {
     super(jconf, context);
@@ -74,6 +73,7 @@ public class MergeFileRecordProcessor extends RecordProcessor {
   void init(
       MRTaskReporter mrReporter, Map<String, LogicalInput> inputs,
       Map<String, LogicalOutput> outputs) throws Exception {
+    // TODO HIVE-14042. Abort handling.
     perfLogger.PerfLogBegin(CLASS_NAME, PerfLogger.TEZ_INIT_OPERATORS);
     super.init(mrReporter, inputs, outputs);
     execContext = new ExecMapperContext(jconf);
@@ -94,14 +94,13 @@ public class MergeFileRecordProcessor extends RecordProcessor {
           .initialize();
     }
 
-    org.apache.hadoop.hive.ql.exec.ObjectCache cache = ObjectCacheFactory
-      .getCache(jconf);
+    String queryId = HiveConf.getVar(jconf, HiveConf.ConfVars.HIVEQUERYID);
+    cache = ObjectCacheFactory.getCache(jconf, queryId, true);
 
     try {
       execContext.setJc(jconf);
 
-      String queryId = HiveConf.getVar(jconf, HiveConf.ConfVars.HIVEQUERYID);
-      cacheKey = queryId + MAP_PLAN_KEY;
+      cacheKey = MAP_PLAN_KEY;
 
       MapWork mapWork = (MapWork) cache.retrieve(cacheKey, new Callable<Object>() {
         @Override
@@ -135,6 +134,10 @@ public class MergeFileRecordProcessor extends RecordProcessor {
         // will this be true here?
         // Don't create a new object if we are already out of memory
         throw (OutOfMemoryError) e;
+      } else if (e instanceof InterruptedException) {
+        l4j.info("Hit an interrupt while initializing MergeFileRecordProcessor. Message={}",
+            e.getMessage());
+        throw (InterruptedException) e;
       } else {
         throw new RuntimeException("Map operator initialization failed", e);
       }
@@ -150,7 +153,7 @@ public class MergeFileRecordProcessor extends RecordProcessor {
     while (reader.next()) {
       boolean needMore = processRow(reader.getCurrentKey(),
           reader.getCurrentValue());
-      if (!needMore) {
+      if (!needMore || isAborted()) {
         break;
       }
     }
@@ -164,8 +167,8 @@ public class MergeFileRecordProcessor extends RecordProcessor {
     }
 
     // check if there are IOExceptions
-    if (!abort) {
-      abort = execContext.getIoCxt().getIOExceptions();
+    if (!isAborted()) {
+      setAborted(execContext.getIoCxt().getIOExceptions());
     }
 
     // detecting failed executions by exceptions thrown by the operator tree
@@ -173,19 +176,20 @@ public class MergeFileRecordProcessor extends RecordProcessor {
       if (mergeOp == null || mfWork == null) {
         return;
       }
+      boolean abort = isAborted();
       mergeOp.close(abort);
 
       ExecMapper.ReportStats rps = new ExecMapper.ReportStats(reporter, jconf);
       mergeOp.preorderMap(rps);
     } catch (Exception e) {
-      if (!abort) {
+      if (!isAborted()) {
         // signal new failure to map-reduce
         l4j.error("Hit error while closing operators - failing tree");
         throw new RuntimeException("Hive Runtime Error while closing operators",
             e);
       }
     } finally {
-      Utilities.clearWorkMap();
+      Utilities.clearWorkMap(jconf);
       MapredContext.close();
     }
   }
@@ -208,12 +212,12 @@ public class MergeFileRecordProcessor extends RecordProcessor {
         mergeOp.process(row, 0);
       }
     } catch (Throwable e) {
-      abort = true;
+      setAborted(true);
       if (e instanceof OutOfMemoryError) {
         // Don't create a new object if we are already out of memory
         throw (OutOfMemoryError) e;
       } else {
-        l4j.fatal(StringUtils.stringifyException(e));
+        l4j.error(StringUtils.stringifyException(e));
         throw new RuntimeException(e);
       }
     }

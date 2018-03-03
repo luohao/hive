@@ -22,9 +22,7 @@ import java.io.IOException;
 import java.net.ServerSocket;
 import java.util.Arrays;
 
-import junit.extensions.TestSetup;
-import junit.framework.Test;
-
+import org.apache.commons.lang.StringUtils;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.HBaseConfiguration;
 import org.apache.hadoop.hbase.HColumnDescriptor;
@@ -45,7 +43,7 @@ import org.apache.zookeeper.Watcher;
  * HBaseTestSetup defines HBase-specific test fixtures which are
  * reused across testcases.
  */
-public class HBaseTestSetup extends TestSetup {
+public class HBaseTestSetup {
 
   private MiniHBaseCluster hbaseCluster;
   private int zooKeeperPort;
@@ -53,10 +51,6 @@ public class HBaseTestSetup extends TestSetup {
   private HConnection hbaseConn;
 
   private static final int NUM_REGIONSERVERS = 1;
-
-  public HBaseTestSetup(Test test) {
-    super(test);
-  }
 
   public HConnection getConnection() {
     return this.hbaseConn;
@@ -70,10 +64,10 @@ public class HBaseTestSetup extends TestSetup {
     conf.set("hbase.master", hbaseCluster.getMaster().getServerName().getHostAndPort());
     conf.set("hbase.zookeeper.property.clientPort", Integer.toString(zooKeeperPort));
     String auxJars = conf.getAuxJars();
-    auxJars = ((auxJars == null) ? "" : (auxJars + ",")) + "file:///"
+    auxJars = (StringUtils.isBlank(auxJars) ? "" : (auxJars + ",")) + "file://"
       + new JobConf(conf, HBaseConfiguration.class).getJar();
-    auxJars += ",file:///" + new JobConf(conf, HBaseSerDe.class).getJar();
-    auxJars += ",file:///" + new JobConf(conf, Watcher.class).getJar();
+    auxJars += ",file://" + new JobConf(conf, HBaseSerDe.class).getJar();
+    auxJars += ",file://" + new JobConf(conf, Watcher.class).getJar();
     conf.setAuxJars(auxJars);
   }
 
@@ -170,8 +164,7 @@ public class HBaseTestSetup extends TestSetup {
     return port;
   }
 
-  @Override
-  protected void tearDown() throws Exception {
+  public void tearDown() throws Exception {
     if (hbaseConn != null) {
       hbaseConn.close();
       hbaseConn = null;

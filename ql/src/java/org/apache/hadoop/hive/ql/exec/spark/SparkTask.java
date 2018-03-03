@@ -19,7 +19,6 @@
 package org.apache.hadoop.hive.ql.exec.spark;
 
 import java.io.IOException;
-import java.io.Serializable;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
@@ -28,21 +27,21 @@ import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
-import org.apache.hadoop.hive.common.StatsSetupConst;
+import org.apache.hadoop.hive.common.metrics.common.Metrics;
+import org.apache.hadoop.hive.common.metrics.common.MetricsConstant;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.hive.conf.HiveConf;
-import org.apache.hadoop.hive.metastore.Warehouse;
-import org.apache.hadoop.hive.metastore.api.MetaException;
+import org.apache.hadoop.hive.ql.CompilationOpContext;
 import org.apache.hadoop.hive.ql.DriverContext;
 import org.apache.hadoop.hive.ql.QueryPlan;
+import org.apache.hadoop.hive.ql.QueryState;
 import org.apache.hadoop.hive.ql.exec.FileSinkOperator;
 import org.apache.hadoop.hive.ql.exec.JoinOperator;
 import org.apache.hadoop.hive.ql.exec.MapOperator;
 import org.apache.hadoop.hive.ql.exec.Operator;
 import org.apache.hadoop.hive.ql.exec.ReduceSinkOperator;
 import org.apache.hadoop.hive.ql.exec.ScriptOperator;
-import org.apache.hadoop.hive.ql.exec.StatsTask;
 import org.apache.hadoop.hive.ql.exec.Task;
 import org.apache.hadoop.hive.ql.exec.Utilities;
 import org.apache.hadoop.hive.ql.exec.spark.Statistic.SparkStatistic;
@@ -53,46 +52,49 @@ import org.apache.hadoop.hive.ql.exec.spark.session.SparkSessionManager;
 import org.apache.hadoop.hive.ql.exec.spark.session.SparkSessionManagerImpl;
 import org.apache.hadoop.hive.ql.exec.spark.status.SparkJobRef;
 import org.apache.hadoop.hive.ql.exec.spark.status.SparkJobStatus;
+import org.apache.hadoop.hive.ql.exec.spark.status.SparkStageProgress;
 import org.apache.hadoop.hive.ql.history.HiveHistory.Keys;
 import org.apache.hadoop.hive.ql.log.PerfLogger;
 import org.apache.hadoop.hive.ql.metadata.HiveException;
-import org.apache.hadoop.hive.ql.metadata.Partition;
-import org.apache.hadoop.hive.ql.metadata.Table;
-import org.apache.hadoop.hive.ql.parse.BaseSemanticAnalyzer.TableSpec;
 import org.apache.hadoop.hive.ql.plan.BaseWork;
-import org.apache.hadoop.hive.ql.plan.DynamicPartitionCtx;
-import org.apache.hadoop.hive.ql.plan.LoadTableDesc;
 import org.apache.hadoop.hive.ql.plan.MapWork;
 import org.apache.hadoop.hive.ql.plan.OperatorDesc;
 import org.apache.hadoop.hive.ql.plan.ReduceWork;
 import org.apache.hadoop.hive.ql.plan.SparkWork;
-import org.apache.hadoop.hive.ql.plan.StatsWork;
 import org.apache.hadoop.hive.ql.plan.api.StageType;
 import org.apache.hadoop.hive.ql.session.SessionState;
 import org.apache.hadoop.hive.ql.session.SessionState.LogHelper;
-import org.apache.hadoop.hive.ql.stats.StatsFactory;
 import org.apache.hadoop.util.StringUtils;
-import org.apache.hive.spark.counter.SparkCounters;
 
 import com.google.common.collect.Lists;
 
 public class SparkTask extends Task<SparkWork> {
   private static final String CLASS_NAME = SparkTask.class.getName();
-  private static final Log LOG = LogFactory.getLog(CLASS_NAME);
+  private static final Logger LOG = LoggerFactory.getLogger(CLASS_NAME);
   private static final LogHelper console = new LogHelper(LOG);
-  private final PerfLogger perfLogger = PerfLogger.getPerfLogger();
+  private PerfLogger perfLogger;
   private static final long serialVersionUID = 1L;
-  private SparkCounters sparkCounters;
+  private transient String sparkJobID;
+  private transient SparkStatistics sparkStatistics;
+  private transient long submitTime;
+  private transient long startTime;
+  private transient long finishTime;
+  private transient int succeededTaskCount;
+  private transient int totalTaskCount;
+  private transient int failedTaskCount;
+  private transient List<Integer> stageIds;
 
   @Override
-  public void initialize(HiveConf conf, QueryPlan queryPlan, DriverContext driverContext) {
-    super.initialize(conf, queryPlan, driverContext);
+  public void initialize(QueryState queryState, QueryPlan queryPlan, DriverContext driverContext,
+      CompilationOpContext opContext) {
+    super.initialize(queryState, queryPlan, driverContext, opContext);
   }
 
   @Override
   public int execute(DriverContext driverContext) {
 
     int rc = 0;
+    perfLogger = SessionState.getPerfLogger();
     SparkSession sparkSession = null;
     SparkSessionManager sparkSessionManager = null;
     try {
@@ -101,26 +103,34 @@ public class SparkTask extends Task<SparkWork> {
       sparkSession = SparkUtilities.getSparkSession(conf, sparkSessionManager);
 
       SparkWork sparkWork = getWork();
-      sparkWork.setRequiredCounterPrefix(getCounterPrefixes());
+      sparkWork.setRequiredCounterPrefix(getOperatorCounters());
 
       perfLogger.PerfLogBegin(CLASS_NAME, PerfLogger.SPARK_SUBMIT_JOB);
+      submitTime = perfLogger.getStartTime(PerfLogger.SPARK_SUBMIT_JOB);
       SparkJobRef jobRef = sparkSession.submit(driverContext, sparkWork);
       perfLogger.PerfLogEnd(CLASS_NAME, PerfLogger.SPARK_SUBMIT_JOB);
 
       addToHistory(jobRef);
+      sparkJobID = jobRef.getJobId();
+      this.jobID = jobRef.getSparkJobStatus().getAppID();
       rc = jobRef.monitorJob();
       SparkJobStatus sparkJobStatus = jobRef.getSparkJobStatus();
+      getSparkJobInfo(sparkJobStatus, rc);
       if (rc == 0) {
-        sparkCounters = sparkJobStatus.getCounter();
-        // for RSC, we should get the counters after job has finished
-        SparkStatistics sparkStatistics = sparkJobStatus.getSparkStatistics();
+        sparkStatistics = sparkJobStatus.getSparkStatistics();
         if (LOG.isInfoEnabled() && sparkStatistics != null) {
           LOG.info(String.format("=====Spark Job[%s] statistics=====", jobRef.getJobId()));
           logSparkStatistic(sparkStatistics);
         }
         LOG.info("Execution completed successfully");
       } else if (rc == 2) { // Cancel job if the monitor found job submission timeout.
+        // TODO: If the timeout is because of lack of resources in the cluster, we should
+        // ideally also cancel the app request here. But w/o facilities from Spark or YARN,
+        // it's difficult to do it on hive side alone. See HIVE-12650.
         jobRef.cancelJob();
+      }
+      if (this.jobID == null) {
+        this.jobID = sparkJobStatus.getAppID();
       }
       sparkJobStatus.cleanup();
     } catch (Exception e) {
@@ -130,8 +140,18 @@ public class SparkTask extends Task<SparkWork> {
       // org.apache.commons.lang.StringUtils
       console.printError(msg, "\n" + org.apache.hadoop.util.StringUtils.stringifyException(e));
       LOG.error(msg, e);
+      setException(e);
       rc = 1;
     } finally {
+      startTime = perfLogger.getEndTime(PerfLogger.SPARK_SUBMIT_TO_RUNNING);
+      // The startTime may not be set if the sparkTask finished too fast,
+      // because SparkJobMonitor will sleep for 1 second then check the state,
+      // right after sleep, the spark job may be already completed.
+      // In this case, set startTime the same as submitTime.
+      if (startTime < submitTime) {
+        startTime = submitTime;
+      }
+      finishTime = perfLogger.getEndTime(PerfLogger.SPARK_RUN_JOB);
       Utilities.clearWork(conf);
       if (sparkSession != null && sparkSessionManager != null) {
         rc = close(rc);
@@ -149,7 +169,7 @@ public class SparkTask extends Task<SparkWork> {
     console.printInfo("Starting Spark Job = " + jobRef.getJobId());
     if (SessionState.get() != null) {
       SessionState.get().getHiveHistory()
-	  .setQueryProperty(SessionState.get().getQueryId(), Keys.SPARK_JOB_ID, jobRef.getJobId());
+	  .setQueryProperty(queryState.getQueryId(), Keys.SPARK_JOB_ID, jobRef.getJobId());
     }
   }
 
@@ -185,9 +205,15 @@ public class SparkTask extends Task<SparkWork> {
         String mesg = "Job Commit failed with exception '"
             + Utilities.getNameMessage(e) + "'";
         console.printError(mesg, "\n" + StringUtils.stringifyException(e));
+        setException(e);
       }
     }
     return rc;
+  }
+
+  @Override
+  public void updateTaskMetrics(Metrics metrics) {
+    metrics.incrementCounter(MetricsConstant.HIVE_SPARK_TASKS);
   }
 
   @Override
@@ -228,8 +254,40 @@ public class SparkTask extends Task<SparkWork> {
     return ((ReduceWork) children.get(0)).getReducer();
   }
 
-  public SparkCounters getSparkCounters() {
-    return sparkCounters;
+  public String getSparkJobID() {
+    return sparkJobID;
+  }
+
+  public SparkStatistics getSparkStatistics() {
+    return sparkStatistics;
+  }
+
+  public int getSucceededTaskCount() {
+    return succeededTaskCount;
+  }
+
+  public int getTotalTaskCount() {
+    return totalTaskCount;
+  }
+
+  public int getFailedTaskCount() {
+    return failedTaskCount;
+  }
+
+  public List<Integer> getStageIds() {
+    return stageIds;
+  }
+
+  public long getStartTime() {
+    return startTime;
+  }
+
+  public long getSubmitTime() {
+    return submitTime;
+  }
+
+  public long getFinishTime() {
+    return finishTime;
   }
 
   /**
@@ -243,127 +301,6 @@ public class SparkTask extends Task<SparkWork> {
     console.printInfo("  set " + HiveConf.ConfVars.MAXREDUCERS.varname + "=<number>");
     console.printInfo("In order to set a constant number of reducers:");
     console.printInfo("  set " + HiveConf.ConfVars.HADOOPNUMREDUCERS + "=<number>");
-  }
-
-  private Map<String, List<String>> getCounterPrefixes() throws HiveException, MetaException {
-    Map<String, List<String>> counters = getOperatorCounters();
-    StatsTask statsTask = getStatsTaskInChildTasks(this);
-    String statsImpl = HiveConf.getVar(conf, HiveConf.ConfVars.HIVESTATSDBCLASS);
-    // fetch table prefix if SparkTask try to gather table statistics based on counter.
-    if (statsImpl.equalsIgnoreCase("counter") && statsTask != null) {
-      List<String> prefixes = getRequiredCounterPrefix(statsTask);
-      for (String prefix : prefixes) {
-        List<String> counterGroup = counters.get(prefix);
-        if (counterGroup == null) {
-          counterGroup = new LinkedList<String>();
-          counters.put(prefix, counterGroup);
-        }
-        counterGroup.add(StatsSetupConst.ROW_COUNT);
-        counterGroup.add(StatsSetupConst.RAW_DATA_SIZE);
-      }
-    }
-    return counters;
-  }
-
-  private List<String> getRequiredCounterPrefix(StatsTask statsTask) throws HiveException, MetaException {
-    List<String> prefixs = new LinkedList<String>();
-    StatsWork statsWork = statsTask.getWork();
-    String tablePrefix = getTablePrefix(statsWork);
-    List<Map<String, String>> partitionSpecs = getPartitionSpecs(statsWork);
-    int maxPrefixLength = StatsFactory.getMaxPrefixLength(conf);
-
-    if (partitionSpecs == null) {
-      prefixs.add(Utilities.getHashedStatsPrefix(tablePrefix, maxPrefixLength));
-    } else {
-      for (Map<String, String> partitionSpec : partitionSpecs) {
-        String prefixWithPartition = Utilities.join(tablePrefix, Warehouse.makePartPath(partitionSpec));
-        prefixs.add(Utilities.getHashedStatsPrefix(prefixWithPartition, maxPrefixLength));
-      }
-    }
-
-    return prefixs;
-  }
-
-  private String getTablePrefix(StatsWork work) throws HiveException {
-      String tableName;
-      if (work.getLoadTableDesc() != null) {
-        tableName = work.getLoadTableDesc().getTable().getTableName();
-      } else if (work.getTableSpecs() != null) {
-        tableName = work.getTableSpecs().tableName;
-      } else {
-        tableName = work.getLoadFileDesc().getDestinationCreateTable();
-      }
-    Table table;
-    try {
-      table = db.getTable(tableName);
-    } catch (HiveException e) {
-      LOG.warn("Failed to get table:" + tableName);
-      // For CTAS query, table does not exist in this period, just use table name as prefix.
-      return tableName.toLowerCase();
-    }
-    return table.getDbName() + "." + table.getTableName();
-  }
-
-  private static StatsTask getStatsTaskInChildTasks(Task<? extends Serializable> rootTask) {
-
-    List<Task<? extends Serializable>> childTasks = rootTask.getChildTasks();
-    if (childTasks == null) {
-      return null;
-    }
-    for (Task<? extends Serializable> task : childTasks) {
-      if (task instanceof StatsTask) {
-        return (StatsTask) task;
-      } else {
-        Task<? extends Serializable> childTask = getStatsTaskInChildTasks(task);
-        if (childTask instanceof StatsTask) {
-          return (StatsTask) childTask;
-        } else {
-          continue;
-        }
-      }
-    }
-
-    return null;
-  }
-
-  private List<Map<String, String>> getPartitionSpecs(StatsWork work) throws HiveException {
-    if (work.getLoadFileDesc() != null) {
-      return null; //we are in CTAS, so we know there are no partitions
-    }
-    Table table;
-    List<Map<String, String>> partitionSpecs = new ArrayList<Map<String, String>>();
-
-    if (work.getTableSpecs() != null) {
-
-      // ANALYZE command
-      TableSpec tblSpec = work.getTableSpecs();
-      table = tblSpec.tableHandle;
-      if (!table.isPartitioned()) {
-        return null;
-      }
-      // get all partitions that matches with the partition spec
-      List<Partition> partitions = tblSpec.partitions;
-      if (partitions != null) {
-        for (Partition partition : partitions) {
-          partitionSpecs.add(partition.getSpec());
-        }
-      }
-    } else if (work.getLoadTableDesc() != null) {
-
-      // INSERT OVERWRITE command
-      LoadTableDesc tbd = work.getLoadTableDesc();
-      table = db.getTable(tbd.getTable().getTableName());
-      if (!table.isPartitioned()) {
-        return null;
-      }
-      DynamicPartitionCtx dpCtx = tbd.getDPCtx();
-      if (dpCtx != null && dpCtx.getNumDPCols() > 0) { // dynamic partitions
-        // we could not get dynamic partition information before SparkTask execution.
-      } else { // static partition
-        partitionSpecs.add(tbd.getPartitionSpec());
-      }
-    }
-    return partitionSpecs;
   }
 
   private Map<String, List<String>> getOperatorCounters() {
@@ -382,11 +319,11 @@ public class SparkTask extends Task<SparkWork> {
       for (Operator<? extends OperatorDesc> operator : work.getAllOperators()) {
         if (operator instanceof FileSinkOperator) {
           for (FileSinkOperator.Counter counter : FileSinkOperator.Counter.values()) {
-            hiveCounters.add(counter.toString());
+            hiveCounters.add(((FileSinkOperator) operator).getCounterName(counter));
           }
         } else if (operator instanceof ReduceSinkOperator) {
           for (ReduceSinkOperator.Counter counter : ReduceSinkOperator.Counter.values()) {
-            hiveCounters.add(counter.toString());
+            hiveCounters.add(((ReduceSinkOperator) operator).getCounterName(counter, conf));
           }
         } else if (operator instanceof ScriptOperator) {
           for (ScriptOperator.Counter counter : ScriptOperator.Counter.values()) {
@@ -401,5 +338,41 @@ public class SparkTask extends Task<SparkWork> {
     }
 
     return counters;
+  }
+
+  private void getSparkJobInfo(SparkJobStatus sparkJobStatus, int rc) {
+    try {
+      stageIds = new ArrayList<Integer>();
+      int[] ids = sparkJobStatus.getStageIds();
+      if (ids != null) {
+        for (int stageId : ids) {
+          stageIds.add(stageId);
+        }
+      }
+      Map<String, SparkStageProgress> progressMap = sparkJobStatus.getSparkStageProgress();
+      int sumTotal = 0;
+      int sumComplete = 0;
+      int sumFailed = 0;
+      for (String s : progressMap.keySet()) {
+        SparkStageProgress progress = progressMap.get(s);
+        final int complete = progress.getSucceededTaskCount();
+        final int total = progress.getTotalTaskCount();
+        final int failed = progress.getFailedTaskCount();
+        sumTotal += total;
+        sumComplete += complete;
+        sumFailed += failed;
+      }
+      succeededTaskCount = sumComplete;
+      totalTaskCount = sumTotal;
+      failedTaskCount = sumFailed;
+      if (rc != 0) {
+        Throwable error = sparkJobStatus.getError();
+        if (error != null) {
+          setException(error);
+        }
+      }
+    } catch (Exception e) {
+      LOG.error("Failed to get Spark job information", e);
+    }
   }
 }

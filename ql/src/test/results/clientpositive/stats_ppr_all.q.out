@@ -18,31 +18,25 @@ POSTHOOK: Output: database:default
 POSTHOOK: Output: default@ss
 PREHOOK: query: insert into ss partition(country="US", year=2015, month=1, day=1) values(1,22.0)
 PREHOOK: type: QUERY
-PREHOOK: Input: default@values__tmp__table__1
 PREHOOK: Output: default@ss@country=US/year=2015/month=1/day=1
 POSTHOOK: query: insert into ss partition(country="US", year=2015, month=1, day=1) values(1,22.0)
 POSTHOOK: type: QUERY
-POSTHOOK: Input: default@values__tmp__table__1
 POSTHOOK: Output: default@ss@country=US/year=2015/month=1/day=1
 POSTHOOK: Lineage: ss PARTITION(country=US,year=2015,month=1,day=1).order_amount EXPRESSION [(values__tmp__table__1)values__tmp__table__1.FieldSchema(name:tmp_values_col2, type:string, comment:), ]
 POSTHOOK: Lineage: ss PARTITION(country=US,year=2015,month=1,day=1).sales_order_id EXPRESSION [(values__tmp__table__1)values__tmp__table__1.FieldSchema(name:tmp_values_col1, type:string, comment:), ]
 PREHOOK: query: insert into ss partition(country="US", year=2015, month=2, day=1) values(2,2.0)
 PREHOOK: type: QUERY
-PREHOOK: Input: default@values__tmp__table__2
 PREHOOK: Output: default@ss@country=US/year=2015/month=2/day=1
 POSTHOOK: query: insert into ss partition(country="US", year=2015, month=2, day=1) values(2,2.0)
 POSTHOOK: type: QUERY
-POSTHOOK: Input: default@values__tmp__table__2
 POSTHOOK: Output: default@ss@country=US/year=2015/month=2/day=1
 POSTHOOK: Lineage: ss PARTITION(country=US,year=2015,month=2,day=1).order_amount EXPRESSION [(values__tmp__table__2)values__tmp__table__2.FieldSchema(name:tmp_values_col2, type:string, comment:), ]
 POSTHOOK: Lineage: ss PARTITION(country=US,year=2015,month=2,day=1).sales_order_id EXPRESSION [(values__tmp__table__2)values__tmp__table__2.FieldSchema(name:tmp_values_col1, type:string, comment:), ]
 PREHOOK: query: insert into ss partition(country="US", year=2015, month=1, day=2) values(1,2.0)
 PREHOOK: type: QUERY
-PREHOOK: Input: default@values__tmp__table__3
 PREHOOK: Output: default@ss@country=US/year=2015/month=1/day=2
 POSTHOOK: query: insert into ss partition(country="US", year=2015, month=1, day=2) values(1,2.0)
 POSTHOOK: type: QUERY
-POSTHOOK: Input: default@values__tmp__table__3
 POSTHOOK: Output: default@ss@country=US/year=2015/month=1/day=2
 POSTHOOK: Lineage: ss PARTITION(country=US,year=2015,month=1,day=2).order_amount EXPRESSION [(values__tmp__table__3)values__tmp__table__3.FieldSchema(name:tmp_values_col2, type:string, comment:), ]
 POSTHOOK: Lineage: ss PARTITION(country=US,year=2015,month=1,day=2).sales_order_id EXPRESSION [(values__tmp__table__3)values__tmp__table__3.FieldSchema(name:tmp_values_col1, type:string, comment:), ]
@@ -74,13 +68,13 @@ STAGE PLANS:
       Map Operator Tree:
           TableScan
             alias: ss
-            Statistics: Num rows: 1 Data size: 12 Basic stats: COMPLETE Column stats: COMPLETE
+            Statistics: Num rows: 1 Data size: 4 Basic stats: COMPLETE Column stats: COMPLETE
             Select Operator
               expressions: order_amount (type: float)
-              outputColumnNames: _col0
-              Statistics: Num rows: 1 Data size: 12 Basic stats: COMPLETE Column stats: COMPLETE
+              outputColumnNames: order_amount
+              Statistics: Num rows: 1 Data size: 4 Basic stats: COMPLETE Column stats: COMPLETE
               Group By Operator
-                aggregations: sum(_col0)
+                aggregations: sum(order_amount)
                 mode: hash
                 outputColumnNames: _col0
                 Statistics: Num rows: 1 Data size: 8 Basic stats: COMPLETE Column stats: COMPLETE
@@ -98,8 +92,8 @@ STAGE PLANS:
             compressed: false
             Statistics: Num rows: 1 Data size: 8 Basic stats: COMPLETE Column stats: COMPLETE
             table:
-                input format: org.apache.hadoop.mapred.TextInputFormat
-                output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
+                input format: org.apache.hadoop.mapred.SequenceFileInputFormat
+                output format: org.apache.hadoop.hive.ql.io.HiveSequenceFileOutputFormat
                 serde: org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe
 
   Stage: Stage-0
@@ -122,22 +116,22 @@ STAGE PLANS:
       Map Operator Tree:
           TableScan
             alias: ss
-            Statistics: Num rows: 1 Data size: 0 Basic stats: PARTIAL Column stats: PARTIAL
+            Statistics: Num rows: 1 Data size: 12 Basic stats: COMPLETE Column stats: PARTIAL
             Filter Operator
               predicate: (UDFToDouble((((year * 10000) + (month * 100)) + day)) = 2015010.0) (type: boolean)
-              Statistics: Num rows: 1 Data size: 0 Basic stats: PARTIAL Column stats: PARTIAL
+              Statistics: Num rows: 1 Data size: 12 Basic stats: COMPLETE Column stats: PARTIAL
               Select Operator
                 expressions: order_amount (type: float)
-                outputColumnNames: _col0
-                Statistics: Num rows: 1 Data size: 0 Basic stats: PARTIAL Column stats: PARTIAL
+                outputColumnNames: order_amount
+                Statistics: Num rows: 1 Data size: 12 Basic stats: COMPLETE Column stats: PARTIAL
                 Group By Operator
-                  aggregations: sum(_col0)
+                  aggregations: sum(order_amount)
                   mode: hash
                   outputColumnNames: _col0
-                  Statistics: Num rows: 1 Data size: 20 Basic stats: COMPLETE Column stats: PARTIAL
+                  Statistics: Num rows: 1 Data size: 8 Basic stats: COMPLETE Column stats: PARTIAL
                   Reduce Output Operator
                     sort order: 
-                    Statistics: Num rows: 1 Data size: 20 Basic stats: COMPLETE Column stats: PARTIAL
+                    Statistics: Num rows: 1 Data size: 8 Basic stats: COMPLETE Column stats: PARTIAL
                     value expressions: _col0 (type: double)
       Reduce Operator Tree:
         Group By Operator
@@ -149,8 +143,8 @@ STAGE PLANS:
             compressed: false
             Statistics: Num rows: 1 Data size: 8 Basic stats: COMPLETE Column stats: PARTIAL
             table:
-                input format: org.apache.hadoop.mapred.TextInputFormat
-                output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
+                input format: org.apache.hadoop.mapred.SequenceFileInputFormat
+                output format: org.apache.hadoop.hive.ql.io.HiveSequenceFileOutputFormat
                 serde: org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe
 
   Stage: Stage-0
@@ -173,13 +167,13 @@ STAGE PLANS:
       Map Operator Tree:
           TableScan
             alias: ss
-            Statistics: Num rows: 1 Data size: 12 Basic stats: COMPLETE Column stats: COMPLETE
+            Statistics: Num rows: 1 Data size: 4 Basic stats: COMPLETE Column stats: COMPLETE
             Select Operator
               expressions: order_amount (type: float)
-              outputColumnNames: _col0
-              Statistics: Num rows: 1 Data size: 12 Basic stats: COMPLETE Column stats: COMPLETE
+              outputColumnNames: order_amount
+              Statistics: Num rows: 1 Data size: 4 Basic stats: COMPLETE Column stats: COMPLETE
               Group By Operator
-                aggregations: sum(_col0)
+                aggregations: sum(order_amount)
                 mode: hash
                 outputColumnNames: _col0
                 Statistics: Num rows: 1 Data size: 8 Basic stats: COMPLETE Column stats: COMPLETE
@@ -197,8 +191,8 @@ STAGE PLANS:
             compressed: false
             Statistics: Num rows: 1 Data size: 8 Basic stats: COMPLETE Column stats: COMPLETE
             table:
-                input format: org.apache.hadoop.mapred.TextInputFormat
-                output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
+                input format: org.apache.hadoop.mapred.SequenceFileInputFormat
+                output format: org.apache.hadoop.hive.ql.io.HiveSequenceFileOutputFormat
                 serde: org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe
 
   Stage: Stage-0
@@ -227,10 +221,10 @@ STAGE PLANS:
               Statistics: Num rows: 1 Data size: 12 Basic stats: COMPLETE Column stats: COMPLETE
               Select Operator
                 expressions: order_amount (type: float)
-                outputColumnNames: _col0
+                outputColumnNames: order_amount
                 Statistics: Num rows: 1 Data size: 12 Basic stats: COMPLETE Column stats: COMPLETE
                 Group By Operator
-                  aggregations: sum(_col0)
+                  aggregations: sum(order_amount)
                   mode: hash
                   outputColumnNames: _col0
                   Statistics: Num rows: 1 Data size: 8 Basic stats: COMPLETE Column stats: COMPLETE
@@ -248,8 +242,8 @@ STAGE PLANS:
             compressed: false
             Statistics: Num rows: 1 Data size: 8 Basic stats: COMPLETE Column stats: COMPLETE
             table:
-                input format: org.apache.hadoop.mapred.TextInputFormat
-                output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
+                input format: org.apache.hadoop.mapred.SequenceFileInputFormat
+                output format: org.apache.hadoop.hive.ql.io.HiveSequenceFileOutputFormat
                 serde: org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe
 
   Stage: Stage-0
@@ -272,7 +266,7 @@ STAGE PLANS:
       Processor Tree:
         TableScan
           alias: ss
-          Statistics: Num rows: 2 Data size: 24 Basic stats: COMPLETE Column stats: COMPLETE
+          Statistics: Num rows: 2 Data size: 40 Basic stats: COMPLETE Column stats: COMPLETE
           Filter Operator
             predicate: (UDFToDouble(((201500 + (month * 10)) + day)) > 201511.0) (type: boolean)
             Statistics: Num rows: 1 Data size: 8 Basic stats: COMPLETE Column stats: COMPLETE

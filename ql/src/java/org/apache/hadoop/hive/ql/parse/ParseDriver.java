@@ -29,8 +29,8 @@ import org.antlr.runtime.TokenStream;
 import org.antlr.runtime.tree.CommonTree;
 import org.antlr.runtime.tree.CommonTreeAdaptor;
 import org.antlr.runtime.tree.TreeAdaptor;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.hive.ql.Context;
 
 /**
@@ -39,7 +39,7 @@ import org.apache.hadoop.hive.ql.Context;
  */
 public class ParseDriver {
 
-  private static final Log LOG = LogFactory.getLog("hive.ql.parse.ParseDriver");
+  private static final Logger LOG = LoggerFactory.getLogger("hive.ql.parse.ParseDriver");
 
   /**
    * ANTLRNoCaseStringStream.
@@ -163,7 +163,7 @@ public class ParseDriver {
   
   public ASTNode parse(String command, Context ctx) 
       throws ParseException {
-    return parse(command, ctx, true);
+    return parse(command, ctx, null);
   }
 
   /**
@@ -180,15 +180,21 @@ public class ParseDriver {
    *
    * @return parsed AST
    */
-  public ASTNode parse(String command, Context ctx, boolean setTokenRewriteStream) 
+  public ASTNode parse(String command, Context ctx, String viewFullyQualifiedName)
       throws ParseException {
-    LOG.info("Parsing command: " + command);
+    if (LOG.isDebugEnabled()) {
+      LOG.debug("Parsing command: " + command);
+    }
 
     HiveLexerX lexer = new HiveLexerX(new ANTLRNoCaseStringStream(command));
     TokenRewriteStream tokens = new TokenRewriteStream(lexer);
     if (ctx != null) {
-      if ( setTokenRewriteStream) {
+      if (viewFullyQualifiedName == null) {
+        // Top level query
         ctx.setTokenRewriteStream(tokens);
+      } else {
+        // It is a view
+        ctx.addViewTokenRewriteStream(viewFullyQualifiedName, tokens);
       }
       lexer.setHiveConf(ctx.getConf());
     }
@@ -206,7 +212,7 @@ public class ParseDriver {
     }
 
     if (lexer.getErrors().size() == 0 && parser.errors.size() == 0) {
-      LOG.info("Parse Completed");
+      LOG.debug("Parse Completed");
     } else if (lexer.getErrors().size() != 0) {
       throw new ParseException(lexer.getErrors());
     } else {
@@ -218,6 +224,34 @@ public class ParseDriver {
     return tree;
   }
 
+  /*
+   * Parse a string as a query hint.
+   */
+  public ASTNode parseHint(String command) throws ParseException {
+    LOG.info("Parsing hint: " + command);
+
+    HiveLexerX lexer = new HiveLexerX(new ANTLRNoCaseStringStream(command));
+    TokenRewriteStream tokens = new TokenRewriteStream(lexer);
+    HintParser parser = new HintParser(tokens);
+    parser.setTreeAdaptor(adaptor);
+    HintParser.hint_return r = null;
+    try {
+      r = parser.hint();
+    } catch (RecognitionException e) {
+      e.printStackTrace();
+      throw new ParseException(parser.errors);
+    }
+
+    if (lexer.getErrors().size() == 0 && parser.errors.size() == 0) {
+      LOG.info("Parse Completed");
+    } else if (lexer.getErrors().size() != 0) {
+      throw new ParseException(lexer.getErrors());
+    } else {
+      throw new ParseException(parser.errors);
+    }
+
+    return (ASTNode) r.getTree();
+  }
 
   /*
    * parse a String as a Select List. This allows table functions to be passed expression Strings
@@ -230,7 +264,9 @@ public class ParseDriver {
    * translation process.
    */
   public ASTNode parseSelect(String command, Context ctx) throws ParseException {
-    LOG.info("Parsing command: " + command);
+    if (LOG.isDebugEnabled()) {
+      LOG.debug("Parsing command: " + command);
+    }
 
     HiveLexerX lexer = new HiveLexerX(new ANTLRNoCaseStringStream(command));
     TokenRewriteStream tokens = new TokenRewriteStream(lexer);
@@ -242,6 +278,31 @@ public class ParseDriver {
     HiveParser_SelectClauseParser.selectClause_return r = null;
     try {
       r = parser.selectClause();
+    } catch (RecognitionException e) {
+      e.printStackTrace();
+      throw new ParseException(parser.errors);
+    }
+
+    if (lexer.getErrors().size() == 0 && parser.errors.size() == 0) {
+      LOG.debug("Parse Completed");
+    } else if (lexer.getErrors().size() != 0) {
+      throw new ParseException(lexer.getErrors());
+    } else {
+      throw new ParseException(parser.errors);
+    }
+
+    return (ASTNode) r.getTree();
+  }
+  public ASTNode parseExpression(String command) throws ParseException {
+    LOG.info("Parsing expression: " + command);
+
+    HiveLexerX lexer = new HiveLexerX(new ANTLRNoCaseStringStream(command));
+    TokenRewriteStream tokens = new TokenRewriteStream(lexer);
+    HiveParser parser = new HiveParser(tokens);
+    parser.setTreeAdaptor(adaptor);
+    HiveParser_IdentifiersParser.expression_return r = null;
+    try {
+      r = parser.expression();
     } catch (RecognitionException e) {
       e.printStackTrace();
       throw new ParseException(parser.errors);

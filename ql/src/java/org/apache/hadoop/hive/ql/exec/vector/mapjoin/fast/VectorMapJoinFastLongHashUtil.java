@@ -25,35 +25,24 @@ import org.apache.hadoop.hive.serde2.binarysortable.fast.BinarySortableDeseriali
 
 public class VectorMapJoinFastLongHashUtil {
 
-  public static long hashKey(long key) {
-    key = (~key) + (key << 21); // key = (key << 21) - key - 1;
-    key = key ^ (key >>> 24);
-    key = (key + (key << 3)) + (key << 8); // key * 265
-    key = key ^ (key >>> 14);
-    key = (key + (key << 2)) + (key << 4); // key * 21
-    key = key ^ (key >>> 28);
-    key = key + (key << 31);
-    return key;
-  }
-
   public static long deserializeLongKey(BinarySortableDeserializeRead keyBinarySortableDeserializeRead,
       HashTableKeyType hashTableKeyType) throws IOException {
     long key = 0;
     switch (hashTableKeyType) {
     case BOOLEAN:
-      key = (keyBinarySortableDeserializeRead.readBoolean() ? 1 : 0);
+      key = (keyBinarySortableDeserializeRead.currentBoolean ? 1 : 0);
       break;
     case BYTE:
-      key = (long) keyBinarySortableDeserializeRead.readByte();
+      key = (long) keyBinarySortableDeserializeRead.currentByte;
       break;
     case SHORT:
-      key = (long) keyBinarySortableDeserializeRead.readShort();
+      key = (long) keyBinarySortableDeserializeRead.currentShort;
       break;
     case INT:
-      key = (long) keyBinarySortableDeserializeRead.readInt();
+      key = (long) keyBinarySortableDeserializeRead.currentInt;
       break;
     case LONG:
-      key = keyBinarySortableDeserializeRead.readLong();
+      key = keyBinarySortableDeserializeRead.currentLong;
       break;
     default:
       throw new RuntimeException("Unexpected hash table key type " + hashTableKeyType.name());

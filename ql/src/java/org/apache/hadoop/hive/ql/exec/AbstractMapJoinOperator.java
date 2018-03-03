@@ -25,6 +25,7 @@ import java.util.List;
 import java.util.concurrent.Future;
 
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hive.ql.CompilationOpContext;
 import org.apache.hadoop.hive.ql.exec.persistence.RowContainer;
 import org.apache.hadoop.hive.ql.metadata.HiveException;
 import org.apache.hadoop.hive.ql.plan.MapJoinDesc;
@@ -50,7 +51,13 @@ public abstract class AbstractMapJoinOperator <T extends MapJoinDesc> extends Co
 
   transient int numMapRowsRead;
 
-  public AbstractMapJoinOperator() {
+  /** Kryo ctor. */
+  protected AbstractMapJoinOperator() {
+    super();
+  }
+
+  public AbstractMapJoinOperator(CompilationOpContext ctx) {
+    super(ctx);
   }
 
   public AbstractMapJoinOperator(AbstractMapJoinOperator<? extends MapJoinDesc> mjop) {
@@ -59,16 +66,16 @@ public abstract class AbstractMapJoinOperator <T extends MapJoinDesc> extends Co
 
   @Override
   @SuppressWarnings("unchecked")
-  protected Collection<Future<?>> initializeOp(Configuration hconf) throws HiveException {
+  protected void initializeOp(Configuration hconf) throws HiveException {
     if (conf.getGenJoinKeys()) {
       int tagLen = conf.getTagLength();
       joinKeys = new List[tagLen];
-      JoinUtil.populateJoinKeyValue(joinKeys, conf.getKeys(), NOTSKIPBIGTABLE);
+      JoinUtil.populateJoinKeyValue(joinKeys, conf.getKeys(), NOTSKIPBIGTABLE, hconf);
       joinKeysObjectInspectors = JoinUtil.getObjectInspectorsFromEvaluators(joinKeys,
           inputObjInspectors,NOTSKIPBIGTABLE, tagLen);
     }
 
-    Collection<Future<?>> result = super.initializeOp(hconf);
+    super.initializeOp(hconf);
 
     numMapRowsRead = 0;
 
@@ -82,8 +89,6 @@ public abstract class AbstractMapJoinOperator <T extends MapJoinDesc> extends Co
         posBigTable, joinCacheSize,spillTableDesc, conf,
         !hasFilter(posBigTable), reporter);
     storage[posBigTable] = bigPosRC;
-
-    return result;
   }
 
   @Override

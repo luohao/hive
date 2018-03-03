@@ -103,6 +103,14 @@ public class DoubleColumnVector extends ColumnVector {
     vector[0] = value;
   }
 
+  // Fill the column vector with nulls
+  public void fillWithNulls() {
+    noNulls = false;
+    isRepeating = true;
+    vector[0] = NULL_VALUE;
+    isNull[0] = true;
+  }
+
   // Simplify vector by brute-force flattening noNulls and isRepeating
   // This can be used to reduce combinatorial explosion of code paths in VectorExpressions
   // with many arguments.
@@ -126,7 +134,17 @@ public class DoubleColumnVector extends ColumnVector {
 
   @Override
   public void setElement(int outElementNum, int inputElementNum, ColumnVector inputVector) {
-    vector[outElementNum] = ((DoubleColumnVector) inputVector).vector[inputElementNum];
+    if (inputVector.isRepeating) {
+      inputElementNum = 0;
+    }
+    if (inputVector.noNulls || !inputVector.isNull[inputElementNum]) {
+      isNull[outElementNum] = false;
+      vector[outElementNum] =
+          ((DoubleColumnVector) inputVector).vector[inputElementNum];
+    } else {
+      isNull[outElementNum] = true;
+      noNulls = false;
+    }
   }
 
   @Override
@@ -139,5 +157,28 @@ public class DoubleColumnVector extends ColumnVector {
     } else {
       buffer.append("null");
     }
+  }
+
+  @Override
+  public void ensureSize(int size, boolean preserveData) {
+    super.ensureSize(size, preserveData);
+    if (size > vector.length) {
+      double[] oldArray = vector;
+      vector = new double[size];
+      if (preserveData) {
+        if (isRepeating) {
+          vector[0] = oldArray[0];
+        } else {
+          System.arraycopy(oldArray, 0, vector, 0 , oldArray.length);
+        }
+      }
+    }
+  }
+
+  @Override
+  public void shallowCopyTo(ColumnVector otherCv) {
+    DoubleColumnVector other = (DoubleColumnVector)otherCv;
+    super.shallowCopyTo(other);
+    other.vector = vector;
   }
 }

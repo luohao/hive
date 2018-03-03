@@ -26,8 +26,8 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -36,7 +36,7 @@ import org.apache.hadoop.hive.ql.metadata.HiveException;
 import org.apache.hadoop.hive.ql.plan.JoinDesc;
 import org.apache.hadoop.hive.ql.plan.OperatorDesc;
 import org.apache.hadoop.hive.ql.plan.TableDesc;
-import org.apache.hadoop.hive.serde2.SerDe;
+import org.apache.hadoop.hive.serde2.AbstractSerDe;
 import org.apache.hadoop.hive.serde2.SerDeException;
 import org.apache.hadoop.hive.serde2.SerDeUtils;
 import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspector;
@@ -73,7 +73,7 @@ import org.apache.hadoop.util.ReflectionUtils;
  */
 public class SkewJoinHandler {
 
-  protected static final Log LOG = LogFactory.getLog(SkewJoinHandler.class
+  protected static final Logger LOG = LoggerFactory.getLogger(SkewJoinHandler.class
       .getName());
 
   public int currBigKeyTag = -1;
@@ -83,7 +83,7 @@ public class SkewJoinHandler {
 
   private int skewKeyDefinition = -1;
   private Map<Byte, StructObjectInspector> skewKeysTableObjectInspector = null;
-  private Map<Byte, SerDe> tblSerializers = null;
+  private Map<Byte, AbstractSerDe> tblSerializers = null;
   private Map<Byte, TableDesc> tblDesc = null;
 
   private Map<Byte, Boolean> bigKeysExistingMap = null;
@@ -113,7 +113,7 @@ public class SkewJoinHandler {
     skewKeysTableObjectInspector = new HashMap<Byte, StructObjectInspector>(
         numAliases);
     tblDesc = desc.getSkewKeysValuesTables();
-    tblSerializers = new HashMap<Byte, SerDe>(numAliases);
+    tblSerializers = new HashMap<Byte, AbstractSerDe>(numAliases);
     bigKeysExistingMap = new HashMap<Byte, Boolean>(numAliases);
     taskId = Utilities.getTaskId(hconf);
 
@@ -137,7 +137,7 @@ public class SkewJoinHandler {
           .getStandardStructObjectInspector(keyColNames, skewTableKeyInspectors);
 
       try {
-        SerDe serializer = (SerDe) ReflectionUtils.newInstance(tblDesc.get(
+        AbstractSerDe serializer = (AbstractSerDe) ReflectionUtils.newInstance(tblDesc.get(
             alias).getDeserializerClass(), null);
         SerDeUtils.initializeSerDe(serializer, null, tblDesc.get(alias).getProperties(), null);
         tblSerializers.put((byte) i, serializer);
@@ -233,7 +233,7 @@ public class SkewJoinHandler {
       // right now we assume that the group by is an ArrayList object. It may
       // change in future.
       if (!(dummyKey instanceof List)) {
-        throw new RuntimeException("Bug in handle skew key in a seperate job.");
+        throw new RuntimeException("Bug in handle skew key in a separate job.");
       }
 
       skewKeyInCurrentGroup = true;
@@ -282,7 +282,7 @@ public class SkewJoinHandler {
     try {
       fs.delete(operatorOutputPath, true);
     } catch (IOException e) {
-      LOG.error(e);
+      LOG.error("Failed to delete path ", e);
     }
   }
 

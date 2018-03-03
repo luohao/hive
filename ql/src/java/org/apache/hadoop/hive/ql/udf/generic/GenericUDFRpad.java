@@ -19,7 +19,6 @@
 package org.apache.hadoop.hive.ql.udf.generic;
 
 import org.apache.hadoop.hive.ql.exec.Description;
-import org.apache.hadoop.io.Text;
 
 /**
  * UDFRpad.
@@ -29,28 +28,31 @@ import org.apache.hadoop.io.Text;
     "Returns str, right-padded with pad to a length of len",
     extended = "If str is longer than len, the return value is shortened to "
     + "len characters.\n"
+    + "In case of empty pad string, the return value is null.\n"
     + "Example:\n"
     + "  > SELECT _FUNC_('hi', 5, '??') FROM src LIMIT 1;\n"
-    + "  'hi???'" + "  > SELECT _FUNC_('hi', 1, '??') FROM src LIMIT 1;\n" + "  'h'")
+    + "  'hi???'\n"
+    + "  > SELECT _FUNC_('hi', 1, '??') FROM src LIMIT 1;\n"
+    + "  'h'\n"
+    + "  > SELECT _FUNC_('hi', 5, '') FROM src LIMIT 1;\n"
+    + "  null")
 public class GenericUDFRpad extends GenericUDFBasePad {
   public GenericUDFRpad() {
     super("rpad");
   }
 
   @Override
-  protected void performOp(byte[] data, byte[] txt, byte[] padTxt, int len, Text str, Text pad) {
-    int pos;
+  protected void performOp(
+      StringBuilder builder, int len, String str, String pad) {
+    int pos = str.length();
     // Copy the text
-    for (pos = 0; pos < str.getLength() && pos < len; pos++) {
-      data[pos] = txt[pos];
-    }
+    builder.append(str, 0, pos);
 
     // Copy the padding
     while (pos < len) {
-      for (int i = 0; i < pad.getLength() && i < len - pos; i++) {
-        data[pos + i] = padTxt[i];
-      }
-      pos += pad.getLength();
+      builder.append(pad);
+      pos += pad.length();
     }
+    builder.setLength(len);
   }
 }

@@ -1,97 +1,19 @@
-PREHOOK: query: -- SORT_QUERY_RESULTS
--- HIVE-3411 Filter predicates on outer join overlapped on single alias is not handled properly
-
-create table a as SELECT 100 as key, a.value as value FROM src LATERAL VIEW explode(array(40, 50, 60)) a as value limit 3
+PREHOOK: query: create table a as SELECT 100 as key, a.value as value FROM src LATERAL VIEW explode(array(40, 50, 60)) a as value limit 3
 PREHOOK: type: CREATETABLE_AS_SELECT
 PREHOOK: Input: default@src
 PREHOOK: Output: database:default
 PREHOOK: Output: default@a
-POSTHOOK: query: -- SORT_QUERY_RESULTS
--- HIVE-3411 Filter predicates on outer join overlapped on single alias is not handled properly
-
-create table a as SELECT 100 as key, a.value as value FROM src LATERAL VIEW explode(array(40, 50, 60)) a as value limit 3
+POSTHOOK: query: create table a as SELECT 100 as key, a.value as value FROM src LATERAL VIEW explode(array(40, 50, 60)) a as value limit 3
 POSTHOOK: type: CREATETABLE_AS_SELECT
 POSTHOOK: Input: default@src
 POSTHOOK: Output: database:default
 POSTHOOK: Output: default@a
-PREHOOK: query: -- overlap on a
-explain extended select * from a left outer join a b on (a.key=b.key AND a.value=50 AND b.value=50) left outer join a c on (a.key=c.key AND a.value=60 AND c.value=60)
+POSTHOOK: Lineage: a.key SIMPLE []
+POSTHOOK: Lineage: a.value SCRIPT []
+PREHOOK: query: explain extended select * from a left outer join a b on (a.key=b.key AND a.value=50 AND b.value=50) left outer join a c on (a.key=c.key AND a.value=60 AND c.value=60)
 PREHOOK: type: QUERY
-POSTHOOK: query: -- overlap on a
-explain extended select * from a left outer join a b on (a.key=b.key AND a.value=50 AND b.value=50) left outer join a c on (a.key=c.key AND a.value=60 AND c.value=60)
+POSTHOOK: query: explain extended select * from a left outer join a b on (a.key=b.key AND a.value=50 AND b.value=50) left outer join a c on (a.key=c.key AND a.value=60 AND c.value=60)
 POSTHOOK: type: QUERY
-ABSTRACT SYNTAX TREE:
-  
-TOK_QUERY
-   TOK_FROM
-      TOK_LEFTOUTERJOIN
-         TOK_LEFTOUTERJOIN
-            TOK_TABREF
-               TOK_TABNAME
-                  a
-            TOK_TABREF
-               TOK_TABNAME
-                  a
-               b
-            AND
-               AND
-                  =
-                     .
-                        TOK_TABLE_OR_COL
-                           a
-                        key
-                     .
-                        TOK_TABLE_OR_COL
-                           b
-                        key
-                  =
-                     .
-                        TOK_TABLE_OR_COL
-                           a
-                        value
-                     50
-               =
-                  .
-                     TOK_TABLE_OR_COL
-                        b
-                     value
-                  50
-         TOK_TABREF
-            TOK_TABNAME
-               a
-            c
-         AND
-            AND
-               =
-                  .
-                     TOK_TABLE_OR_COL
-                        a
-                     key
-                  .
-                     TOK_TABLE_OR_COL
-                        c
-                     key
-               =
-                  .
-                     TOK_TABLE_OR_COL
-                        a
-                     value
-                  60
-            =
-               .
-                  TOK_TABLE_OR_COL
-                     c
-                  value
-               60
-   TOK_INSERT
-      TOK_DESTINATION
-         TOK_DIR
-            TOK_TMP_FILE
-      TOK_SELECT
-         TOK_SELEXPR
-            TOK_ALLCOLREF
-
-
 STAGE DEPENDENCIES:
   Stage-1 is a root stage
   Stage-0 depends on stages: Stage-1
@@ -104,14 +26,19 @@ STAGE PLANS:
             alias: a
             Statistics: Num rows: 3 Data size: 18 Basic stats: COMPLETE Column stats: NONE
             GatherStats: false
-            Reduce Output Operator
-              key expressions: key (type: int)
-              sort order: +
-              Map-reduce partition columns: key (type: int)
+            Select Operator
+              expressions: key (type: int), value (type: int)
+              outputColumnNames: _col0, _col1
               Statistics: Num rows: 3 Data size: 18 Basic stats: COMPLETE Column stats: NONE
-              tag: 0
-              value expressions: value (type: int)
-              auto parallelism: false
+              Reduce Output Operator
+                key expressions: _col0 (type: int)
+                null sort order: a
+                sort order: +
+                Map-reduce partition columns: _col0 (type: int)
+                Statistics: Num rows: 3 Data size: 18 Basic stats: COMPLETE Column stats: NONE
+                tag: 0
+                value expressions: _col1 (type: int)
+                auto parallelism: false
           TableScan
             alias: b
             Statistics: Num rows: 3 Data size: 18 Basic stats: COMPLETE Column stats: NONE
@@ -120,14 +47,19 @@ STAGE PLANS:
               isSamplingPred: false
               predicate: (value = 50) (type: boolean)
               Statistics: Num rows: 1 Data size: 6 Basic stats: COMPLETE Column stats: NONE
-              Reduce Output Operator
-                key expressions: key (type: int)
-                sort order: +
-                Map-reduce partition columns: key (type: int)
+              Select Operator
+                expressions: key (type: int), 50 (type: int)
+                outputColumnNames: _col0, _col1
                 Statistics: Num rows: 1 Data size: 6 Basic stats: COMPLETE Column stats: NONE
-                tag: 1
-                value expressions: value (type: int)
-                auto parallelism: false
+                Reduce Output Operator
+                  key expressions: _col0 (type: int)
+                  null sort order: a
+                  sort order: +
+                  Map-reduce partition columns: _col0 (type: int)
+                  Statistics: Num rows: 1 Data size: 6 Basic stats: COMPLETE Column stats: NONE
+                  tag: 1
+                  value expressions: _col1 (type: int)
+                  auto parallelism: false
           TableScan
             alias: c
             Statistics: Num rows: 3 Data size: 18 Basic stats: COMPLETE Column stats: NONE
@@ -136,14 +68,19 @@ STAGE PLANS:
               isSamplingPred: false
               predicate: (value = 60) (type: boolean)
               Statistics: Num rows: 1 Data size: 6 Basic stats: COMPLETE Column stats: NONE
-              Reduce Output Operator
-                key expressions: key (type: int)
-                sort order: +
-                Map-reduce partition columns: key (type: int)
+              Select Operator
+                expressions: key (type: int), 60 (type: int)
+                outputColumnNames: _col0, _col1
                 Statistics: Num rows: 1 Data size: 6 Basic stats: COMPLETE Column stats: NONE
-                tag: 2
-                value expressions: value (type: int)
-                auto parallelism: false
+                Reduce Output Operator
+                  key expressions: _col0 (type: int)
+                  null sort order: a
+                  sort order: +
+                  Map-reduce partition columns: _col0 (type: int)
+                  Statistics: Num rows: 1 Data size: 6 Basic stats: COMPLETE Column stats: NONE
+                  tag: 2
+                  value expressions: _col1 (type: int)
+                  auto parallelism: false
       Path -> Alias:
 #### A masked pattern was here ####
       Path -> Partition:
@@ -153,8 +90,9 @@ STAGE PLANS:
             input format: org.apache.hadoop.mapred.TextInputFormat
             output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
             properties:
-              COLUMN_STATS_ACCURATE true
+              COLUMN_STATS_ACCURATE {"BASIC_STATS":"true"}
               bucket_count -1
+              column.name.delimiter ,
               columns key,value
               columns.comments 
               columns.types int:int
@@ -173,8 +111,9 @@ STAGE PLANS:
               input format: org.apache.hadoop.mapred.TextInputFormat
               output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
               properties:
-                COLUMN_STATS_ACCURATE true
+                COLUMN_STATS_ACCURATE {"BASIC_STATS":"true"}
                 bucket_count -1
+                column.name.delimiter ,
                 columns key,value
                 columns.comments 
                 columns.types int:int
@@ -192,7 +131,7 @@ STAGE PLANS:
               name: default.a
             name: default.a
       Truncated Path -> Alias:
-        /a [a, b, c]
+        /a [$hdt$_0:a, $hdt$_1:b, $hdt$_2:c]
       Needs Tagging: true
       Reduce Operator Tree:
         Join Operator
@@ -206,36 +145,33 @@ STAGE PLANS:
             1 
             2 
           keys:
-            0 key (type: int)
-            1 key (type: int)
-            2 key (type: int)
-          outputColumnNames: _col0, _col1, _col5, _col6, _col10, _col11
+            0 _col0 (type: int)
+            1 _col0 (type: int)
+            2 _col0 (type: int)
+          outputColumnNames: _col0, _col1, _col2, _col3, _col4, _col5
           Statistics: Num rows: 6 Data size: 39 Basic stats: COMPLETE Column stats: NONE
-          Select Operator
-            expressions: _col0 (type: int), _col1 (type: int), _col5 (type: int), _col6 (type: int), _col10 (type: int), _col11 (type: int)
-            outputColumnNames: _col0, _col1, _col2, _col3, _col4, _col5
+          File Output Operator
+            compressed: false
+            GlobalTableId: 0
+#### A masked pattern was here ####
+            NumFilesPerFileSink: 1
             Statistics: Num rows: 6 Data size: 39 Basic stats: COMPLETE Column stats: NONE
-            File Output Operator
-              compressed: false
-              GlobalTableId: 0
 #### A masked pattern was here ####
-              NumFilesPerFileSink: 1
-              Statistics: Num rows: 6 Data size: 39 Basic stats: COMPLETE Column stats: NONE
-#### A masked pattern was here ####
-              table:
-                  input format: org.apache.hadoop.mapred.TextInputFormat
-                  output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
-                  properties:
-                    columns _col0,_col1,_col2,_col3,_col4,_col5
-                    columns.types int:int:int:int:int:int
-                    escape.delim \
-                    hive.serialization.extend.additional.nesting.levels true
-                    serialization.format 1
-                    serialization.lib org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe
-                  serde: org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe
-              TotalFiles: 1
-              GatherStats: false
-              MultiFileSpray: false
+            table:
+                input format: org.apache.hadoop.mapred.SequenceFileInputFormat
+                output format: org.apache.hadoop.hive.ql.io.HiveSequenceFileOutputFormat
+                properties:
+                  columns _col0,_col1,_col2,_col3,_col4,_col5
+                  columns.types int:int:int:int:int:int
+                  escape.delim \
+                  hive.serialization.extend.additional.nesting.levels true
+                  serialization.escape.crlf true
+                  serialization.format 1
+                  serialization.lib org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe
+                serde: org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe
+            TotalFiles: 1
+            GatherStats: false
+            MultiFileSpray: false
 
   Stage: Stage-0
     Fetch Operator
@@ -265,84 +201,10 @@ POSTHOOK: Input: default@a
 100	40	NULL	NULL	NULL	NULL
 100	50	100	50	NULL	NULL
 100	60	NULL	NULL	100	60
-PREHOOK: query: -- overlap on b
-explain extended select * from a right outer join a b on (a.key=b.key AND a.value=50 AND b.value=50) left outer join a c on (b.key=c.key AND b.value=60 AND c.value=60)
+PREHOOK: query: explain extended select * from a right outer join a b on (a.key=b.key AND a.value=50 AND b.value=50) left outer join a c on (b.key=c.key AND b.value=60 AND c.value=60)
 PREHOOK: type: QUERY
-POSTHOOK: query: -- overlap on b
-explain extended select * from a right outer join a b on (a.key=b.key AND a.value=50 AND b.value=50) left outer join a c on (b.key=c.key AND b.value=60 AND c.value=60)
+POSTHOOK: query: explain extended select * from a right outer join a b on (a.key=b.key AND a.value=50 AND b.value=50) left outer join a c on (b.key=c.key AND b.value=60 AND c.value=60)
 POSTHOOK: type: QUERY
-ABSTRACT SYNTAX TREE:
-  
-TOK_QUERY
-   TOK_FROM
-      TOK_LEFTOUTERJOIN
-         TOK_RIGHTOUTERJOIN
-            TOK_TABREF
-               TOK_TABNAME
-                  a
-            TOK_TABREF
-               TOK_TABNAME
-                  a
-               b
-            AND
-               AND
-                  =
-                     .
-                        TOK_TABLE_OR_COL
-                           a
-                        key
-                     .
-                        TOK_TABLE_OR_COL
-                           b
-                        key
-                  =
-                     .
-                        TOK_TABLE_OR_COL
-                           a
-                        value
-                     50
-               =
-                  .
-                     TOK_TABLE_OR_COL
-                        b
-                     value
-                  50
-         TOK_TABREF
-            TOK_TABNAME
-               a
-            c
-         AND
-            AND
-               =
-                  .
-                     TOK_TABLE_OR_COL
-                        b
-                     key
-                  .
-                     TOK_TABLE_OR_COL
-                        c
-                     key
-               =
-                  .
-                     TOK_TABLE_OR_COL
-                        b
-                     value
-                  60
-            =
-               .
-                  TOK_TABLE_OR_COL
-                     c
-                  value
-               60
-   TOK_INSERT
-      TOK_DESTINATION
-         TOK_DIR
-            TOK_TMP_FILE
-      TOK_SELECT
-         TOK_SELEXPR
-            TOK_ALLCOLREF
-
-
 STAGE DEPENDENCIES:
   Stage-1 is a root stage
   Stage-0 depends on stages: Stage-1
@@ -359,26 +221,36 @@ STAGE PLANS:
               isSamplingPred: false
               predicate: (value = 50) (type: boolean)
               Statistics: Num rows: 1 Data size: 6 Basic stats: COMPLETE Column stats: NONE
-              Reduce Output Operator
-                key expressions: key (type: int)
-                sort order: +
-                Map-reduce partition columns: key (type: int)
+              Select Operator
+                expressions: key (type: int), 50 (type: int)
+                outputColumnNames: _col0, _col1
                 Statistics: Num rows: 1 Data size: 6 Basic stats: COMPLETE Column stats: NONE
-                tag: 0
-                value expressions: value (type: int)
-                auto parallelism: false
+                Reduce Output Operator
+                  key expressions: _col0 (type: int)
+                  null sort order: a
+                  sort order: +
+                  Map-reduce partition columns: _col0 (type: int)
+                  Statistics: Num rows: 1 Data size: 6 Basic stats: COMPLETE Column stats: NONE
+                  tag: 0
+                  value expressions: _col1 (type: int)
+                  auto parallelism: false
           TableScan
             alias: b
             Statistics: Num rows: 3 Data size: 18 Basic stats: COMPLETE Column stats: NONE
             GatherStats: false
-            Reduce Output Operator
-              key expressions: key (type: int)
-              sort order: +
-              Map-reduce partition columns: key (type: int)
+            Select Operator
+              expressions: key (type: int), value (type: int)
+              outputColumnNames: _col0, _col1
               Statistics: Num rows: 3 Data size: 18 Basic stats: COMPLETE Column stats: NONE
-              tag: 1
-              value expressions: value (type: int)
-              auto parallelism: false
+              Reduce Output Operator
+                key expressions: _col0 (type: int)
+                null sort order: a
+                sort order: +
+                Map-reduce partition columns: _col0 (type: int)
+                Statistics: Num rows: 3 Data size: 18 Basic stats: COMPLETE Column stats: NONE
+                tag: 1
+                value expressions: _col1 (type: int)
+                auto parallelism: false
           TableScan
             alias: c
             Statistics: Num rows: 3 Data size: 18 Basic stats: COMPLETE Column stats: NONE
@@ -387,14 +259,19 @@ STAGE PLANS:
               isSamplingPred: false
               predicate: (value = 60) (type: boolean)
               Statistics: Num rows: 1 Data size: 6 Basic stats: COMPLETE Column stats: NONE
-              Reduce Output Operator
-                key expressions: key (type: int)
-                sort order: +
-                Map-reduce partition columns: key (type: int)
+              Select Operator
+                expressions: key (type: int), 60 (type: int)
+                outputColumnNames: _col0, _col1
                 Statistics: Num rows: 1 Data size: 6 Basic stats: COMPLETE Column stats: NONE
-                tag: 2
-                value expressions: value (type: int)
-                auto parallelism: false
+                Reduce Output Operator
+                  key expressions: _col0 (type: int)
+                  null sort order: a
+                  sort order: +
+                  Map-reduce partition columns: _col0 (type: int)
+                  Statistics: Num rows: 1 Data size: 6 Basic stats: COMPLETE Column stats: NONE
+                  tag: 2
+                  value expressions: _col1 (type: int)
+                  auto parallelism: false
       Path -> Alias:
 #### A masked pattern was here ####
       Path -> Partition:
@@ -404,8 +281,9 @@ STAGE PLANS:
             input format: org.apache.hadoop.mapred.TextInputFormat
             output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
             properties:
-              COLUMN_STATS_ACCURATE true
+              COLUMN_STATS_ACCURATE {"BASIC_STATS":"true"}
               bucket_count -1
+              column.name.delimiter ,
               columns key,value
               columns.comments 
               columns.types int:int
@@ -424,8 +302,9 @@ STAGE PLANS:
               input format: org.apache.hadoop.mapred.TextInputFormat
               output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
               properties:
-                COLUMN_STATS_ACCURATE true
+                COLUMN_STATS_ACCURATE {"BASIC_STATS":"true"}
                 bucket_count -1
+                column.name.delimiter ,
                 columns key,value
                 columns.comments 
                 columns.types int:int
@@ -443,7 +322,7 @@ STAGE PLANS:
               name: default.a
             name: default.a
       Truncated Path -> Alias:
-        /a [a, b, c]
+        /a [$hdt$_0:a, $hdt$_1:b, $hdt$_2:c]
       Needs Tagging: true
       Reduce Operator Tree:
         Join Operator
@@ -457,36 +336,33 @@ STAGE PLANS:
             1 {(VALUE._col0 = 50)} {(VALUE._col0 = 60)}
             2 
           keys:
-            0 key (type: int)
-            1 key (type: int)
-            2 key (type: int)
-          outputColumnNames: _col0, _col1, _col5, _col6, _col10, _col11
+            0 _col0 (type: int)
+            1 _col0 (type: int)
+            2 _col0 (type: int)
+          outputColumnNames: _col0, _col1, _col2, _col3, _col4, _col5
           Statistics: Num rows: 6 Data size: 39 Basic stats: COMPLETE Column stats: NONE
-          Select Operator
-            expressions: _col0 (type: int), _col1 (type: int), _col5 (type: int), _col6 (type: int), _col10 (type: int), _col11 (type: int)
-            outputColumnNames: _col0, _col1, _col2, _col3, _col4, _col5
+          File Output Operator
+            compressed: false
+            GlobalTableId: 0
+#### A masked pattern was here ####
+            NumFilesPerFileSink: 1
             Statistics: Num rows: 6 Data size: 39 Basic stats: COMPLETE Column stats: NONE
-            File Output Operator
-              compressed: false
-              GlobalTableId: 0
 #### A masked pattern was here ####
-              NumFilesPerFileSink: 1
-              Statistics: Num rows: 6 Data size: 39 Basic stats: COMPLETE Column stats: NONE
-#### A masked pattern was here ####
-              table:
-                  input format: org.apache.hadoop.mapred.TextInputFormat
-                  output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
-                  properties:
-                    columns _col0,_col1,_col2,_col3,_col4,_col5
-                    columns.types int:int:int:int:int:int
-                    escape.delim \
-                    hive.serialization.extend.additional.nesting.levels true
-                    serialization.format 1
-                    serialization.lib org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe
-                  serde: org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe
-              TotalFiles: 1
-              GatherStats: false
-              MultiFileSpray: false
+            table:
+                input format: org.apache.hadoop.mapred.SequenceFileInputFormat
+                output format: org.apache.hadoop.hive.ql.io.HiveSequenceFileOutputFormat
+                properties:
+                  columns _col0,_col1,_col2,_col3,_col4,_col5
+                  columns.types int:int:int:int:int:int
+                  escape.delim \
+                  hive.serialization.extend.additional.nesting.levels true
+                  serialization.escape.crlf true
+                  serialization.format 1
+                  serialization.lib org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe
+                serde: org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe
+            TotalFiles: 1
+            GatherStats: false
+            MultiFileSpray: false
 
   Stage: Stage-0
     Fetch Operator
@@ -516,98 +392,10 @@ POSTHOOK: Input: default@a
 100	50	100	50	NULL	NULL
 NULL	NULL	100	40	NULL	NULL
 NULL	NULL	100	60	100	60
-PREHOOK: query: -- overlap on b with two filters for each
-explain extended select * from a right outer join a b on (a.key=b.key AND a.value=50 AND b.value=50 AND b.value>10) left outer join a c on (b.key=c.key AND b.value=60 AND b.value>20 AND c.value=60)
+PREHOOK: query: explain extended select * from a right outer join a b on (a.key=b.key AND a.value=50 AND b.value=50 AND b.value>10) left outer join a c on (b.key=c.key AND b.value=60 AND b.value>20 AND c.value=60)
 PREHOOK: type: QUERY
-POSTHOOK: query: -- overlap on b with two filters for each
-explain extended select * from a right outer join a b on (a.key=b.key AND a.value=50 AND b.value=50 AND b.value>10) left outer join a c on (b.key=c.key AND b.value=60 AND b.value>20 AND c.value=60)
+POSTHOOK: query: explain extended select * from a right outer join a b on (a.key=b.key AND a.value=50 AND b.value=50 AND b.value>10) left outer join a c on (b.key=c.key AND b.value=60 AND b.value>20 AND c.value=60)
 POSTHOOK: type: QUERY
-ABSTRACT SYNTAX TREE:
-  
-TOK_QUERY
-   TOK_FROM
-      TOK_LEFTOUTERJOIN
-         TOK_RIGHTOUTERJOIN
-            TOK_TABREF
-               TOK_TABNAME
-                  a
-            TOK_TABREF
-               TOK_TABNAME
-                  a
-               b
-            AND
-               AND
-                  AND
-                     =
-                        .
-                           TOK_TABLE_OR_COL
-                              a
-                           key
-                        .
-                           TOK_TABLE_OR_COL
-                              b
-                           key
-                     =
-                        .
-                           TOK_TABLE_OR_COL
-                              a
-                           value
-                        50
-                  =
-                     .
-                        TOK_TABLE_OR_COL
-                           b
-                        value
-                     50
-               >
-                  .
-                     TOK_TABLE_OR_COL
-                        b
-                     value
-                  10
-         TOK_TABREF
-            TOK_TABNAME
-               a
-            c
-         AND
-            AND
-               AND
-                  =
-                     .
-                        TOK_TABLE_OR_COL
-                           b
-                        key
-                     .
-                        TOK_TABLE_OR_COL
-                           c
-                        key
-                  =
-                     .
-                        TOK_TABLE_OR_COL
-                           b
-                        value
-                     60
-               >
-                  .
-                     TOK_TABLE_OR_COL
-                        b
-                     value
-                  20
-            =
-               .
-                  TOK_TABLE_OR_COL
-                     c
-                  value
-               60
-   TOK_INSERT
-      TOK_DESTINATION
-         TOK_DIR
-            TOK_TMP_FILE
-      TOK_SELECT
-         TOK_SELEXPR
-            TOK_ALLCOLREF
-
-
 STAGE DEPENDENCIES:
   Stage-1 is a root stage
   Stage-0 depends on stages: Stage-1
@@ -624,26 +412,36 @@ STAGE PLANS:
               isSamplingPred: false
               predicate: (value = 50) (type: boolean)
               Statistics: Num rows: 1 Data size: 6 Basic stats: COMPLETE Column stats: NONE
-              Reduce Output Operator
-                key expressions: key (type: int)
-                sort order: +
-                Map-reduce partition columns: key (type: int)
+              Select Operator
+                expressions: key (type: int), 50 (type: int)
+                outputColumnNames: _col0, _col1
                 Statistics: Num rows: 1 Data size: 6 Basic stats: COMPLETE Column stats: NONE
-                tag: 0
-                value expressions: value (type: int)
-                auto parallelism: false
+                Reduce Output Operator
+                  key expressions: _col0 (type: int)
+                  null sort order: a
+                  sort order: +
+                  Map-reduce partition columns: _col0 (type: int)
+                  Statistics: Num rows: 1 Data size: 6 Basic stats: COMPLETE Column stats: NONE
+                  tag: 0
+                  value expressions: _col1 (type: int)
+                  auto parallelism: false
           TableScan
             alias: b
             Statistics: Num rows: 3 Data size: 18 Basic stats: COMPLETE Column stats: NONE
             GatherStats: false
-            Reduce Output Operator
-              key expressions: key (type: int)
-              sort order: +
-              Map-reduce partition columns: key (type: int)
+            Select Operator
+              expressions: key (type: int), value (type: int)
+              outputColumnNames: _col0, _col1
               Statistics: Num rows: 3 Data size: 18 Basic stats: COMPLETE Column stats: NONE
-              tag: 1
-              value expressions: value (type: int)
-              auto parallelism: false
+              Reduce Output Operator
+                key expressions: _col0 (type: int)
+                null sort order: a
+                sort order: +
+                Map-reduce partition columns: _col0 (type: int)
+                Statistics: Num rows: 3 Data size: 18 Basic stats: COMPLETE Column stats: NONE
+                tag: 1
+                value expressions: _col1 (type: int)
+                auto parallelism: false
           TableScan
             alias: c
             Statistics: Num rows: 3 Data size: 18 Basic stats: COMPLETE Column stats: NONE
@@ -652,14 +450,19 @@ STAGE PLANS:
               isSamplingPred: false
               predicate: (value = 60) (type: boolean)
               Statistics: Num rows: 1 Data size: 6 Basic stats: COMPLETE Column stats: NONE
-              Reduce Output Operator
-                key expressions: key (type: int)
-                sort order: +
-                Map-reduce partition columns: key (type: int)
+              Select Operator
+                expressions: key (type: int), 60 (type: int)
+                outputColumnNames: _col0, _col1
                 Statistics: Num rows: 1 Data size: 6 Basic stats: COMPLETE Column stats: NONE
-                tag: 2
-                value expressions: value (type: int)
-                auto parallelism: false
+                Reduce Output Operator
+                  key expressions: _col0 (type: int)
+                  null sort order: a
+                  sort order: +
+                  Map-reduce partition columns: _col0 (type: int)
+                  Statistics: Num rows: 1 Data size: 6 Basic stats: COMPLETE Column stats: NONE
+                  tag: 2
+                  value expressions: _col1 (type: int)
+                  auto parallelism: false
       Path -> Alias:
 #### A masked pattern was here ####
       Path -> Partition:
@@ -669,8 +472,9 @@ STAGE PLANS:
             input format: org.apache.hadoop.mapred.TextInputFormat
             output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
             properties:
-              COLUMN_STATS_ACCURATE true
+              COLUMN_STATS_ACCURATE {"BASIC_STATS":"true"}
               bucket_count -1
+              column.name.delimiter ,
               columns key,value
               columns.comments 
               columns.types int:int
@@ -689,8 +493,9 @@ STAGE PLANS:
               input format: org.apache.hadoop.mapred.TextInputFormat
               output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
               properties:
-                COLUMN_STATS_ACCURATE true
+                COLUMN_STATS_ACCURATE {"BASIC_STATS":"true"}
                 bucket_count -1
+                column.name.delimiter ,
                 columns key,value
                 columns.comments 
                 columns.types int:int
@@ -708,7 +513,7 @@ STAGE PLANS:
               name: default.a
             name: default.a
       Truncated Path -> Alias:
-        /a [a, b, c]
+        /a [$hdt$_0:a, $hdt$_1:b, $hdt$_2:c]
       Needs Tagging: true
       Reduce Operator Tree:
         Join Operator
@@ -722,36 +527,33 @@ STAGE PLANS:
             1 {(VALUE._col0 = 50)} {(VALUE._col0 > 10)} {(VALUE._col0 = 60)} {(VALUE._col0 > 20)}
             2 
           keys:
-            0 key (type: int)
-            1 key (type: int)
-            2 key (type: int)
-          outputColumnNames: _col0, _col1, _col5, _col6, _col10, _col11
+            0 _col0 (type: int)
+            1 _col0 (type: int)
+            2 _col0 (type: int)
+          outputColumnNames: _col0, _col1, _col2, _col3, _col4, _col5
           Statistics: Num rows: 6 Data size: 39 Basic stats: COMPLETE Column stats: NONE
-          Select Operator
-            expressions: _col0 (type: int), _col1 (type: int), _col5 (type: int), _col6 (type: int), _col10 (type: int), _col11 (type: int)
-            outputColumnNames: _col0, _col1, _col2, _col3, _col4, _col5
+          File Output Operator
+            compressed: false
+            GlobalTableId: 0
+#### A masked pattern was here ####
+            NumFilesPerFileSink: 1
             Statistics: Num rows: 6 Data size: 39 Basic stats: COMPLETE Column stats: NONE
-            File Output Operator
-              compressed: false
-              GlobalTableId: 0
 #### A masked pattern was here ####
-              NumFilesPerFileSink: 1
-              Statistics: Num rows: 6 Data size: 39 Basic stats: COMPLETE Column stats: NONE
-#### A masked pattern was here ####
-              table:
-                  input format: org.apache.hadoop.mapred.TextInputFormat
-                  output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
-                  properties:
-                    columns _col0,_col1,_col2,_col3,_col4,_col5
-                    columns.types int:int:int:int:int:int
-                    escape.delim \
-                    hive.serialization.extend.additional.nesting.levels true
-                    serialization.format 1
-                    serialization.lib org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe
-                  serde: org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe
-              TotalFiles: 1
-              GatherStats: false
-              MultiFileSpray: false
+            table:
+                input format: org.apache.hadoop.mapred.SequenceFileInputFormat
+                output format: org.apache.hadoop.hive.ql.io.HiveSequenceFileOutputFormat
+                properties:
+                  columns _col0,_col1,_col2,_col3,_col4,_col5
+                  columns.types int:int:int:int:int:int
+                  escape.delim \
+                  hive.serialization.extend.additional.nesting.levels true
+                  serialization.escape.crlf true
+                  serialization.format 1
+                  serialization.lib org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe
+                serde: org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe
+            TotalFiles: 1
+            GatherStats: false
+            MultiFileSpray: false
 
   Stage: Stage-0
     Fetch Operator
@@ -781,112 +583,10 @@ POSTHOOK: Input: default@a
 100	50	100	50	NULL	NULL
 NULL	NULL	100	40	NULL	NULL
 NULL	NULL	100	60	100	60
-PREHOOK: query: -- overlap on a, b
-explain extended select * from a full outer join a b on (a.key=b.key AND a.value=50 AND b.value=50) left outer join a c on (b.key=c.key AND b.value=60 AND c.value=60) left outer join a d on (a.key=d.key AND a.value=40 AND d.value=40)
+PREHOOK: query: explain extended select * from a full outer join a b on (a.key=b.key AND a.value=50 AND b.value=50) left outer join a c on (b.key=c.key AND b.value=60 AND c.value=60) left outer join a d on (a.key=d.key AND a.value=40 AND d.value=40)
 PREHOOK: type: QUERY
-POSTHOOK: query: -- overlap on a, b
-explain extended select * from a full outer join a b on (a.key=b.key AND a.value=50 AND b.value=50) left outer join a c on (b.key=c.key AND b.value=60 AND c.value=60) left outer join a d on (a.key=d.key AND a.value=40 AND d.value=40)
+POSTHOOK: query: explain extended select * from a full outer join a b on (a.key=b.key AND a.value=50 AND b.value=50) left outer join a c on (b.key=c.key AND b.value=60 AND c.value=60) left outer join a d on (a.key=d.key AND a.value=40 AND d.value=40)
 POSTHOOK: type: QUERY
-ABSTRACT SYNTAX TREE:
-  
-TOK_QUERY
-   TOK_FROM
-      TOK_LEFTOUTERJOIN
-         TOK_LEFTOUTERJOIN
-            TOK_FULLOUTERJOIN
-               TOK_TABREF
-                  TOK_TABNAME
-                     a
-               TOK_TABREF
-                  TOK_TABNAME
-                     a
-                  b
-               AND
-                  AND
-                     =
-                        .
-                           TOK_TABLE_OR_COL
-                              a
-                           key
-                        .
-                           TOK_TABLE_OR_COL
-                              b
-                           key
-                     =
-                        .
-                           TOK_TABLE_OR_COL
-                              a
-                           value
-                        50
-                  =
-                     .
-                        TOK_TABLE_OR_COL
-                           b
-                        value
-                     50
-            TOK_TABREF
-               TOK_TABNAME
-                  a
-               c
-            AND
-               AND
-                  =
-                     .
-                        TOK_TABLE_OR_COL
-                           b
-                        key
-                     .
-                        TOK_TABLE_OR_COL
-                           c
-                        key
-                  =
-                     .
-                        TOK_TABLE_OR_COL
-                           b
-                        value
-                     60
-               =
-                  .
-                     TOK_TABLE_OR_COL
-                        c
-                     value
-                  60
-         TOK_TABREF
-            TOK_TABNAME
-               a
-            d
-         AND
-            AND
-               =
-                  .
-                     TOK_TABLE_OR_COL
-                        a
-                     key
-                  .
-                     TOK_TABLE_OR_COL
-                        d
-                     key
-               =
-                  .
-                     TOK_TABLE_OR_COL
-                        a
-                     value
-                  40
-            =
-               .
-                  TOK_TABLE_OR_COL
-                     d
-                  value
-               40
-   TOK_INSERT
-      TOK_DESTINATION
-         TOK_DIR
-            TOK_TMP_FILE
-      TOK_SELECT
-         TOK_SELEXPR
-            TOK_ALLCOLREF
-
-
 STAGE DEPENDENCIES:
   Stage-1 is a root stage
   Stage-0 depends on stages: Stage-1
@@ -899,26 +599,36 @@ STAGE PLANS:
             alias: a
             Statistics: Num rows: 3 Data size: 18 Basic stats: COMPLETE Column stats: NONE
             GatherStats: false
-            Reduce Output Operator
-              key expressions: key (type: int)
-              sort order: +
-              Map-reduce partition columns: key (type: int)
+            Select Operator
+              expressions: key (type: int), value (type: int)
+              outputColumnNames: _col0, _col1
               Statistics: Num rows: 3 Data size: 18 Basic stats: COMPLETE Column stats: NONE
-              tag: 0
-              value expressions: value (type: int)
-              auto parallelism: false
+              Reduce Output Operator
+                key expressions: _col0 (type: int)
+                null sort order: a
+                sort order: +
+                Map-reduce partition columns: _col0 (type: int)
+                Statistics: Num rows: 3 Data size: 18 Basic stats: COMPLETE Column stats: NONE
+                tag: 0
+                value expressions: _col1 (type: int)
+                auto parallelism: false
           TableScan
             alias: b
             Statistics: Num rows: 3 Data size: 18 Basic stats: COMPLETE Column stats: NONE
             GatherStats: false
-            Reduce Output Operator
-              key expressions: key (type: int)
-              sort order: +
-              Map-reduce partition columns: key (type: int)
+            Select Operator
+              expressions: key (type: int), value (type: int)
+              outputColumnNames: _col0, _col1
               Statistics: Num rows: 3 Data size: 18 Basic stats: COMPLETE Column stats: NONE
-              tag: 1
-              value expressions: value (type: int)
-              auto parallelism: false
+              Reduce Output Operator
+                key expressions: _col0 (type: int)
+                null sort order: a
+                sort order: +
+                Map-reduce partition columns: _col0 (type: int)
+                Statistics: Num rows: 3 Data size: 18 Basic stats: COMPLETE Column stats: NONE
+                tag: 1
+                value expressions: _col1 (type: int)
+                auto parallelism: false
           TableScan
             alias: c
             Statistics: Num rows: 3 Data size: 18 Basic stats: COMPLETE Column stats: NONE
@@ -927,14 +637,19 @@ STAGE PLANS:
               isSamplingPred: false
               predicate: (value = 60) (type: boolean)
               Statistics: Num rows: 1 Data size: 6 Basic stats: COMPLETE Column stats: NONE
-              Reduce Output Operator
-                key expressions: key (type: int)
-                sort order: +
-                Map-reduce partition columns: key (type: int)
+              Select Operator
+                expressions: key (type: int), 60 (type: int)
+                outputColumnNames: _col0, _col1
                 Statistics: Num rows: 1 Data size: 6 Basic stats: COMPLETE Column stats: NONE
-                tag: 2
-                value expressions: value (type: int)
-                auto parallelism: false
+                Reduce Output Operator
+                  key expressions: _col0 (type: int)
+                  null sort order: a
+                  sort order: +
+                  Map-reduce partition columns: _col0 (type: int)
+                  Statistics: Num rows: 1 Data size: 6 Basic stats: COMPLETE Column stats: NONE
+                  tag: 2
+                  value expressions: _col1 (type: int)
+                  auto parallelism: false
           TableScan
             alias: d
             Statistics: Num rows: 3 Data size: 18 Basic stats: COMPLETE Column stats: NONE
@@ -943,14 +658,19 @@ STAGE PLANS:
               isSamplingPred: false
               predicate: (value = 40) (type: boolean)
               Statistics: Num rows: 1 Data size: 6 Basic stats: COMPLETE Column stats: NONE
-              Reduce Output Operator
-                key expressions: key (type: int)
-                sort order: +
-                Map-reduce partition columns: key (type: int)
+              Select Operator
+                expressions: key (type: int), 40 (type: int)
+                outputColumnNames: _col0, _col1
                 Statistics: Num rows: 1 Data size: 6 Basic stats: COMPLETE Column stats: NONE
-                tag: 3
-                value expressions: value (type: int)
-                auto parallelism: false
+                Reduce Output Operator
+                  key expressions: _col0 (type: int)
+                  null sort order: a
+                  sort order: +
+                  Map-reduce partition columns: _col0 (type: int)
+                  Statistics: Num rows: 1 Data size: 6 Basic stats: COMPLETE Column stats: NONE
+                  tag: 3
+                  value expressions: _col1 (type: int)
+                  auto parallelism: false
       Path -> Alias:
 #### A masked pattern was here ####
       Path -> Partition:
@@ -960,8 +680,9 @@ STAGE PLANS:
             input format: org.apache.hadoop.mapred.TextInputFormat
             output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
             properties:
-              COLUMN_STATS_ACCURATE true
+              COLUMN_STATS_ACCURATE {"BASIC_STATS":"true"}
               bucket_count -1
+              column.name.delimiter ,
               columns key,value
               columns.comments 
               columns.types int:int
@@ -980,8 +701,9 @@ STAGE PLANS:
               input format: org.apache.hadoop.mapred.TextInputFormat
               output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
               properties:
-                COLUMN_STATS_ACCURATE true
+                COLUMN_STATS_ACCURATE {"BASIC_STATS":"true"}
                 bucket_count -1
+                column.name.delimiter ,
                 columns key,value
                 columns.comments 
                 columns.types int:int
@@ -999,7 +721,7 @@ STAGE PLANS:
               name: default.a
             name: default.a
       Truncated Path -> Alias:
-        /a [a, b, c, d]
+        /a [$hdt$_0:a, $hdt$_1:b, $hdt$_2:c, $hdt$_3:d]
       Needs Tagging: true
       Reduce Operator Tree:
         Join Operator
@@ -1016,37 +738,34 @@ STAGE PLANS:
             2 
             3 
           keys:
-            0 key (type: int)
-            1 key (type: int)
-            2 key (type: int)
-            3 key (type: int)
-          outputColumnNames: _col0, _col1, _col5, _col6, _col10, _col11, _col15, _col16
+            0 _col0 (type: int)
+            1 _col0 (type: int)
+            2 _col0 (type: int)
+            3 _col0 (type: int)
+          outputColumnNames: _col0, _col1, _col2, _col3, _col4, _col5, _col6, _col7
           Statistics: Num rows: 9 Data size: 59 Basic stats: COMPLETE Column stats: NONE
-          Select Operator
-            expressions: _col0 (type: int), _col1 (type: int), _col5 (type: int), _col6 (type: int), _col10 (type: int), _col11 (type: int), _col15 (type: int), _col16 (type: int)
-            outputColumnNames: _col0, _col1, _col2, _col3, _col4, _col5, _col6, _col7
+          File Output Operator
+            compressed: false
+            GlobalTableId: 0
+#### A masked pattern was here ####
+            NumFilesPerFileSink: 1
             Statistics: Num rows: 9 Data size: 59 Basic stats: COMPLETE Column stats: NONE
-            File Output Operator
-              compressed: false
-              GlobalTableId: 0
 #### A masked pattern was here ####
-              NumFilesPerFileSink: 1
-              Statistics: Num rows: 9 Data size: 59 Basic stats: COMPLETE Column stats: NONE
-#### A masked pattern was here ####
-              table:
-                  input format: org.apache.hadoop.mapred.TextInputFormat
-                  output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
-                  properties:
-                    columns _col0,_col1,_col2,_col3,_col4,_col5,_col6,_col7
-                    columns.types int:int:int:int:int:int:int:int
-                    escape.delim \
-                    hive.serialization.extend.additional.nesting.levels true
-                    serialization.format 1
-                    serialization.lib org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe
-                  serde: org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe
-              TotalFiles: 1
-              GatherStats: false
-              MultiFileSpray: false
+            table:
+                input format: org.apache.hadoop.mapred.SequenceFileInputFormat
+                output format: org.apache.hadoop.hive.ql.io.HiveSequenceFileOutputFormat
+                properties:
+                  columns _col0,_col1,_col2,_col3,_col4,_col5,_col6,_col7
+                  columns.types int:int:int:int:int:int:int:int
+                  escape.delim \
+                  hive.serialization.extend.additional.nesting.levels true
+                  serialization.escape.crlf true
+                  serialization.format 1
+                  serialization.lib org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe
+                serde: org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe
+            TotalFiles: 1
+            GatherStats: false
+            MultiFileSpray: false
 
   Stage: Stage-0
     Fetch Operator
@@ -1067,112 +786,10 @@ POSTHOOK: Input: default@a
 100	60	NULL	NULL	NULL	NULL	NULL	NULL
 NULL	NULL	100	40	NULL	NULL	NULL	NULL
 NULL	NULL	100	60	100	60	NULL	NULL
-PREHOOK: query: -- triple overlap on a
-explain extended select * from a left outer join a b on (a.key=b.key AND a.value=50 AND b.value=50) left outer join a c on (a.key=c.key AND a.value=60 AND c.value=60) left outer join a d on (a.key=d.key AND a.value=40 AND d.value=40)
+PREHOOK: query: explain extended select * from a left outer join a b on (a.key=b.key AND a.value=50 AND b.value=50) left outer join a c on (a.key=c.key AND a.value=60 AND c.value=60) left outer join a d on (a.key=d.key AND a.value=40 AND d.value=40)
 PREHOOK: type: QUERY
-POSTHOOK: query: -- triple overlap on a
-explain extended select * from a left outer join a b on (a.key=b.key AND a.value=50 AND b.value=50) left outer join a c on (a.key=c.key AND a.value=60 AND c.value=60) left outer join a d on (a.key=d.key AND a.value=40 AND d.value=40)
+POSTHOOK: query: explain extended select * from a left outer join a b on (a.key=b.key AND a.value=50 AND b.value=50) left outer join a c on (a.key=c.key AND a.value=60 AND c.value=60) left outer join a d on (a.key=d.key AND a.value=40 AND d.value=40)
 POSTHOOK: type: QUERY
-ABSTRACT SYNTAX TREE:
-  
-TOK_QUERY
-   TOK_FROM
-      TOK_LEFTOUTERJOIN
-         TOK_LEFTOUTERJOIN
-            TOK_LEFTOUTERJOIN
-               TOK_TABREF
-                  TOK_TABNAME
-                     a
-               TOK_TABREF
-                  TOK_TABNAME
-                     a
-                  b
-               AND
-                  AND
-                     =
-                        .
-                           TOK_TABLE_OR_COL
-                              a
-                           key
-                        .
-                           TOK_TABLE_OR_COL
-                              b
-                           key
-                     =
-                        .
-                           TOK_TABLE_OR_COL
-                              a
-                           value
-                        50
-                  =
-                     .
-                        TOK_TABLE_OR_COL
-                           b
-                        value
-                     50
-            TOK_TABREF
-               TOK_TABNAME
-                  a
-               c
-            AND
-               AND
-                  =
-                     .
-                        TOK_TABLE_OR_COL
-                           a
-                        key
-                     .
-                        TOK_TABLE_OR_COL
-                           c
-                        key
-                  =
-                     .
-                        TOK_TABLE_OR_COL
-                           a
-                        value
-                     60
-               =
-                  .
-                     TOK_TABLE_OR_COL
-                        c
-                     value
-                  60
-         TOK_TABREF
-            TOK_TABNAME
-               a
-            d
-         AND
-            AND
-               =
-                  .
-                     TOK_TABLE_OR_COL
-                        a
-                     key
-                  .
-                     TOK_TABLE_OR_COL
-                        d
-                     key
-               =
-                  .
-                     TOK_TABLE_OR_COL
-                        a
-                     value
-                  40
-            =
-               .
-                  TOK_TABLE_OR_COL
-                     d
-                  value
-               40
-   TOK_INSERT
-      TOK_DESTINATION
-         TOK_DIR
-            TOK_TMP_FILE
-      TOK_SELECT
-         TOK_SELEXPR
-            TOK_ALLCOLREF
-
-
 STAGE DEPENDENCIES:
   Stage-1 is a root stage
   Stage-0 depends on stages: Stage-1
@@ -1185,14 +802,19 @@ STAGE PLANS:
             alias: a
             Statistics: Num rows: 3 Data size: 18 Basic stats: COMPLETE Column stats: NONE
             GatherStats: false
-            Reduce Output Operator
-              key expressions: key (type: int)
-              sort order: +
-              Map-reduce partition columns: key (type: int)
+            Select Operator
+              expressions: key (type: int), value (type: int)
+              outputColumnNames: _col0, _col1
               Statistics: Num rows: 3 Data size: 18 Basic stats: COMPLETE Column stats: NONE
-              tag: 0
-              value expressions: value (type: int)
-              auto parallelism: false
+              Reduce Output Operator
+                key expressions: _col0 (type: int)
+                null sort order: a
+                sort order: +
+                Map-reduce partition columns: _col0 (type: int)
+                Statistics: Num rows: 3 Data size: 18 Basic stats: COMPLETE Column stats: NONE
+                tag: 0
+                value expressions: _col1 (type: int)
+                auto parallelism: false
           TableScan
             alias: b
             Statistics: Num rows: 3 Data size: 18 Basic stats: COMPLETE Column stats: NONE
@@ -1201,14 +823,19 @@ STAGE PLANS:
               isSamplingPred: false
               predicate: (value = 50) (type: boolean)
               Statistics: Num rows: 1 Data size: 6 Basic stats: COMPLETE Column stats: NONE
-              Reduce Output Operator
-                key expressions: key (type: int)
-                sort order: +
-                Map-reduce partition columns: key (type: int)
+              Select Operator
+                expressions: key (type: int), 50 (type: int)
+                outputColumnNames: _col0, _col1
                 Statistics: Num rows: 1 Data size: 6 Basic stats: COMPLETE Column stats: NONE
-                tag: 1
-                value expressions: value (type: int)
-                auto parallelism: false
+                Reduce Output Operator
+                  key expressions: _col0 (type: int)
+                  null sort order: a
+                  sort order: +
+                  Map-reduce partition columns: _col0 (type: int)
+                  Statistics: Num rows: 1 Data size: 6 Basic stats: COMPLETE Column stats: NONE
+                  tag: 1
+                  value expressions: _col1 (type: int)
+                  auto parallelism: false
           TableScan
             alias: c
             Statistics: Num rows: 3 Data size: 18 Basic stats: COMPLETE Column stats: NONE
@@ -1217,14 +844,19 @@ STAGE PLANS:
               isSamplingPred: false
               predicate: (value = 60) (type: boolean)
               Statistics: Num rows: 1 Data size: 6 Basic stats: COMPLETE Column stats: NONE
-              Reduce Output Operator
-                key expressions: key (type: int)
-                sort order: +
-                Map-reduce partition columns: key (type: int)
+              Select Operator
+                expressions: key (type: int), 60 (type: int)
+                outputColumnNames: _col0, _col1
                 Statistics: Num rows: 1 Data size: 6 Basic stats: COMPLETE Column stats: NONE
-                tag: 2
-                value expressions: value (type: int)
-                auto parallelism: false
+                Reduce Output Operator
+                  key expressions: _col0 (type: int)
+                  null sort order: a
+                  sort order: +
+                  Map-reduce partition columns: _col0 (type: int)
+                  Statistics: Num rows: 1 Data size: 6 Basic stats: COMPLETE Column stats: NONE
+                  tag: 2
+                  value expressions: _col1 (type: int)
+                  auto parallelism: false
           TableScan
             alias: d
             Statistics: Num rows: 3 Data size: 18 Basic stats: COMPLETE Column stats: NONE
@@ -1233,14 +865,19 @@ STAGE PLANS:
               isSamplingPred: false
               predicate: (value = 40) (type: boolean)
               Statistics: Num rows: 1 Data size: 6 Basic stats: COMPLETE Column stats: NONE
-              Reduce Output Operator
-                key expressions: key (type: int)
-                sort order: +
-                Map-reduce partition columns: key (type: int)
+              Select Operator
+                expressions: key (type: int), 40 (type: int)
+                outputColumnNames: _col0, _col1
                 Statistics: Num rows: 1 Data size: 6 Basic stats: COMPLETE Column stats: NONE
-                tag: 3
-                value expressions: value (type: int)
-                auto parallelism: false
+                Reduce Output Operator
+                  key expressions: _col0 (type: int)
+                  null sort order: a
+                  sort order: +
+                  Map-reduce partition columns: _col0 (type: int)
+                  Statistics: Num rows: 1 Data size: 6 Basic stats: COMPLETE Column stats: NONE
+                  tag: 3
+                  value expressions: _col1 (type: int)
+                  auto parallelism: false
       Path -> Alias:
 #### A masked pattern was here ####
       Path -> Partition:
@@ -1250,8 +887,9 @@ STAGE PLANS:
             input format: org.apache.hadoop.mapred.TextInputFormat
             output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
             properties:
-              COLUMN_STATS_ACCURATE true
+              COLUMN_STATS_ACCURATE {"BASIC_STATS":"true"}
               bucket_count -1
+              column.name.delimiter ,
               columns key,value
               columns.comments 
               columns.types int:int
@@ -1270,8 +908,9 @@ STAGE PLANS:
               input format: org.apache.hadoop.mapred.TextInputFormat
               output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
               properties:
-                COLUMN_STATS_ACCURATE true
+                COLUMN_STATS_ACCURATE {"BASIC_STATS":"true"}
                 bucket_count -1
+                column.name.delimiter ,
                 columns key,value
                 columns.comments 
                 columns.types int:int
@@ -1289,7 +928,7 @@ STAGE PLANS:
               name: default.a
             name: default.a
       Truncated Path -> Alias:
-        /a [a, b, c, d]
+        /a [$hdt$_0:a, $hdt$_1:b, $hdt$_2:c, $hdt$_3:d]
       Needs Tagging: true
       Reduce Operator Tree:
         Join Operator
@@ -1305,37 +944,34 @@ STAGE PLANS:
             2 
             3 
           keys:
-            0 key (type: int)
-            1 key (type: int)
-            2 key (type: int)
-            3 key (type: int)
-          outputColumnNames: _col0, _col1, _col5, _col6, _col10, _col11, _col15, _col16
+            0 _col0 (type: int)
+            1 _col0 (type: int)
+            2 _col0 (type: int)
+            3 _col0 (type: int)
+          outputColumnNames: _col0, _col1, _col2, _col3, _col4, _col5, _col6, _col7
           Statistics: Num rows: 9 Data size: 59 Basic stats: COMPLETE Column stats: NONE
-          Select Operator
-            expressions: _col0 (type: int), _col1 (type: int), _col5 (type: int), _col6 (type: int), _col10 (type: int), _col11 (type: int), _col15 (type: int), _col16 (type: int)
-            outputColumnNames: _col0, _col1, _col2, _col3, _col4, _col5, _col6, _col7
+          File Output Operator
+            compressed: false
+            GlobalTableId: 0
+#### A masked pattern was here ####
+            NumFilesPerFileSink: 1
             Statistics: Num rows: 9 Data size: 59 Basic stats: COMPLETE Column stats: NONE
-            File Output Operator
-              compressed: false
-              GlobalTableId: 0
 #### A masked pattern was here ####
-              NumFilesPerFileSink: 1
-              Statistics: Num rows: 9 Data size: 59 Basic stats: COMPLETE Column stats: NONE
-#### A masked pattern was here ####
-              table:
-                  input format: org.apache.hadoop.mapred.TextInputFormat
-                  output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
-                  properties:
-                    columns _col0,_col1,_col2,_col3,_col4,_col5,_col6,_col7
-                    columns.types int:int:int:int:int:int:int:int
-                    escape.delim \
-                    hive.serialization.extend.additional.nesting.levels true
-                    serialization.format 1
-                    serialization.lib org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe
-                  serde: org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe
-              TotalFiles: 1
-              GatherStats: false
-              MultiFileSpray: false
+            table:
+                input format: org.apache.hadoop.mapred.SequenceFileInputFormat
+                output format: org.apache.hadoop.hive.ql.io.HiveSequenceFileOutputFormat
+                properties:
+                  columns _col0,_col1,_col2,_col3,_col4,_col5,_col6,_col7
+                  columns.types int:int:int:int:int:int:int:int
+                  escape.delim \
+                  hive.serialization.extend.additional.nesting.levels true
+                  serialization.escape.crlf true
+                  serialization.format 1
+                  serialization.lib org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe
+                serde: org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe
+            TotalFiles: 1
+            GatherStats: false
+            MultiFileSpray: false
 
   Stage: Stage-0
     Fetch Operator

@@ -18,8 +18,9 @@
 
 package org.apache.hadoop.hive.ql.exec;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hive.ql.metadata.HiveException;
 import org.apache.hadoop.hive.ql.plan.ExprNodeDesc;
 import org.apache.hadoop.hive.ql.plan.ExprNodeGenericFuncDesc;
@@ -40,8 +41,8 @@ import java.util.List;
  */
 public class ExprNodeGenericFuncEvaluator extends ExprNodeEvaluator<ExprNodeGenericFuncDesc> {
 
-  private static final Log LOG = LogFactory
-      .getLog(ExprNodeGenericFuncEvaluator.class.getName());
+  private static final Logger LOG = LoggerFactory
+      .getLogger(ExprNodeGenericFuncEvaluator.class.getName());
 
   transient GenericUDF genericUDF;
   transient Object rowObject;
@@ -91,13 +92,13 @@ public class ExprNodeGenericFuncEvaluator extends ExprNodeEvaluator<ExprNodeGene
     }
   }
 
-  public ExprNodeGenericFuncEvaluator(ExprNodeGenericFuncDesc expr) throws HiveException {
-    super(expr);
+  public ExprNodeGenericFuncEvaluator(ExprNodeGenericFuncDesc expr, Configuration conf) throws HiveException {
+    super(expr, conf);
     children = new ExprNodeEvaluator[expr.getChildren().size()];
     isEager = false;
     for (int i = 0; i < children.length; i++) {
       ExprNodeDesc child = expr.getChildren().get(i);
-      ExprNodeEvaluator nodeEvaluator = ExprNodeEvaluatorFactory.get(child);
+      ExprNodeEvaluator nodeEvaluator = ExprNodeEvaluatorFactory.get(child, conf);
       children[i] = nodeEvaluator;
       // If we have eager evaluators anywhere below us, then we are eager too.
       if (nodeEvaluator instanceof ExprNodeGenericFuncEvaluator) {

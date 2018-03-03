@@ -27,14 +27,15 @@ import java.util.List;
 
 import javax.security.auth.login.LoginException;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.permission.FsAction;
 import org.apache.hadoop.hive.common.FileUtils;
+import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.metastore.HiveMetaStore.HMSHandler;
 import org.apache.hadoop.hive.metastore.TableType;
 import org.apache.hadoop.hive.metastore.Warehouse;
@@ -69,7 +70,7 @@ public class StorageBasedAuthorizationProvider extends HiveAuthorizationProvider
   private Warehouse wh;
   private boolean isRunFromMetaStore = false;
 
-  private static Log LOG = LogFactory.getLog(StorageBasedAuthorizationProvider.class);
+  private static Logger LOG = LoggerFactory.getLogger(StorageBasedAuthorizationProvider.class);
 
   /**
    * Make sure that the warehouse variable is set up properly.
@@ -177,8 +178,12 @@ public class StorageBasedAuthorizationProvider extends HiveAuthorizationProvider
 
     Path path = table.getDataLocation();
     // authorize drops if there was a drop privilege requirement, and
-    // table is not external (external table data is not dropped)
-    if (privExtractor.hasDropPrivilege() && table.getTableType() != TableType.EXTERNAL_TABLE) {
+    // table is not external (external table data is not dropped) or
+    // "hive.metastore.authorization.storage.check.externaltable.drop"
+    // set to true
+    if (privExtractor.hasDropPrivilege() && (table.getTableType() != TableType.EXTERNAL_TABLE ||
+        getConf().getBoolean(HiveConf.ConfVars.METASTORE_AUTHORIZATION_EXTERNALTABLE_DROP_CHECK.varname,
+        HiveConf.ConfVars.METASTORE_AUTHORIZATION_EXTERNALTABLE_DROP_CHECK.defaultBoolVal))) {
       checkDeletePermission(path, getConf(), authenticator.getUserName());
     }
 
@@ -234,9 +239,13 @@ public class StorageBasedAuthorizationProvider extends HiveAuthorizationProvider
     // Partition itself can also be null, in cases where this gets called as a generic
     // catch-all call in cases like those with CTAS onto an unpartitioned table (see HIVE-1887)
     if ((part == null) || (part.getLocation() == null)) {
-      // this should be the case only if this is a create partition.
-      // The privilege needed on the table should be ALTER_DATA, and not CREATE
-      authorize(table, new Privilege[]{}, new Privilege[]{Privilege.ALTER_DATA});
+      if (requireCreatePrivilege(readRequiredPriv) || requireCreatePrivilege(writeRequiredPriv)) {
+        // this should be the case only if this is a create partition.
+        // The privilege needed on the table should be ALTER_DATA, and not CREATE
+        authorize(table, new Privilege[]{}, new Privilege[]{Privilege.ALTER_DATA});
+      } else {
+        authorize(table, readRequiredPriv, writeRequiredPriv);
+      }
     } else {
       authorize(part.getDataLocation(), readRequiredPriv, writeRequiredPriv);
     }

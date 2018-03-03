@@ -52,6 +52,12 @@ POSTHOOK: type: CREATETABLE_AS_SELECT
 POSTHOOK: Input: default@flights_tiny
 POSTHOOK: Output: database:default
 POSTHOOK: Output: default@flights_tiny_orc
+POSTHOOK: Lineage: flights_tiny_orc.arr_delay SIMPLE [(flights_tiny)flights_tiny.FieldSchema(name:arr_delay, type:float, comment:null), ]
+POSTHOOK: Lineage: flights_tiny_orc.dest_city_name SIMPLE [(flights_tiny)flights_tiny.FieldSchema(name:dest_city_name, type:string, comment:null), ]
+POSTHOOK: Lineage: flights_tiny_orc.fl_date SIMPLE [(flights_tiny)flights_tiny.FieldSchema(name:fl_date, type:date, comment:null), ]
+POSTHOOK: Lineage: flights_tiny_orc.fl_num SIMPLE [(flights_tiny)flights_tiny.FieldSchema(name:fl_num, type:int, comment:null), ]
+POSTHOOK: Lineage: flights_tiny_orc.fl_time EXPRESSION [(flights_tiny)flights_tiny.FieldSchema(name:fl_date, type:date, comment:null), ]
+POSTHOOK: Lineage: flights_tiny_orc.origin_city_name SIMPLE [(flights_tiny)flights_tiny.FieldSchema(name:origin_city_name, type:string, comment:null), ]
 PREHOOK: query: SELECT * FROM flights_tiny_orc
 PREHOOK: type: QUERY
 PREHOOK: Input: default@flights_tiny_orc
@@ -276,6 +282,7 @@ STAGE PLANS:
                 key expressions: _col5 (type: int), _col2 (type: date)
                 sort order: ++
                 Statistics: Num rows: 137 Data size: 39456 Basic stats: COMPLETE Column stats: NONE
+                TopN Hash Memory Usage: 0.1
                 value expressions: _col0 (type: string), _col1 (type: string), _col3 (type: timestamp), _col4 (type: float)
       Execution mode: vectorized
       Reduce Operator Tree:
@@ -301,6 +308,7 @@ STAGE PLANS:
               key expressions: _col5 (type: int), _col2 (type: date)
               sort order: ++
               Statistics: Num rows: 25 Data size: 7200 Basic stats: COMPLETE Column stats: NONE
+              TopN Hash Memory Usage: 0.1
               value expressions: _col0 (type: string), _col1 (type: string), _col3 (type: timestamp), _col4 (type: float)
       Reduce Operator Tree:
         Select Operator
@@ -314,8 +322,8 @@ STAGE PLANS:
               compressed: false
               Statistics: Num rows: 25 Data size: 7200 Basic stats: COMPLETE Column stats: NONE
               table:
-                  input format: org.apache.hadoop.mapred.TextInputFormat
-                  output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
+                  input format: org.apache.hadoop.mapred.SequenceFileInputFormat
+                  output format: org.apache.hadoop.hive.ql.io.HiveSequenceFileOutputFormat
                   serde: org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe
 
   Stage: Stage-0
@@ -376,11 +384,11 @@ STAGE PLANS:
             Statistics: Num rows: 137 Data size: 39456 Basic stats: COMPLETE Column stats: NONE
             Select Operator
               expressions: fl_date (type: date)
-              outputColumnNames: _col0
+              outputColumnNames: fl_date
               Statistics: Num rows: 137 Data size: 39456 Basic stats: COMPLETE Column stats: NONE
               Group By Operator
                 aggregations: count()
-                keys: _col0 (type: date)
+                keys: fl_date (type: date)
                 mode: hash
                 outputColumnNames: _col0, _col1
                 Statistics: Num rows: 137 Data size: 39456 Basic stats: COMPLETE Column stats: NONE
@@ -402,8 +410,8 @@ STAGE PLANS:
             compressed: false
             Statistics: Num rows: 68 Data size: 19584 Basic stats: COMPLETE Column stats: NONE
             table:
-                input format: org.apache.hadoop.mapred.TextInputFormat
-                output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
+                input format: org.apache.hadoop.mapred.SequenceFileInputFormat
+                output format: org.apache.hadoop.hive.ql.io.HiveSequenceFileOutputFormat
                 serde: org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe
 
   Stage: Stage-0
@@ -1029,6 +1037,7 @@ STAGE PLANS:
                 key expressions: _col4 (type: int), _col5 (type: date)
                 sort order: ++
                 Statistics: Num rows: 137 Data size: 31776 Basic stats: COMPLETE Column stats: NONE
+                TopN Hash Memory Usage: 0.1
                 value expressions: _col0 (type: string), _col1 (type: string), _col2 (type: timestamp), _col3 (type: float)
       Execution mode: vectorized
       Reduce Operator Tree:
@@ -1054,6 +1063,7 @@ STAGE PLANS:
               key expressions: _col4 (type: int), _col5 (type: date)
               sort order: ++
               Statistics: Num rows: 25 Data size: 5775 Basic stats: COMPLETE Column stats: NONE
+              TopN Hash Memory Usage: 0.1
               value expressions: _col0 (type: string), _col1 (type: string), _col2 (type: timestamp), _col3 (type: float)
       Reduce Operator Tree:
         Select Operator
@@ -1067,8 +1077,8 @@ STAGE PLANS:
               compressed: false
               Statistics: Num rows: 25 Data size: 5775 Basic stats: COMPLETE Column stats: NONE
               table:
-                  input format: org.apache.hadoop.mapred.TextInputFormat
-                  output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
+                  input format: org.apache.hadoop.mapred.SequenceFileInputFormat
+                  output format: org.apache.hadoop.hive.ql.io.HiveSequenceFileOutputFormat
                   serde: org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe
 
   Stage: Stage-0
@@ -1153,11 +1163,11 @@ STAGE PLANS:
             Statistics: Num rows: 137 Data size: 31776 Basic stats: COMPLETE Column stats: NONE
             Select Operator
               expressions: fl_date (type: date)
-              outputColumnNames: _col0
+              outputColumnNames: fl_date
               Statistics: Num rows: 137 Data size: 31776 Basic stats: COMPLETE Column stats: NONE
               Group By Operator
                 aggregations: count()
-                keys: _col0 (type: date)
+                keys: fl_date (type: date)
                 mode: hash
                 outputColumnNames: _col0, _col1
                 Statistics: Num rows: 137 Data size: 31776 Basic stats: COMPLETE Column stats: NONE
@@ -1179,8 +1189,8 @@ STAGE PLANS:
             compressed: false
             Statistics: Num rows: 68 Data size: 15772 Basic stats: COMPLETE Column stats: NONE
             table:
-                input format: org.apache.hadoop.mapred.TextInputFormat
-                output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
+                input format: org.apache.hadoop.mapred.SequenceFileInputFormat
+                output format: org.apache.hadoop.hive.ql.io.HiveSequenceFileOutputFormat
                 serde: org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe
 
   Stage: Stage-0
@@ -1830,6 +1840,7 @@ STAGE PLANS:
                 key expressions: _col4 (type: int), _col5 (type: timestamp)
                 sort order: ++
                 Statistics: Num rows: 137 Data size: 33968 Basic stats: COMPLETE Column stats: NONE
+                TopN Hash Memory Usage: 0.1
                 value expressions: _col0 (type: string), _col1 (type: string), _col2 (type: date), _col3 (type: float)
       Execution mode: vectorized
       Reduce Operator Tree:
@@ -1855,6 +1866,7 @@ STAGE PLANS:
               key expressions: _col4 (type: int), _col5 (type: timestamp)
               sort order: ++
               Statistics: Num rows: 25 Data size: 6175 Basic stats: COMPLETE Column stats: NONE
+              TopN Hash Memory Usage: 0.1
               value expressions: _col0 (type: string), _col1 (type: string), _col2 (type: date), _col3 (type: float)
       Reduce Operator Tree:
         Select Operator
@@ -1868,8 +1880,8 @@ STAGE PLANS:
               compressed: false
               Statistics: Num rows: 25 Data size: 6175 Basic stats: COMPLETE Column stats: NONE
               table:
-                  input format: org.apache.hadoop.mapred.TextInputFormat
-                  output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
+                  input format: org.apache.hadoop.mapred.SequenceFileInputFormat
+                  output format: org.apache.hadoop.hive.ql.io.HiveSequenceFileOutputFormat
                   serde: org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe
 
   Stage: Stage-0
@@ -1954,11 +1966,11 @@ STAGE PLANS:
             Statistics: Num rows: 137 Data size: 33968 Basic stats: COMPLETE Column stats: NONE
             Select Operator
               expressions: fl_time (type: timestamp)
-              outputColumnNames: _col0
+              outputColumnNames: fl_time
               Statistics: Num rows: 137 Data size: 33968 Basic stats: COMPLETE Column stats: NONE
               Group By Operator
                 aggregations: count()
-                keys: _col0 (type: timestamp)
+                keys: fl_time (type: timestamp)
                 mode: hash
                 outputColumnNames: _col0, _col1
                 Statistics: Num rows: 137 Data size: 33968 Basic stats: COMPLETE Column stats: NONE
@@ -1980,8 +1992,8 @@ STAGE PLANS:
             compressed: false
             Statistics: Num rows: 68 Data size: 16860 Basic stats: COMPLETE Column stats: NONE
             table:
-                input format: org.apache.hadoop.mapred.TextInputFormat
-                output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
+                input format: org.apache.hadoop.mapred.SequenceFileInputFormat
+                output format: org.apache.hadoop.hive.ql.io.HiveSequenceFileOutputFormat
                 serde: org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe
 
   Stage: Stage-0

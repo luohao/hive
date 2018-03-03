@@ -17,6 +17,11 @@
  */
 package org.apache.hadoop.hive.ql.exec.mr;
 
+import static org.apache.hadoop.hive.ql.exec.mr.MapRedTask.HADOOP_CLIENT_OPTS;
+import static org.apache.hadoop.hive.ql.exec.mr.MapRedTask.HADOOP_MEM_KEY;
+import static org.apache.hadoop.hive.ql.exec.mr.MapRedTask.HADOOP_OPTS_KEY;
+import static org.apache.hadoop.hive.ql.exec.mr.MapRedTask.HIVE_SYS_PROP;
+
 import java.io.File;
 import java.io.IOException;
 import java.io.OutputStream;
@@ -33,25 +38,30 @@ import java.util.Properties;
 
 import org.apache.commons.io.IOUtils;
 import org.apache.commons.lang.StringUtils;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.FileUtil;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.hive.common.LogUtils;
 import org.apache.hadoop.hive.common.io.CachingPrintStream;
+import org.apache.hadoop.hive.common.metrics.common.Metrics;
+import org.apache.hadoop.hive.common.metrics.common.MetricsConstant;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.conf.HiveConf.ConfVars;
+import org.apache.hadoop.hive.ql.CompilationOpContext;
 import org.apache.hadoop.hive.ql.Context;
 import org.apache.hadoop.hive.ql.DriverContext;
 import org.apache.hadoop.hive.ql.QueryPlan;
+import org.apache.hadoop.hive.ql.QueryState;
 import org.apache.hadoop.hive.ql.exec.BucketMatcher;
 import org.apache.hadoop.hive.ql.exec.FetchOperator;
 import org.apache.hadoop.hive.ql.exec.Operator;
 import org.apache.hadoop.hive.ql.exec.SecureCmdDoAs;
+import org.apache.hadoop.hive.ql.exec.SerializationUtilities;
 import org.apache.hadoop.hive.ql.exec.TableScanOperator;
 import org.apache.hadoop.hive.ql.exec.Task;
 import org.apache.hadoop.hive.ql.exec.Utilities;
 import org.apache.hadoop.hive.ql.exec.mapjoin.MapJoinMemoryExhaustionException;
+import org.apache.hadoop.hive.ql.io.AcidUtils;
 import org.apache.hadoop.hive.ql.io.HiveInputFormat;
 import org.apache.hadoop.hive.ql.metadata.HiveException;
 import org.apache.hadoop.hive.ql.plan.BucketMapJoinContext;
@@ -59,6 +69,7 @@ import org.apache.hadoop.hive.ql.plan.FetchWork;
 import org.apache.hadoop.hive.ql.plan.MapredLocalWork;
 import org.apache.hadoop.hive.ql.plan.OperatorDesc;
 import org.apache.hadoop.hive.ql.plan.api.StageType;
+import org.apache.hadoop.hive.ql.session.OperationLog;
 import org.apache.hadoop.hive.ql.session.SessionState;
 import org.apache.hadoop.hive.ql.session.SessionState.LogHelper;
 import org.apache.hadoop.hive.serde2.ColumnProjectionUtils;
@@ -69,6 +80,8 @@ import org.apache.hadoop.mapred.JobConf;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.util.ReflectionUtils;
 import org.apache.hive.common.util.StreamPrinter;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * MapredLocalTask represents any local work (i.e.: client side work) that hive needs to
@@ -80,15 +93,15 @@ import org.apache.hive.common.util.StreamPrinter;
  */
 public class MapredLocalTask extends Task<MapredLocalWork> implements Serializable {
 
+  private static final long serialVersionUID = 1L;
+
   private final Map<String, FetchOperator> fetchOperators = new HashMap<String, FetchOperator>();
   protected HadoopJobExecHelper jobExecHelper;
   private JobConf job;
-  public static transient final Log l4j = LogFactory.getLog(MapredLocalTask.class);
-  static final String HADOOP_MEM_KEY = "HADOOP_HEAPSIZE";
-  static final String HADOOP_OPTS_KEY = "HADOOP_OPTS";
-  static final String[] HIVE_SYS_PROP = {"build.dir", "build.dir.hive", "hive.query.id"};
+  public static transient final Logger l4j = LoggerFactory.getLogger(MapredLocalTask.class);
+  static final String HIVE_LOCAL_TASK_CHILD_OPTS_KEY = "HIVE_LOCAL_TASK_CHILD_OPTS";
   public static MemoryMXBean memoryMXBean;
-  private static final Log LOG = LogFactory.getLog(MapredLocalTask.class);
+  private static final Logger LOG = LoggerFactory.getLogger(MapredLocalTask.class);
 
   // not sure we need this exec context; but all the operators in the work
   // will pass this context throught
@@ -112,8 +125,14 @@ public class MapredLocalTask extends Task<MapredLocalWork> implements Serializab
   }
 
   @Override
-  public void initialize(HiveConf conf, QueryPlan queryPlan, DriverContext driverContext) {
-    super.initialize(conf, queryPlan, driverContext);
+  public void updateTaskMetrics(Metrics metrics) {
+    metrics.incrementCounter(MetricsConstant.HIVE_MR_TASKS);
+  }
+
+  @Override
+  public void initialize(QueryState queryState, QueryPlan queryPlan, DriverContext driverContext,
+      CompilationOpContext opContext) {
+    super.initialize(queryState, queryPlan, driverContext, opContext);
     job = new JobConf(conf, ExecDriver.class);
     execContext = new ExecMapperContext(job);
     //we don't use the HadoopJobExecHooks for local tasks
@@ -159,7 +178,7 @@ public class MapredLocalTask extends Task<MapredLocalWork> implements Serializab
       OutputStream out = null;
       try {
         out = FileSystem.getLocal(conf).create(planPath);
-        Utilities.serializePlan(plan, out, conf);
+        SerializationUtilities.serializePlan(plan, out);
         out.close();
         out = null;
       } finally {
@@ -210,7 +229,7 @@ public class MapredLocalTask extends Task<MapredLocalWork> implements Serializab
       hadoopOpts = sb.toString();
       // Inherit the environment variables
       String[] env;
-      Map<String, String> variables = new HashMap(System.getenv());
+      Map<String, String> variables = new HashMap<String, String>(System.getenv());
       // The user can specify the hadoop memory
 
       // if ("local".equals(conf.getVar(HiveConf.ConfVars.HADOOPJT))) {
@@ -274,13 +293,31 @@ public class MapredLocalTask extends Task<MapredLocalWork> implements Serializab
         secureDoAs.addEnv(variables);
       }
 
+      // If HIVE_LOCAL_TASK_CHILD_OPTS is set, child VM environment setting
+      // HADOOP_CLIENT_OPTS will be replaced with HIVE_LOCAL_TASK_CHILD_OPTS.
+      // HADOOP_OPTS is updated too since HADOOP_CLIENT_OPTS is appended
+      // to HADOOP_OPTS in most cases. This way, the local task JVM can
+      // have different settings from those of HiveServer2.
+      if (variables.containsKey(HIVE_LOCAL_TASK_CHILD_OPTS_KEY)) {
+        String childOpts = variables.get(HIVE_LOCAL_TASK_CHILD_OPTS_KEY);
+        if (childOpts == null) {
+          childOpts = "";
+        }
+        String clientOpts = variables.put(HADOOP_CLIENT_OPTS, childOpts);
+        String tmp = variables.get(HADOOP_OPTS_KEY);
+        if (tmp != null && !StringUtils.isBlank(clientOpts)) {
+          tmp = tmp.replace(clientOpts, childOpts);
+          variables.put(HADOOP_OPTS_KEY, tmp);
+        }
+      }
+
       env = new String[variables.size()];
       int pos = 0;
       for (Map.Entry<String, String> entry : variables.entrySet()) {
         String name = entry.getKey();
         String value = entry.getValue();
         env[pos++] = name + "=" + value;
-        LOG.debug("Setting env: " + env[pos-1]);
+        LOG.debug("Setting env: " + name + "=" + LogUtils.maskIfPassword(name, value));
       }
 
       LOG.info("Executing: " + cmdLine);
@@ -290,8 +327,18 @@ public class MapredLocalTask extends Task<MapredLocalWork> implements Serializab
 
       CachingPrintStream errPrintStream = new CachingPrintStream(System.err);
 
-      StreamPrinter outPrinter = new StreamPrinter(executor.getInputStream(), null, System.out);
-      StreamPrinter errPrinter = new StreamPrinter(executor.getErrorStream(), null, errPrintStream);
+      StreamPrinter outPrinter;
+      StreamPrinter errPrinter;
+      OperationLog operationLog = OperationLog.getCurrentOperationLog();
+      if (operationLog != null) {
+        outPrinter = new StreamPrinter(executor.getInputStream(), null, System.out,
+            operationLog.getPrintStream());
+        errPrinter = new StreamPrinter(executor.getErrorStream(), null, errPrintStream,
+            operationLog.getPrintStream());
+      } else {
+        outPrinter = new StreamPrinter(executor.getInputStream(), null, System.out);
+        errPrinter = new StreamPrinter(executor.getErrorStream(), null, errPrintStream);
+      }
 
       outPrinter.start();
       errPrinter.start();
@@ -313,7 +360,7 @@ public class MapredLocalTask extends Task<MapredLocalWork> implements Serializab
 
       return exitVal;
     } catch (Exception e) {
-      LOG.error("Exception: " + e, e);
+      LOG.error("Exception: ", e);
       return (1);
     } finally {
       if (secureDoAs != null) {
@@ -428,9 +475,12 @@ public class MapredLocalTask extends Task<MapredLocalWork> implements Serializab
       TableScanOperator ts = (TableScanOperator)work.getAliasToWork().get(entry.getKey());
       // push down projections
       ColumnProjectionUtils.appendReadColumns(
-          jobClone, ts.getNeededColumnIDs(), ts.getNeededColumns());
+          jobClone, ts.getNeededColumnIDs(), ts.getNeededColumns(), ts.getNeededNestedColumnPaths());
       // push down filters
       HiveInputFormat.pushFilters(jobClone, ts);
+
+      AcidUtils.setTransactionalTableScan(jobClone, ts.getConf().isAcidTable());
+      AcidUtils.setAcidOperationalProperties(jobClone, ts.getConf().getAcidOperationalProperties());
 
       // create a fetch operator
       FetchOperator fetchOp = new FetchOperator(entry.getValue(), jobClone);

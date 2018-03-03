@@ -22,11 +22,12 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.hive.ql.optimizer.FieldNode;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.hive.metastore.MetaStoreUtils;
 import org.apache.hadoop.hive.ql.exec.ColumnInfo;
 import org.apache.hadoop.hive.ql.exec.FunctionRegistry;
 import org.apache.hadoop.hive.ql.exec.GroupByOperator;
@@ -46,7 +47,6 @@ import org.apache.hadoop.hive.ql.plan.AggregationDesc;
 import org.apache.hadoop.hive.ql.plan.ExprNodeColumnDesc;
 import org.apache.hadoop.hive.ql.plan.ExprNodeDesc;
 import org.apache.hadoop.hive.ql.plan.GroupByDesc;
-import org.apache.hadoop.hive.ql.plan.OperatorDesc;
 import org.apache.hadoop.hive.ql.plan.TableScanDesc;
 import org.apache.hadoop.hive.ql.udf.generic.GenericUDAFEvaluator;
 import org.apache.hadoop.hive.serde2.SerDeException;
@@ -64,7 +64,7 @@ import org.apache.hadoop.hive.serde2.typeinfo.TypeInfoUtils;
  */
 
 public final class RewriteQueryUsingAggregateIndexCtx  implements NodeProcessorCtx {
-  private static final Log LOG = LogFactory.getLog(RewriteQueryUsingAggregateIndexCtx.class.getName());
+  private static final Logger LOG = LoggerFactory.getLogger(RewriteQueryUsingAggregateIndexCtx.class.getName());
   private RewriteQueryUsingAggregateIndexCtx(ParseContext parseContext, Hive hiveDb,
       RewriteCanApplyCtx canApplyCtx) {
     this.parseContext = parseContext;
@@ -82,9 +82,10 @@ public final class RewriteQueryUsingAggregateIndexCtx  implements NodeProcessorC
         parseContext, hiveDb, canApplyCtx);
   }
 
+  // Assumes one instance of this + single-threaded compilation for each query.
   private final Hive hiveDb;
   private final ParseContext parseContext;
-  private RewriteCanApplyCtx canApplyCtx;
+  private final RewriteCanApplyCtx canApplyCtx;
   //We need the GenericUDAFEvaluator for GenericUDAF function "sum"
   private GenericUDAFEvaluator eval = null;
   private final String indexTableName;
@@ -147,7 +148,7 @@ public final class RewriteQueryUsingAggregateIndexCtx  implements NodeProcessorC
       this.replaceSelectOperatorProcess(selectperator);
     }
   }
-  
+
   /**
    * This method replaces the original TableScanOperator with the new
    * TableScanOperator and metadata that scans over the index table rather than
@@ -160,7 +161,7 @@ public final class RewriteQueryUsingAggregateIndexCtx  implements NodeProcessorC
 
     // Need to remove the original TableScanOperators from these data structures
     // and add new ones
-    Map<String, Operator<? extends OperatorDesc>> topOps = rewriteQueryCtx.getParseContext()
+    HashMap<String, TableScanOperator> topOps = rewriteQueryCtx.getParseContext()
         .getTopOps();
 
     // remove original TableScanOperator
@@ -180,7 +181,7 @@ public final class RewriteQueryUsingAggregateIndexCtx  implements NodeProcessorC
     TableScanDesc indexTableScanDesc = new TableScanDesc(indexTableHandle);
     indexTableScanDesc.setGatherStats(false);
 
-    String k = indexTableName + Path.SEPARATOR;
+    String k = MetaStoreUtils.encodeTableName(indexTableName) + Path.SEPARATOR;
     indexTableScanDesc.setStatsAggPrefix(k);
     scanOperator.setConf(indexTableScanDesc);
 
@@ -210,11 +211,10 @@ public final class RewriteQueryUsingAggregateIndexCtx  implements NodeProcessorC
     scanOperator.getConf().setAlias(newAlias);
     scanOperator.setAlias(indexTableName);
     topOps.put(newAlias, scanOperator);
-    rewriteQueryCtx.getParseContext().setTopOps(
-        (HashMap<String, Operator<? extends OperatorDesc>>) topOps);
+    rewriteQueryCtx.getParseContext().setTopOps(topOps);
 
     ColumnPrunerProcFactory.setupNeededColumns(scanOperator, rs,
-        Arrays.asList(rewriteQueryCtx.getIndexKey()));
+        Arrays.asList(new FieldNode(rewriteQueryCtx.getIndexKey())));
   }
 
   /**
@@ -265,11 +265,11 @@ public final class RewriteQueryUsingAggregateIndexCtx  implements NodeProcessorC
     if (index == 0) {
       // the query contains the sum aggregation GenericUDAF
       String selReplacementCommand = "select sum(`" + rewriteQueryCtx.getAggregateFunction() + "`)"
-          + " from " + rewriteQueryCtx.getIndexName() + " group by "
+          + " from `" + rewriteQueryCtx.getIndexName() + "` group by "
           + rewriteQueryCtx.getIndexKey() + " ";
       // retrieve the operator tree for the query, and the required GroupByOperator from it
       Operator<?> newOperatorTree = RewriteParseContextGenerator.generateOperatorTree(
-              rewriteQueryCtx.getParseContext().getConf(),
+              rewriteQueryCtx.getParseContext().getQueryState(),
               selReplacementCommand);
 
       // we get our new GroupByOperator here
@@ -306,7 +306,7 @@ public final class RewriteQueryUsingAggregateIndexCtx  implements NodeProcessorC
     } else {
       // we just need to reset the GenericUDAFEvaluator and its name for this
       // GroupByOperator whose parent is the ReduceSinkOperator
-      GroupByDesc childConf = (GroupByDesc) operator.getConf();
+      GroupByDesc childConf = operator.getConf();
       List<AggregationDesc> childAggrList = childConf.getAggregators();
       if (childAggrList != null && childAggrList.size() > 0) {
         for (AggregationDesc aggregationDesc : childAggrList) {

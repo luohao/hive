@@ -48,4 +48,54 @@ public class TestParquetFilterPredicate {
     String expected = "and(not(eq(a, null)), not(eq(a, Binary{\"stinger\"})))";
     assertEquals(expected, p.toString());
   }
+
+  @Test
+  public void testFilterFloatColumns() {
+    MessageType schema =
+        MessageTypeParser.parseMessageType("message test {  required float a; required int32 b; }");
+    SearchArgument sarg = SearchArgumentFactory.newBuilder()
+        .startNot()
+        .startOr()
+        .isNull("a", PredicateLeaf.Type.FLOAT)
+        .between("a", PredicateLeaf.Type.FLOAT, 10.2, 20.3)
+        .in("b", PredicateLeaf.Type.LONG, 1L, 2L, 3L)
+        .end()
+        .end()
+        .build();
+
+    FilterPredicate p = ParquetFilterPredicateConverter.toFilterPredicate(sarg, schema);
+
+    String expected =
+        "and(and(not(eq(a, null)), not(and(lteq(a, 20.3), not(lt(a, 10.2))))), not(or(or(eq(b, 1), eq(b, 2)), eq(b, 3))))";
+    assertEquals(expected, p.toString());
+  }
+
+  @Test
+  public void testFilterBetween() {
+    MessageType schema =
+        MessageTypeParser.parseMessageType("message test {  required int32 bCol; }");
+    SearchArgument sarg = SearchArgumentFactory.newBuilder()
+        .between("bCol", PredicateLeaf.Type.LONG, 1L, 5L)
+        .build();
+    FilterPredicate p = ParquetFilterPredicateConverter.toFilterPredicate(sarg, schema);
+    String expected =
+        "and(lteq(bCol, 5), not(lt(bCol, 1)))";
+    assertEquals(expected, p.toString());
+
+    sarg = SearchArgumentFactory.newBuilder()
+            .between("bCol", PredicateLeaf.Type.LONG, 5L, 1L)
+            .build();
+    p = ParquetFilterPredicateConverter.toFilterPredicate(sarg, schema);
+    expected =
+            "and(lteq(bCol, 1), not(lt(bCol, 5)))";
+    assertEquals(expected, p.toString());
+
+    sarg = SearchArgumentFactory.newBuilder()
+            .between("bCol", PredicateLeaf.Type.LONG, 1L, 1L)
+            .build();
+    p = ParquetFilterPredicateConverter.toFilterPredicate(sarg, schema);
+    expected =
+            "and(lteq(bCol, 1), not(lt(bCol, 1)))";
+    assertEquals(expected, p.toString());
+  }
 }

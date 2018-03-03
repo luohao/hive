@@ -18,7 +18,6 @@
 
 package org.apache.hadoop.hive.ql.exec.vector;
 
-import java.math.BigInteger;
 
 import org.apache.hadoop.hive.serde2.io.HiveDecimalWritable;
 import org.apache.hadoop.hive.common.type.HiveDecimal;
@@ -46,7 +45,18 @@ public class DecimalColumnVector extends ColumnVector {
     this.scale = (short) scale;
     vector = new HiveDecimalWritable[size];
     for (int i = 0; i < size; i++) {
-      vector[i] = new HiveDecimalWritable(HiveDecimal.ZERO);
+      vector[i] = new HiveDecimalWritable(0);  // Initially zero.
+    }
+  }
+
+  // Fill the all the vector entries with provided value
+  public void fill(HiveDecimal value) {
+    noNulls = true;
+    isRepeating = true;
+    if (vector[0] == null) {
+      vector[0] = new HiveDecimalWritable(value);
+    } else {
+      vector[0].set(value);
     }
   }
 
@@ -57,12 +67,22 @@ public class DecimalColumnVector extends ColumnVector {
 
   @Override
   public void setElement(int outElementNum, int inputElementNum, ColumnVector inputVector) {
-    HiveDecimal hiveDec = ((DecimalColumnVector) inputVector).vector[inputElementNum].getHiveDecimal(precision, scale);
-    if (hiveDec == null) {
-      noNulls = false;
-      isNull[outElementNum] = true;
+    if (inputVector.isRepeating) {
+      inputElementNum = 0;
+    }
+    if (inputVector.noNulls || !inputVector.isNull[inputElementNum]) {
+      vector[outElementNum].set(
+          ((DecimalColumnVector) inputVector).vector[inputElementNum],
+          precision, scale);
+      if (!vector[outElementNum].isSet()) {
+        isNull[outElementNum] = true;
+        noNulls = false;
+      } else {
+        isNull[outElementNum] = false;
+      }
     } else {
-      vector[outElementNum].set(hiveDec);
+      isNull[outElementNum] = true;
+      noNulls = false;
     }
   }
 
@@ -79,28 +99,54 @@ public class DecimalColumnVector extends ColumnVector {
   }
 
   public void set(int elementNum, HiveDecimalWritable writeable) {
-    HiveDecimal hiveDec = writeable.getHiveDecimal(precision, scale);
-    if (hiveDec == null) {
+    vector[elementNum].set(writeable, precision, scale);
+    if (!vector[elementNum].isSet()) {
       noNulls = false;
       isNull[elementNum] = true;
     } else {
-      vector[elementNum].set(hiveDec);
+      isNull[elementNum] = false;
     }
   }
 
   public void set(int elementNum, HiveDecimal hiveDec) {
-    HiveDecimal checkedDec = HiveDecimal.enforcePrecisionScale(hiveDec, precision, scale);
-    if (checkedDec == null) {
+    vector[elementNum].set(hiveDec, precision, scale);
+    if (!vector[elementNum].isSet()) {
       noNulls = false;
       isNull[elementNum] = true;
     } else {
-      vector[elementNum].set(checkedDec);
+      isNull[elementNum] = false;
     }
   }
 
   public void setNullDataValue(int elementNum) {
     // E.g. For scale 2 the minimum is "0.01"
-    HiveDecimal minimumNonZeroValue = HiveDecimal.create(BigInteger.ONE, scale);
-    vector[elementNum].set(minimumNonZeroValue);
+    vector[elementNum].setFromLongAndScale(1L, scale);
+  }
+
+  @Override
+  public void ensureSize(int size, boolean preserveData) {
+    super.ensureSize(size, preserveData);
+    if (size <= vector.length) return; // We assume the existing vector is always valid.
+    HiveDecimalWritable[] oldArray = vector;
+    vector = new HiveDecimalWritable[size];
+    int initPos = 0;
+    if (preserveData) {
+      // we copy all of the values to avoid creating more objects
+      // TODO: it might be cheaper to always preserve data or reset existing objects
+      initPos = oldArray.length;
+      System.arraycopy(oldArray, 0, vector, 0 , oldArray.length);
+    }
+    for (int i = initPos; i < vector.length; ++i) {
+      vector[i] = new HiveDecimalWritable(0);  // Initially zero.
+    }
+  }
+
+  @Override
+  public void shallowCopyTo(ColumnVector otherCv) {
+    DecimalColumnVector other = (DecimalColumnVector)otherCv;
+    super.shallowCopyTo(other);
+    other.scale = scale;
+    other.precision = precision;
+    other.vector = vector;
   }
 }

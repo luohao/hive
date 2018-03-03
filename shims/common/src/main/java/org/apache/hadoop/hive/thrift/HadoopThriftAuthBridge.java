@@ -39,25 +39,21 @@ import javax.security.sasl.SaslException;
 import javax.security.sasl.SaslServer;
 
 import org.apache.commons.codec.binary.Base64;
-import org.apache.commons.lang.StringUtils;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
-import org.apache.hadoop.hive.shims.ShimLoader;
-import org.apache.hadoop.hive.shims.Utils;
 import org.apache.hadoop.hive.thrift.client.TUGIAssumingTransport;
+import org.apache.hadoop.hive.thrift.DelegationTokenIdentifier;
+import org.apache.hadoop.hive.thrift.DelegationTokenSecretManager;
 import org.apache.hadoop.security.SaslRpcServer;
 import org.apache.hadoop.security.SaslRpcServer.AuthMethod;
 import org.apache.hadoop.security.SecurityUtil;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.UserGroupInformation.AuthenticationMethod;
-import org.apache.hadoop.security.authorize.AuthorizationException;
-import org.apache.hadoop.security.authorize.ProxyUsers;
 import org.apache.hadoop.security.token.SecretManager.InvalidToken;
 import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.security.token.TokenIdentifier;
-import org.apache.hadoop.util.ReflectionUtils;
 import org.apache.thrift.TException;
 import org.apache.thrift.TProcessor;
 import org.apache.thrift.protocol.TProtocol;
@@ -71,9 +67,12 @@ import org.apache.thrift.transport.TTransportFactory;
 /**
  * Functions that bridge Thrift's SASL transports to Hadoop's
  * SASL callback handlers and authentication classes.
+ * HIVE-11378 This class is not directly used anymore.  It now exists only as a shell to be
+ * extended by HadoopThriftAuthBridge23 in 0.23 shims.  I have made it abstract
+ * to avoid maintenance errors.
  */
-public class HadoopThriftAuthBridge {
-  private static final Log LOG = LogFactory.getLog(HadoopThriftAuthBridge.class);
+public abstract class HadoopThriftAuthBridge {
+  private static final Logger LOG = LoggerFactory.getLogger(HadoopThriftAuthBridge.class);
 
   public Client createClient() {
     return new Client();
@@ -164,11 +163,7 @@ public class HadoopThriftAuthBridge {
    * @return Hadoop SASL configuration
    */
 
-  public Map<String, String> getHadoopSaslProperties(Configuration conf) {
-    // Initialize the SaslRpcServer to ensure QOP parameters are read from conf
-    SaslRpcServer.init(conf);
-    return SaslRpcServer.SASL_PROPS;
-  }
+  public abstract Map<String, String> getHadoopSaslProperties(Configuration conf);
 
   public static class Client {
     /**
@@ -184,9 +179,9 @@ public class HadoopThriftAuthBridge {
 
     public TTransport createClientTransport(
         String principalConfig, String host,
-        String methodStr, String tokenStrForm, TTransport underlyingTransport,
-        Map<String, String> saslProps) throws IOException {
-      AuthMethod method = AuthMethod.valueOf(AuthMethod.class, methodStr);
+        String methodStr, String tokenStrForm, final TTransport underlyingTransport,
+        final Map<String, String> saslProps) throws IOException {
+      final AuthMethod method = AuthMethod.valueOf(AuthMethod.class, methodStr);
 
       TTransport saslTransport = null;
       switch (method) {
@@ -203,21 +198,27 @@ public class HadoopThriftAuthBridge {
 
       case KERBEROS:
         String serverPrincipal = SecurityUtil.getServerPrincipal(principalConfig, host);
-        String names[] = SaslRpcServer.splitKerberosName(serverPrincipal);
+        final String names[] = SaslRpcServer.splitKerberosName(serverPrincipal);
         if (names.length != 3) {
           throw new IOException(
               "Kerberos principal name does NOT have the expected hostname part: "
                   + serverPrincipal);
         }
         try {
-          saslTransport = new TSaslClientTransport(
-              method.getMechanismName(),
-              null,
-              names[0], names[1],
-              saslProps, null,
-              underlyingTransport);
-          return new TUGIAssumingTransport(saslTransport, UserGroupInformation.getCurrentUser());
-        } catch (SaslException se) {
+          return UserGroupInformation.getCurrentUser().doAs(
+              new PrivilegedExceptionAction<TUGIAssumingTransport>() {
+                @Override
+                public TUGIAssumingTransport run() throws IOException {
+                  TTransport saslTransport = new TSaslClientTransport(
+                    method.getMechanismName(),
+                    null,
+                    names[0], names[1],
+                    saslProps, null,
+                    underlyingTransport);
+                  return new TUGIAssumingTransport(saslTransport, UserGroupInformation.getCurrentUser());
+                }
+              });
+        } catch (InterruptedException | SaslException se) {
           throw new IOException("Could not instantiate SASL transport", se);
         }
 
@@ -290,38 +291,6 @@ public class HadoopThriftAuthBridge {
     public enum ServerMode {
       HIVESERVER2, METASTORE
     };
-    public static final String  DELEGATION_TOKEN_GC_INTERVAL =
-        "hive.cluster.delegation.token.gc-interval";
-    private final static long DELEGATION_TOKEN_GC_INTERVAL_DEFAULT = 3600000; // 1 hour
-    //Delegation token related keys
-    public static final String  DELEGATION_KEY_UPDATE_INTERVAL_KEY =
-        "hive.cluster.delegation.key.update-interval";
-    public static final long    DELEGATION_KEY_UPDATE_INTERVAL_DEFAULT =
-        24*60*60*1000; // 1 day
-    public static final String  DELEGATION_TOKEN_RENEW_INTERVAL_KEY =
-        "hive.cluster.delegation.token.renew-interval";
-    public static final long    DELEGATION_TOKEN_RENEW_INTERVAL_DEFAULT =
-        24*60*60*1000;  // 1 day
-    public static final String  DELEGATION_TOKEN_MAX_LIFETIME_KEY =
-        "hive.cluster.delegation.token.max-lifetime";
-    public static final long    DELEGATION_TOKEN_MAX_LIFETIME_DEFAULT =
-        7*24*60*60*1000; // 7 days
-    public static final String DELEGATION_TOKEN_STORE_CLS =
-        "hive.cluster.delegation.token.store.class";
-    public static final String DELEGATION_TOKEN_STORE_ZK_CONNECT_STR =
-        "hive.cluster.delegation.token.store.zookeeper.connectString";
-    // alternate connect string specification configuration
-    public static final String DELEGATION_TOKEN_STORE_ZK_CONNECT_STR_ALTERNATE =
-        "hive.zookeeper.quorum";
-
-    public static final String DELEGATION_TOKEN_STORE_ZK_CONNECT_TIMEOUTMILLIS =
-        "hive.cluster.delegation.token.store.zookeeper.connectTimeoutMillis";
-    public static final String DELEGATION_TOKEN_STORE_ZK_ZNODE =
-        "hive.cluster.delegation.token.store.zookeeper.znode";
-    public static final String DELEGATION_TOKEN_STORE_ZK_ACL =
-        "hive.cluster.delegation.token.store.zookeeper.acl";
-    public static final String DELEGATION_TOKEN_STORE_ZK_ZNODE_DEFAULT =
-        "/hivedelegation";
 
     protected final UserGroupInformation realUgi;
     protected DelegationTokenSecretManager secretManager;
@@ -359,6 +328,10 @@ public class HadoopThriftAuthBridge {
       }
     }
 
+    public void setSecretManager(DelegationTokenSecretManager secretManager) {
+      this.secretManager = secretManager;
+    }
+
     /**
      * Create a TTransportFactory that, upon connection of a client socket,
      * negotiates a Kerberized SASL transport. The resulting TTransportFactory
@@ -370,6 +343,20 @@ public class HadoopThriftAuthBridge {
 
     public TTransportFactory createTransportFactory(Map<String, String> saslProps)
         throws TTransportException {
+
+      TSaslServerTransport.Factory transFactory = createSaslServerTransportFactory(saslProps);
+
+      return new TUGIAssumingTransportFactory(transFactory, realUgi);
+    }
+
+    /**
+     * Create a TSaslServerTransport.Factory that, upon connection of a client
+     * socket, negotiates a Kerberized SASL transport.
+     *
+     * @param saslProps Map of SASL properties
+     */
+    public TSaslServerTransport.Factory createSaslServerTransportFactory(
+        Map<String, String> saslProps) throws TTransportException {
       // Parse out the kerberos principal, host, realm.
       String kerberosName = realUgi.getUserName();
       final String names[] = SaslRpcServer.splitKerberosName(kerberosName);
@@ -387,6 +374,15 @@ public class HadoopThriftAuthBridge {
           null, SaslRpcServer.SASL_DEFAULT_REALM,
           saslProps, new SaslDigestCallbackHandler(secretManager));
 
+      return transFactory;
+    }
+
+    /**
+     * Wrap a TTransportFactory in such a way that, before processing any RPC, it
+     * assumes the UserGroupInformation of the user authenticated by
+     * the SASL transport.
+     */
+    public TTransportFactory wrapTransportFactory(TTransportFactory transFactory) {
       return new TUGIAssumingTransportFactory(transFactory, realUgi);
     }
 
@@ -408,109 +404,6 @@ public class HadoopThriftAuthBridge {
       return new TUGIAssumingProcessor(processor, secretManager, false);
     }
 
-    protected DelegationTokenStore getTokenStore(Configuration conf)
-        throws IOException {
-      String tokenStoreClassName = conf.get(DELEGATION_TOKEN_STORE_CLS, "");
-      if (StringUtils.isBlank(tokenStoreClassName)) {
-        return new MemoryTokenStore();
-      }
-      try {
-        Class<? extends DelegationTokenStore> storeClass = Class
-            .forName(tokenStoreClassName).asSubclass(
-                DelegationTokenStore.class);
-        return ReflectionUtils.newInstance(storeClass, conf);
-      } catch (ClassNotFoundException e) {
-        throw new IOException("Error initializing delegation token store: " + tokenStoreClassName,
-            e);
-      }
-    }
-
-
-    public void startDelegationTokenSecretManager(Configuration conf, Object rawStore, ServerMode smode)
-        throws IOException{
-      long secretKeyInterval =
-          conf.getLong(DELEGATION_KEY_UPDATE_INTERVAL_KEY,
-              DELEGATION_KEY_UPDATE_INTERVAL_DEFAULT);
-      long tokenMaxLifetime =
-          conf.getLong(DELEGATION_TOKEN_MAX_LIFETIME_KEY,
-              DELEGATION_TOKEN_MAX_LIFETIME_DEFAULT);
-      long tokenRenewInterval =
-          conf.getLong(DELEGATION_TOKEN_RENEW_INTERVAL_KEY,
-              DELEGATION_TOKEN_RENEW_INTERVAL_DEFAULT);
-      long tokenGcInterval = conf.getLong(DELEGATION_TOKEN_GC_INTERVAL,
-          DELEGATION_TOKEN_GC_INTERVAL_DEFAULT);
-
-      DelegationTokenStore dts = getTokenStore(conf);
-      dts.init(rawStore, smode);
-      secretManager = new TokenStoreDelegationTokenSecretManager(secretKeyInterval,
-          tokenMaxLifetime,
-          tokenRenewInterval,
-          tokenGcInterval, dts);
-      secretManager.startThreads();
-    }
-
-
-    public String getDelegationToken(final String owner, final String renewer)
-        throws IOException, InterruptedException {
-      if (!authenticationMethod.get().equals(AuthenticationMethod.KERBEROS)) {
-        throw new AuthorizationException(
-            "Delegation Token can be issued only with kerberos authentication. " +
-                "Current AuthenticationMethod: " + authenticationMethod.get()
-            );
-      }
-      //if the user asking the token is same as the 'owner' then don't do
-      //any proxy authorization checks. For cases like oozie, where it gets
-      //a delegation token for another user, we need to make sure oozie is
-      //authorized to get a delegation token.
-      //Do all checks on short names
-      UserGroupInformation currUser = UserGroupInformation.getCurrentUser();
-      UserGroupInformation ownerUgi = UserGroupInformation.createRemoteUser(owner);
-      if (!ownerUgi.getShortUserName().equals(currUser.getShortUserName())) {
-        //in the case of proxy users, the getCurrentUser will return the
-        //real user (for e.g. oozie) due to the doAs that happened just before the
-        //server started executing the method getDelegationToken in the MetaStore
-        ownerUgi = UserGroupInformation.createProxyUser(owner,
-            UserGroupInformation.getCurrentUser());
-        InetAddress remoteAddr = getRemoteAddress();
-        ProxyUsers.authorize(ownerUgi,remoteAddr.getHostAddress(), null);
-      }
-      return ownerUgi.doAs(new PrivilegedExceptionAction<String>() {
-
-        @Override
-        public String run() throws IOException {
-          return secretManager.getDelegationToken(renewer);
-        }
-      });
-    }
-
-
-    public String getDelegationTokenWithService(String owner, String renewer, String service)
-        throws IOException, InterruptedException {
-      String token = getDelegationToken(owner, renewer);
-      return Utils.addServiceToToken(token, service);
-    }
-
-
-    public long renewDelegationToken(String tokenStrForm) throws IOException {
-      if (!authenticationMethod.get().equals(AuthenticationMethod.KERBEROS)) {
-        throw new AuthorizationException(
-            "Delegation Token can be issued only with kerberos authentication. " +
-                "Current AuthenticationMethod: " + authenticationMethod.get()
-            );
-      }
-      return secretManager.renewDelegationToken(tokenStrForm);
-    }
-
-
-    public String getUserFromToken(String tokenStr) throws IOException {
-      return secretManager.getUserFromToken(tokenStr);
-    }
-
-
-    public void cancelDelegationToken(String tokenStrForm) throws IOException {
-      secretManager.cancelDelegationToken(tokenStrForm);
-    }
-
     final static ThreadLocal<InetAddress> remoteAddress =
         new ThreadLocal<InetAddress>() {
 
@@ -519,7 +412,6 @@ public class HadoopThriftAuthBridge {
         return null;
       }
     };
-
 
     public InetAddress getRemoteAddress() {
       return remoteAddress.get();
@@ -547,6 +439,18 @@ public class HadoopThriftAuthBridge {
       return remoteUser.get();
     }
 
+    private final static ThreadLocal<String> userAuthMechanism =
+        new ThreadLocal<String>() {
+
+      @Override
+      protected String initialValue() {
+        return AuthMethod.KERBEROS.getMechanismName();
+      }
+    };
+
+    public String getUserAuthMechanism() {
+      return userAuthMechanism.get();
+    }
     /** CallbackHandler for SASL DIGEST-MD5 mechanism */
     // This code is pretty much completely based on Hadoop's
     // SaslRpcServer.SaslDigestCallbackHandler - the only reason we could not
@@ -650,11 +554,21 @@ public class HadoopThriftAuthBridge {
         TSaslServerTransport saslTrans = (TSaslServerTransport)trans;
         SaslServer saslServer = saslTrans.getSaslServer();
         String authId = saslServer.getAuthorizationID();
-        authenticationMethod.set(AuthenticationMethod.KERBEROS);
         LOG.debug("AUTH ID ======>" + authId);
         String endUser = authId;
 
-        if(saslServer.getMechanismName().equals("DIGEST-MD5")) {
+        Socket socket = ((TSocket)(saslTrans.getUnderlyingTransport())).getSocket();
+        remoteAddress.set(socket.getInetAddress());
+
+        String mechanismName = saslServer.getMechanismName();
+        userAuthMechanism.set(mechanismName);
+        if (AuthMethod.PLAIN.getMechanismName().equalsIgnoreCase(mechanismName)) {
+          remoteUser.set(endUser);
+          return wrapped.process(inProt, outProt);
+        }
+
+        authenticationMethod.set(AuthenticationMethod.KERBEROS);
+        if(AuthMethod.TOKEN.getMechanismName().equalsIgnoreCase(mechanismName)) {
           try {
             TokenIdentifier tokenId = SaslRpcServer.getIdentifier(authId,
                 secretManager);
@@ -664,8 +578,7 @@ public class HadoopThriftAuthBridge {
             throw new TException(e.getMessage());
           }
         }
-        Socket socket = ((TSocket)(saslTrans.getUnderlyingTransport())).getSocket();
-        remoteAddress.set(socket.getInetAddress());
+
         UserGroupInformation clientUgi = null;
         try {
           if (useProxy) {

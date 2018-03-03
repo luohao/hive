@@ -94,10 +94,6 @@ public abstract class TableFunctionEvaluator {
   transient protected PTFPartition outputPartition;
   transient protected boolean canAcceptInputAsStream;
 
-  static {
-    PTFUtils.makeTransient(TableFunctionEvaluator.class, "outputOI", "rawInputOI");
-  }
-
   public StructObjectInspector getOutputOI() {
     return OI;
   }
@@ -144,7 +140,7 @@ public abstract class TableFunctionEvaluator {
       return transformRawInput(iPart);
     }
     PTFPartitionIterator<Object> pItr = iPart.iterator();
-    PTFOperator.connectLeadLagFunctionsToPartition(ptfDesc, pItr);
+    PTFOperator.connectLeadLagFunctionsToPartition(ptfDesc.getLlInfo(), pItr);
 
     if ( outputPartition == null ) {
       outputPartition = PTFPartition.create(ptfDesc.getCfg(),

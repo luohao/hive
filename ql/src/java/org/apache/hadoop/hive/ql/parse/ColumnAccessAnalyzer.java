@@ -18,19 +18,12 @@
 package org.apache.hadoop.hive.ql.parse;
 
 import java.util.Collection;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
-import org.apache.hadoop.hive.ql.exec.Operator;
 import org.apache.hadoop.hive.ql.exec.TableScanOperator;
 import org.apache.hadoop.hive.ql.metadata.Table;
-import org.apache.hadoop.hive.ql.plan.OperatorDesc;
 
 public class ColumnAccessAnalyzer {
-  private static final Log   LOG = LogFactory.getLog(ColumnAccessAnalyzer.class.getName());
   private final ParseContext pGraphContext;
 
   public ColumnAccessAnalyzer() {
@@ -41,12 +34,14 @@ public class ColumnAccessAnalyzer {
     pGraphContext = pactx;
   }
 
-  public ColumnAccessInfo analyzeColumnAccess() throws SemanticException {
-    ColumnAccessInfo columnAccessInfo = new ColumnAccessInfo();
-    Collection<Operator<? extends OperatorDesc>> topOps = pGraphContext.getTopOps().values();
-    for (Operator<? extends OperatorDesc> op : topOps) {
-      if (op instanceof TableScanOperator) {
-        TableScanOperator top = (TableScanOperator) op;
+  public ColumnAccessInfo analyzeColumnAccess(ColumnAccessInfo columnAccessInfo) throws SemanticException {
+    if (columnAccessInfo == null) {
+      columnAccessInfo = new ColumnAccessInfo();
+    }
+    Collection<TableScanOperator> topOps = pGraphContext.getTopOps().values();
+    for (TableScanOperator top : topOps) {
+      // if a table is inside view, we do not care about its authorization.
+      if (!top.isInsideView()) {
         Table table = top.getConf().getTableMetadata();
         String tableName = table.getCompleteName();
         List<String> referenced = top.getReferencedColumns();

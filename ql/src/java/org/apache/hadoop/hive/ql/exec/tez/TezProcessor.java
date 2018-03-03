@@ -21,11 +21,13 @@ import java.io.IOException;
 import java.text.NumberFormat;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hive.ql.log.PerfLogger;
+import org.apache.hadoop.hive.ql.session.SessionState;
 import org.apache.hadoop.mapred.JobConf;
 import org.apache.hadoop.mapred.OutputCollector;
 import org.apache.hadoop.util.StringUtils;
@@ -33,6 +35,7 @@ import org.apache.tez.common.TezUtils;
 import org.apache.tez.mapreduce.processor.MRTaskReporter;
 import org.apache.tez.runtime.api.AbstractLogicalIOProcessor;
 import org.apache.tez.runtime.api.Event;
+import org.apache.tez.runtime.api.ExecutionContext;
 import org.apache.tez.runtime.api.LogicalInput;
 import org.apache.tez.runtime.api.LogicalOutput;
 import org.apache.tez.runtime.api.ProcessorContext;
@@ -44,17 +47,24 @@ import org.apache.tez.runtime.library.api.KeyValueWriter;
  */
 public class TezProcessor extends AbstractLogicalIOProcessor {
 
+  /**
+   * This provides the ability to pass things into TezProcessor, which is normally impossible
+   * because of how Tez APIs are structured. Piggyback on ExecutionContext.
+   */
+  public static interface Hook {
+    void initializeHook(TezProcessor source);
+  }
 
-
-  private static final Log LOG = LogFactory.getLog(TezProcessor.class);
+  private static final Logger LOG = LoggerFactory.getLogger(TezProcessor.class);
   protected boolean isMap = false;
 
   protected RecordProcessor rproc = null;
+  private final AtomicBoolean aborted = new AtomicBoolean(false);
 
   protected JobConf jobConf;
 
   private static final String CLASS_NAME = TezProcessor.class.getName();
-  private final PerfLogger perfLogger = PerfLogger.getPerfLogger();
+  private final PerfLogger perfLogger = SessionState.getPerfLogger();
 
   protected ProcessorContext processorContext;
 
@@ -90,6 +100,10 @@ public class TezProcessor extends AbstractLogicalIOProcessor {
     Configuration conf = TezUtils.createConfFromUserPayload(getContext().getUserPayload());
     this.jobConf = new JobConf(conf);
     this.processorContext = getContext();
+    ExecutionContext execCtx = processorContext.getExecutionContext();
+    if (execCtx instanceof Hook) {
+      ((Hook)execCtx).initializeHook(this);
+    }
     setupMRLegacyConfigs(processorContext);
     perfLogger.PerfLogEnd(CLASS_NAME, PerfLogger.TEZ_INITIALIZE_PROCESSOR);
   }
@@ -115,26 +129,45 @@ public class TezProcessor extends AbstractLogicalIOProcessor {
     String taskAttemptIdStr = taskAttemptIdBuilder.toString();
     this.jobConf.set("mapred.task.id", taskAttemptIdStr);
     this.jobConf.set("mapreduce.task.attempt.id", taskAttemptIdStr);
-    this.jobConf.setInt("mapred.task.partition",processorContext.getTaskIndex());
+    this.jobConf.setInt("mapred.task.partition", processorContext.getTaskIndex());
   }
 
   @Override
   public void run(Map<String, LogicalInput> inputs, Map<String, LogicalOutput> outputs)
       throws Exception {
 
-      perfLogger.PerfLogBegin(CLASS_NAME, PerfLogger.TEZ_RUN_PROCESSOR);
-      // in case of broadcast-join read the broadcast edge inputs
-      // (possibly asynchronously)
+    if (aborted.get()) {
+      return;
+    }
 
-      LOG.info("Running task: " + getContext().getUniqueIdentifier());
+    perfLogger.PerfLogBegin(CLASS_NAME, PerfLogger.TEZ_RUN_PROCESSOR);
+    // in case of broadcast-join read the broadcast edge inputs
+    // (possibly asynchronously)
 
+    if (LOG.isDebugEnabled()) {
+      LOG.debug("Running task: " + getContext().getUniqueIdentifier());
+    }
+
+    synchronized (this) {
+      // This check isn't absolutely mandatory, given the aborted check outside of the
+      // Processor creation.
+      if (aborted.get()) {
+        return;
+      }
+      // There should be no blocking operation in RecordProcessor creation,
+      // otherwise the abort operation will not register since they are synchronized on the same
+      // lock.
       if (isMap) {
         rproc = new MapRecordProcessor(jobConf, getContext());
       } else {
         rproc = new ReduceRecordProcessor(jobConf, getContext());
       }
+    }
 
+    if (!aborted.get()) {
       initializeAndRunProcessor(inputs, outputs);
+    }
+    // TODO HIVE-14042. In case of an abort request, throw an InterruptedException
   }
 
   protected void initializeAndRunProcessor(Map<String, LogicalInput> inputs,
@@ -144,6 +177,10 @@ public class TezProcessor extends AbstractLogicalIOProcessor {
     try {
 
       MRTaskReporter mrReporter = new MRTaskReporter(getContext());
+      // Init and run are both potentially long, and blocking operations. Synchronization
+      // with the 'abort' operation will not work since if they end up blocking on a monitor
+      // which does not belong to the lock, the abort will end up getting blocked.
+      // Both of these method invocations need to handle the abort call on their own.
       rproc.init(mrReporter, inputs, outputs);
       rproc.run();
 
@@ -168,8 +205,28 @@ public class TezProcessor extends AbstractLogicalIOProcessor {
       }
       if (originalThrowable != null) {
         LOG.error(StringUtils.stringifyException(originalThrowable));
-        throw new RuntimeException(originalThrowable);
+        if (originalThrowable instanceof InterruptedException) {
+          throw (InterruptedException) originalThrowable;
+        } else {
+          throw new RuntimeException(originalThrowable);
+        }
       }
+    }
+  }
+
+  @Override
+  public void abort() {
+    RecordProcessor rProcLocal;
+    synchronized (this) {
+      LOG.info("Received abort");
+      aborted.set(true);
+      rProcLocal = rproc;
+    }
+    if (rProcLocal != null) {
+      LOG.info("Forwarding abort to RecordProcessor");
+      rProcLocal.abort();
+    } else {
+      LOG.info("RecordProcessor not yet setup. Abort will be ignored");
     }
   }
 
@@ -195,5 +252,9 @@ public class TezProcessor extends AbstractLogicalIOProcessor {
     public void collect(Object key, Object value) throws IOException {
       writer.write(key, value);
     }
+  }
+
+  public JobConf getConf() {
+    return jobConf;
   }
 }

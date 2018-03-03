@@ -27,8 +27,8 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Stack;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -54,7 +54,7 @@ import org.apache.hadoop.hive.ql.plan.FilterDesc.SampleDesc;
  * The transformation step that does sample pruning.
  *
  */
-public class SamplePruner implements Transform {
+public class SamplePruner extends Transform {
 
   /**
    * SamplePrunerCtx.
@@ -86,8 +86,8 @@ public class SamplePruner implements Transform {
   }
 
   // The log
-  private static final Log LOG = LogFactory
-      .getLog("hive.ql.optimizer.SamplePruner");
+  private static final Logger LOG = LoggerFactory
+      .getLogger("hive.ql.optimizer.SamplePruner");
 
   /*
    * (non-Javadoc)

@@ -20,14 +20,15 @@ package org.apache.hadoop.hive.ql.parse;
 import java.util.ArrayList;
 import java.util.List;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.conf.HiveConf.ConfVars;
 import org.apache.hadoop.hive.metastore.api.Database;
 import org.apache.hadoop.hive.metastore.api.ResourceType;
 import org.apache.hadoop.hive.metastore.api.ResourceUri;
 import org.apache.hadoop.hive.ql.ErrorMsg;
+import org.apache.hadoop.hive.ql.QueryState;
 import org.apache.hadoop.hive.ql.exec.FunctionInfo;
 import org.apache.hadoop.hive.ql.exec.FunctionRegistry;
 import org.apache.hadoop.hive.ql.exec.FunctionUtils;
@@ -46,11 +47,11 @@ import org.apache.hadoop.hive.ql.plan.PlanUtils;
  *
  */
 public class FunctionSemanticAnalyzer extends BaseSemanticAnalyzer {
-  private static final Log LOG = LogFactory
-      .getLog(FunctionSemanticAnalyzer.class);
+  private static final Logger LOG = LoggerFactory
+      .getLogger(FunctionSemanticAnalyzer.class);
 
-  public FunctionSemanticAnalyzer(HiveConf conf) throws SemanticException {
-    super(conf);
+  public FunctionSemanticAnalyzer(QueryState queryState) throws SemanticException {
+    super(queryState);
   }
 
   @Override
@@ -178,7 +179,7 @@ public class FunctionSemanticAnalyzer extends BaseSemanticAnalyzer {
         functionName = qualifiedNameParts[1];
         database = getDatabase(dbName);
       } catch (HiveException e) {
-        LOG.error(e);
+        LOG.error("Failed to get database ", e);
         throw new SemanticException(e);
       }
     }

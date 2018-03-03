@@ -21,8 +21,9 @@ package org.apache.hadoop.hive.ql.exec.vector.mapjoin;
 import java.io.IOException;
 import java.util.Arrays;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.apache.hadoop.hive.ql.CompilationOpContext;
 import org.apache.hadoop.hive.ql.exec.JoinUtil;
 import org.apache.hadoop.hive.ql.exec.vector.VectorizationContext;
 import org.apache.hadoop.hive.ql.exec.vector.VectorizedRowBatch;
@@ -34,9 +35,11 @@ import org.apache.hadoop.hive.ql.plan.OperatorDesc;
 import org.apache.hadoop.hive.ql.exec.vector.mapjoin.hashtable.VectorMapJoinBytesHashMap;
 
 // Multi-Key specific imports.
-import org.apache.hadoop.hive.ql.exec.vector.VectorSerializeRowNoNulls;
+import org.apache.hadoop.hive.ql.exec.vector.VectorSerializeRow;
 import org.apache.hadoop.hive.serde2.ByteStream.Output;
 import org.apache.hadoop.hive.serde2.binarysortable.fast.BinarySortableSerializeWrite;
+
+import com.google.common.base.Preconditions;
 
 /*
  * Specialized class for doing a vectorized map join that is an inner join on a Multi-Key
@@ -45,8 +48,17 @@ import org.apache.hadoop.hive.serde2.binarysortable.fast.BinarySortableSerialize
 public class VectorMapJoinInnerMultiKeyOperator extends VectorMapJoinInnerGenerateResultOperator {
 
   private static final long serialVersionUID = 1L;
-  private static final Log LOG = LogFactory.getLog(VectorMapJoinInnerMultiKeyOperator.class.getName());
+
+  //------------------------------------------------------------------------------------------------
+
   private static final String CLASS_NAME = VectorMapJoinInnerMultiKeyOperator.class.getName();
+  private static final Logger LOG = LoggerFactory.getLogger(VectorMapJoinInnerMultiKeyOperator.class.getName());
+
+  protected String getLoggingPrefix() {
+    return super.getLoggingPrefix(CLASS_NAME);
+  }
+
+  //------------------------------------------------------------------------------------------------
 
   // (none)
 
@@ -63,7 +75,7 @@ public class VectorMapJoinInnerMultiKeyOperator extends VectorMapJoinInnerGenera
 
   // Object that can take a set of columns in row in a vectorized row batch and serialized it.
   // Known to not have any nulls.
-  private transient VectorSerializeRowNoNulls keyVectorSerializeWriteNoNulls;
+  private transient VectorSerializeRow keyVectorSerializeWrite;
 
   // The BinarySortable serialization of the current key.
   private transient Output currentKeyOutput;
@@ -75,12 +87,18 @@ public class VectorMapJoinInnerMultiKeyOperator extends VectorMapJoinInnerGenera
   // Pass-thru constructors.
   //
 
-  public VectorMapJoinInnerMultiKeyOperator() {
+  /** Kryo ctor. */
+  protected VectorMapJoinInnerMultiKeyOperator() {
     super();
   }
 
-  public VectorMapJoinInnerMultiKeyOperator(VectorizationContext vContext, OperatorDesc conf) throws HiveException {
-    super(vContext, conf);
+  public VectorMapJoinInnerMultiKeyOperator(CompilationOpContext ctx) {
+    super(ctx);
+  }
+
+  public VectorMapJoinInnerMultiKeyOperator(CompilationOpContext ctx,
+      VectorizationContext vContext, OperatorDesc conf) throws HiveException {
+    super(ctx, vContext, conf);
   }
 
   //---------------------------------------------------------------------------
@@ -103,9 +121,9 @@ public class VectorMapJoinInnerMultiKeyOperator extends VectorMapJoinInnerGenera
          * Initialize Multi-Key members for this specialized class.
          */
 
-        keyVectorSerializeWriteNoNulls = new VectorSerializeRowNoNulls(
+        keyVectorSerializeWrite = new VectorSerializeRow(
                                         new BinarySortableSerializeWrite(bigTableKeyColumnMap.length));
-        keyVectorSerializeWriteNoNulls.init(bigTableKeyTypeNames, bigTableKeyColumnMap);
+        keyVectorSerializeWrite.init(bigTableKeyTypeInfos, bigTableKeyColumnMap);
 
         currentKeyOutput = new Output();
         saveKeyOutput = new Output();
@@ -140,7 +158,7 @@ public class VectorMapJoinInnerMultiKeyOperator extends VectorMapJoinInnerGenera
       final int inputLogicalSize = batch.size;
 
       if (inputLogicalSize == 0) {
-        if (LOG.isDebugEnabled()) {
+        if (isLogDebugEnabled) {
           LOG.debug(CLASS_NAME + " batch #" + batchCounter + " empty");
         }
         return;
@@ -191,17 +209,22 @@ public class VectorMapJoinInnerMultiKeyOperator extends VectorMapJoinInnerGenera
          * Multi-Key specific repeated lookup.
          */
 
-        keyVectorSerializeWriteNoNulls.setOutput(currentKeyOutput);
-        keyVectorSerializeWriteNoNulls.serializeWriteNoNulls(batch, 0);
-        byte[] keyBytes = currentKeyOutput.getData();
-        int keyLength = currentKeyOutput.getLength();
-        JoinUtil.JoinResult joinResult = hashMap.lookup(keyBytes, 0, keyLength, hashMapResults[0]);
+        keyVectorSerializeWrite.setOutput(currentKeyOutput);
+        keyVectorSerializeWrite.serializeWrite(batch, 0);
+        JoinUtil.JoinResult joinResult;
+        if (keyVectorSerializeWrite.getHasAnyNulls()) {
+          joinResult = JoinUtil.JoinResult.NOMATCH;
+        } else {
+          byte[] keyBytes = currentKeyOutput.getData();
+          int keyLength = currentKeyOutput.getLength();
+          joinResult = hashMap.lookup(keyBytes, 0, keyLength, hashMapResults[0]);
+        }
 
         /*
          * Common repeated join result processing.
          */
 
-        if (LOG.isDebugEnabled()) {
+        if (isLogDebugEnabled) {
           LOG.debug(CLASS_NAME + " batch #" + batchCounter + " repeated joinResult " + joinResult.name());
         }
         finishInnerRepeated(batch, joinResult, hashMapResults[0]);
@@ -211,7 +234,7 @@ public class VectorMapJoinInnerMultiKeyOperator extends VectorMapJoinInnerGenera
          * NOT Repeating.
          */
 
-        if (LOG.isDebugEnabled()) {
+        if (isLogDebugEnabled) {
           LOG.debug(CLASS_NAME + " batch #" + batchCounter + " non-repeated");
         }
 
@@ -245,14 +268,15 @@ public class VectorMapJoinInnerMultiKeyOperator extends VectorMapJoinInnerGenera
            */
 
           // Generate binary sortable key for current row in vectorized row batch.
-          keyVectorSerializeWriteNoNulls.setOutput(currentKeyOutput);
-          keyVectorSerializeWriteNoNulls.serializeWriteNoNulls(batch, batchIndex);
+          keyVectorSerializeWrite.setOutput(currentKeyOutput);
+          keyVectorSerializeWrite.serializeWrite(batch, batchIndex);
+          boolean isAnyNull = keyVectorSerializeWrite.getHasAnyNulls();
 
           /*
            * Equal key series checking.
            */
 
-          if (!haveSaveKey || !saveKeyOutput.arraysEquals(currentKeyOutput)) {
+          if (isAnyNull || !haveSaveKey || !saveKeyOutput.arraysEquals(currentKeyOutput)) {
 
             // New key.
 
@@ -271,25 +295,30 @@ public class VectorMapJoinInnerMultiKeyOperator extends VectorMapJoinInnerGenera
               }
             }
 
-            // Regardless of our matching result, we keep that information to make multiple use
-            // of it for a possible series of equal keys.
-            haveSaveKey = true;
-
-            /*
-             * Multi-Key specific save key.
-             */
-
-            temp = saveKeyOutput;
-            saveKeyOutput = currentKeyOutput;
-            currentKeyOutput = temp;
-
-            /*
-             * Multi-Key specific lookup key.
-             */
-
-            byte[] keyBytes = saveKeyOutput.getData();
-            int keyLength = saveKeyOutput.getLength();
-            saveJoinResult = hashMap.lookup(keyBytes, 0, keyLength, hashMapResults[hashMapResultCount]);
+            if (isAnyNull) {
+              saveJoinResult = JoinUtil.JoinResult.NOMATCH;
+              haveSaveKey = false;
+            } else {
+              // Regardless of our matching result, we keep that information to make multiple use
+              // of it for a possible series of equal keys.
+              haveSaveKey = true;
+  
+              /*
+               * Multi-Key specific save key.
+               */
+  
+              temp = saveKeyOutput;
+              saveKeyOutput = currentKeyOutput;
+              currentKeyOutput = temp;
+  
+              /*
+               * Multi-Key specific lookup key.
+               */
+  
+              byte[] keyBytes = saveKeyOutput.getData();
+              int keyLength = saveKeyOutput.getLength();
+              saveJoinResult = hashMap.lookup(keyBytes, 0, keyLength, hashMapResults[hashMapResultCount]);
+            }
 
             /*
              * Common inner join result processing.
@@ -353,7 +382,7 @@ public class VectorMapJoinInnerMultiKeyOperator extends VectorMapJoinInnerGenera
           }
         }
 
-        if (LOG.isDebugEnabled()) {
+        if (isLogDebugEnabled) {
           LOG.debug(CLASS_NAME +
               " allMatchs " + intArrayToRangesString(allMatchs,allMatchCount) +
               " equalKeySeriesHashMapResultIndices " + intArrayToRangesString(equalKeySeriesHashMapResultIndices, equalKeySeriesCount) +

@@ -37,10 +37,10 @@ import org.apache.hadoop.hive.ql.exec.RowSchema;
 import org.apache.hadoop.hive.ql.lib.DefaultRuleDispatcher;
 import org.apache.hadoop.hive.ql.lib.Dispatcher;
 import org.apache.hadoop.hive.ql.lib.GraphWalker;
+import org.apache.hadoop.hive.ql.lib.LevelOrderWalker;
 import org.apache.hadoop.hive.ql.lib.Node;
 import org.apache.hadoop.hive.ql.lib.NodeProcessor;
 import org.apache.hadoop.hive.ql.lib.NodeProcessorCtx;
-import org.apache.hadoop.hive.ql.lib.PreOrderWalker;
 import org.apache.hadoop.hive.ql.lib.Rule;
 import org.apache.hadoop.hive.ql.lib.RuleRegExp;
 import org.apache.hadoop.hive.ql.optimizer.Transform;
@@ -56,7 +56,7 @@ import org.apache.hadoop.hive.ql.plan.OperatorDesc;
 /**
  * propagates filters to other aliases based on join condition
  */
-public class PredicateTransitivePropagate implements Transform {
+public class PredicateTransitivePropagate extends Transform {
 
   private ParseContext pGraphContext;
 
@@ -74,7 +74,7 @@ public class PredicateTransitivePropagate implements Transform {
     // rule and passes the context along
     TransitiveContext context = new TransitiveContext();
     Dispatcher disp = new DefaultRuleDispatcher(null, opRules, context);
-    GraphWalker ogw = new PreOrderWalker(disp);
+    GraphWalker ogw = new LevelOrderWalker(disp, 2);
 
     // Create a list of topop nodes
     List<Node> topNodes = new ArrayList<Node>();
@@ -106,8 +106,8 @@ public class PredicateTransitivePropagate implements Transform {
   // insert filter operator between target(child) and input(parent)
   private Operator<FilterDesc> createFilter(Operator<?> target, Operator<?> parent,
       RowSchema parentRS, ExprNodeDesc filterExpr) {
-    Operator<FilterDesc> filter = OperatorFactory.get(new FilterDesc(filterExpr, false),
-        new RowSchema(parentRS.getSignature()));
+    Operator<FilterDesc> filter = OperatorFactory.get(parent.getCompilationOpContext(),
+        new FilterDesc(filterExpr, false), new RowSchema(parentRS.getSignature()));
     filter.getParentOperators().add(parent);
     filter.getChildOperators().add(target);
     parent.replaceChild(target, filter);

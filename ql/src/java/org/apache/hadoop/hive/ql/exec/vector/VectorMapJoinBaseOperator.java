@@ -23,9 +23,10 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.Future;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hive.ql.CompilationOpContext;
 import org.apache.hadoop.hive.ql.exec.MapJoinOperator;
 import org.apache.hadoop.hive.ql.exec.persistence.HybridHashTableContainer;
 import org.apache.hadoop.hive.ql.exec.persistence.MapJoinTableContainer;
@@ -45,7 +46,7 @@ import org.apache.hadoop.io.DataOutputBuffer;
  */
 public class VectorMapJoinBaseOperator extends MapJoinOperator implements VectorizationContextRegion {
 
-  private static final Log LOG = LogFactory.getLog(VectorMapJoinBaseOperator.class.getName());
+  private static final Logger LOG = LoggerFactory.getLogger(VectorMapJoinBaseOperator.class.getName());
 
   private static final long serialVersionUID = 1L;
 
@@ -58,19 +59,24 @@ public class VectorMapJoinBaseOperator extends MapJoinOperator implements Vector
   protected transient VectorizedRowBatch outputBatch;
   protected transient VectorizedRowBatch scratchBatch;  // holds restored (from disk) big table rows
 
-  protected transient Map<ObjectInspector, VectorAssignRowSameBatch> outputVectorAssignRowMap;
+  protected transient Map<ObjectInspector, VectorAssignRow> outputVectorAssignRowMap;
 
   protected transient VectorizedRowBatchCtx vrbCtx = null;
 
   protected transient int tag;  // big table alias
 
-  public VectorMapJoinBaseOperator() {
+  /** Kryo ctor. */
+  protected VectorMapJoinBaseOperator() {
     super();
   }
 
-  public VectorMapJoinBaseOperator (VectorizationContext vContext, OperatorDesc conf)
-    throws HiveException {
-    super();
+  public VectorMapJoinBaseOperator(CompilationOpContext ctx) {
+    super(ctx);
+  }
+
+  public VectorMapJoinBaseOperator(CompilationOpContext ctx,
+      VectorizationContext vContext, OperatorDesc conf) throws HiveException {
+    super(ctx);
 
     MapJoinDesc desc = (MapJoinDesc) conf;
     this.conf = desc;
@@ -82,22 +88,20 @@ public class VectorMapJoinBaseOperator extends MapJoinOperator implements Vector
     noOuterJoin = desc.isNoOuterJoin();
 
      // We are making a new output vectorized row batch.
-    vOutContext = new VectorizationContext(getName(), desc.getOutputColumnNames());
+    vOutContext = new VectorizationContext(getName(), desc.getOutputColumnNames(),
+        /* vContextEnvironment */ vContext);
   }
 
   @Override
-  public Collection<Future<?>> initializeOp(Configuration hconf) throws HiveException {
-
-    Collection<Future<?>> result = super.initializeOp(hconf);
+  public void initializeOp(Configuration hconf) throws HiveException {
+    super.initializeOp(hconf);
 
     vrbCtx = new VectorizedRowBatchCtx();
-    vrbCtx.init(vOutContext.getScratchColumnTypeMap(), (StructObjectInspector) this.outputObjInspector);
+    vrbCtx.init((StructObjectInspector) this.outputObjInspector, vOutContext.getScratchColumnTypeNames());
 
     outputBatch = vrbCtx.createVectorizedRowBatch();
 
-    outputVectorAssignRowMap = new HashMap<ObjectInspector, VectorAssignRowSameBatch>();
-
-    return result;
+    outputVectorAssignRowMap = new HashMap<ObjectInspector, VectorAssignRow>();
   }
 
   /**
@@ -106,15 +110,14 @@ public class VectorMapJoinBaseOperator extends MapJoinOperator implements Vector
   @Override
   protected void internalForward(Object row, ObjectInspector outputOI) throws HiveException {
     Object[] values = (Object[]) row;
-    VectorAssignRowSameBatch va = outputVectorAssignRowMap.get(outputOI);
+    VectorAssignRow va = outputVectorAssignRowMap.get(outputOI);
     if (va == null) {
-      va = new VectorAssignRowSameBatch();
+      va = new VectorAssignRow();
       va.init((StructObjectInspector) outputOI, vOutContext.getProjectedColumns());
-      va.setOneBatch(outputBatch);
       outputVectorAssignRowMap.put(outputOI, va);
     }
 
-    va.assignRow(outputBatch.size, values);
+    va.assignRow(outputBatch, outputBatch.size, values);
 
     ++outputBatch.size;
     if (outputBatch.size == VectorizedRowBatch.DEFAULT_SIZE) {

@@ -18,8 +18,27 @@
 
 package org.apache.hadoop.hive.ql.exec;
 
+import java.io.BufferedInputStream;
+import java.io.BufferedOutputStream;
+import java.io.DataInputStream;
+import java.io.DataOutputStream;
+import java.io.File;
+import java.io.IOException;
+import java.io.Serializable;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.Iterator;
+import java.util.Map;
+import java.util.Set;
+import java.util.Timer;
+import java.util.TimerTask;
+import java.util.concurrent.TimeUnit;
+
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hive.conf.HiveConf;
+import org.apache.hadoop.hive.ql.CompilationOpContext;
 import org.apache.hadoop.hive.ql.ErrorMsg;
 import org.apache.hadoop.hive.ql.metadata.HiveException;
 import org.apache.hadoop.hive.ql.plan.ScriptDesc;
@@ -36,27 +55,9 @@ import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.mapred.Reporter;
 import org.apache.hadoop.util.Shell;
 import org.apache.hadoop.util.StringUtils;
+import org.apache.spark.SparkConf;
+import org.apache.spark.SparkEnv;
 import org.apache.spark.SparkFiles;
-
-import java.io.BufferedInputStream;
-import java.io.BufferedOutputStream;
-import java.io.DataInputStream;
-import java.io.DataOutputStream;
-import java.io.File;
-import java.io.IOException;
-import java.io.Serializable;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.HashSet;
-import java.util.Iterator;
-import java.util.Map;
-import java.util.Set;
-import java.util.Timer;
-import java.util.TimerTask;
-import java.util.concurrent.Future;
-import java.util.concurrent.TimeUnit;
 
 /**
  * ScriptOperator.
@@ -93,8 +94,6 @@ public class ScriptOperator extends Operator<ScriptDesc> implements
 
   static final String IO_EXCEPTION_BROKEN_PIPE_STRING = "Broken pipe";
   static final String IO_EXCEPTION_STREAM_CLOSED = "Stream closed";
-  static final String IO_EXCEPTION_PIPE_ENDED_WIN = "The pipe has been ended";
-  static final String IO_EXCEPTION_PIPE_CLOSED_WIN = "The pipe is being closed";
 
   /**
    * sends periodic reports back to the tracker.
@@ -246,16 +245,6 @@ public class ScriptOperator extends Operator<ScriptDesc> implements
           if (f.isFile() && f.canRead()) {
             return f;
           }
-          if (Shell.WINDOWS) {
-            // Try filename with executable extentions
-            String[] exts = new String[] {".exe", ".bat"};
-            for (String ext : exts) {
-              File fileWithExt = new File(f.toString() + ext);
-              if (fileWithExt.isFile() && fileWithExt.canRead()) {
-                return fileWithExt;
-              }
-            }
-          }
         } catch (Exception exp) {
         }
         classvalue = classvalue.substring(val + 1).trim();
@@ -264,9 +253,18 @@ public class ScriptOperator extends Operator<ScriptDesc> implements
     }
   }
 
+  /** Kryo ctor. */
+  protected ScriptOperator() {
+    super();
+  }
+
+  public ScriptOperator(CompilationOpContext ctx) {
+    super(ctx);
+  }
+
   @Override
-  protected Collection<Future<?>> initializeOp(Configuration hconf) throws HiveException {
-    Collection<Future<?>> result = super.initializeOp(hconf);
+  protected void initializeOp(Configuration hconf) throws HiveException {
+    super.initializeOp(hconf);
     firstRow = true;
 
     statsMap.put(Counter.DESERIALIZE_ERRORS.toString(), deserialize_error_count);
@@ -290,15 +288,9 @@ public class ScriptOperator extends Operator<ScriptDesc> implements
     } catch (Exception e) {
       throw new HiveException(ErrorMsg.SCRIPT_INIT_ERROR.getErrorCodedMsg(), e);
     }
-    return result;
   }
 
   boolean isBrokenPipeException(IOException e) {
-  if (Shell.WINDOWS) {
-      String errMsg = e.getMessage();
-      return errMsg.equalsIgnoreCase(IO_EXCEPTION_PIPE_CLOSED_WIN) ||
-          errMsg.equalsIgnoreCase(IO_EXCEPTION_PIPE_ENDED_WIN);
-    }
     return (e.getMessage().equalsIgnoreCase(IO_EXCEPTION_BROKEN_PIPE_STRING) ||
             e.getMessage().equalsIgnoreCase(IO_EXCEPTION_STREAM_CLOSED));
   }
@@ -319,10 +311,10 @@ public class ScriptOperator extends Operator<ScriptDesc> implements
   private transient String partitionName ;
 
   @Override
-  public void setInputContext(String inputPath, String tableName, String partitionName) {
+  public void setInputContext(String tableName, String partitionName) {
     this.tableName = tableName;
     this.partitionName = partitionName;
-    super.setInputContext(inputPath, tableName, partitionName);
+    super.setInputContext(tableName, partitionName);
   }
 
   @Override
@@ -330,6 +322,7 @@ public class ScriptOperator extends Operator<ScriptDesc> implements
     // initialize the user's process only when you receive the first row
     if (firstRow) {
       firstRow = false;
+      SparkConf sparkConf = null;
       try {
         String[] cmdArgs = splitArgs(conf.getScriptCmd());
 
@@ -342,6 +335,7 @@ public class ScriptOperator extends Operator<ScriptDesc> implements
 
           // In spark local mode, we need to search added files in root directory.
           if (HiveConf.getVar(hconf, HiveConf.ConfVars.HIVE_EXECUTION_ENGINE).equals("spark")) {
+            sparkConf = SparkEnv.get().conf();
             finder.prependPathComponent(SparkFiles.getRootDirectory());
           }
           File f = finder.getAbsolutePath(prog);
@@ -371,6 +365,17 @@ public class ScriptOperator extends Operator<ScriptDesc> implements
             HiveConf.ConfVars.HIVESCRIPTIDENVVAR);
         String idEnvVarVal = getOperatorId();
         env.put(safeEnvVarName(idEnvVarName), idEnvVarVal);
+
+        // For spark, in non-local mode, any added dependencies are stored at
+        // SparkFiles::getRootDirectory, which is the executor's working directory.
+        // In local mode, we need to manually point the process's working directory to it,
+        // in order to make the dependencies accessible.
+        if (sparkConf != null) {
+          String master = sparkConf.get("spark.master");
+          if (master.equals("local") || master.startsWith("local[")) {
+            pb.directory(new File(SparkFiles.getRootDirectory()));
+          }
+        }
 
         scriptPid = pb.start(); // Runtime.getRuntime().exec(wrappedCmdArgs);
 
@@ -838,7 +843,7 @@ public class ScriptOperator extends Operator<ScriptDesc> implements
 
   @Override
   public String getName() {
-    return getOperatorName();
+    return ScriptOperator.getOperatorName();
   }
 
   static public String getOperatorName() {

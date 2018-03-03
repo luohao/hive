@@ -30,8 +30,8 @@ import java.util.Collection;
 
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.io.IOUtils;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.conf.HiveConf.ConfVars;
 import org.apache.hadoop.hive.metastore.MetaStoreUtils;
@@ -61,7 +61,7 @@ public class TestSessionState {
   private final static String V2 = "V2";
   private static String hiveReloadPath;
   private File reloadFolder;
-  public static final Log LOG = LogFactory.getLog(TestSessionState.class);
+  public static final Logger LOG = LoggerFactory.getLogger(TestSessionState.class);
 
   public TestSessionState(Boolean mode) {
     this.prewarm = mode.booleanValue();
@@ -202,7 +202,7 @@ public class TestSessionState {
     try {
       dist = new File(reloadFolder.getAbsolutePath() + File.separator + reloadClazzFileName);
       Files.copy(new File(HiveTestUtils.getFileFromClasspath(clazzDistFileName)), dist);
-      ss.reloadAuxJars();
+      ss.loadReloadableAuxJars();
       Assert.assertEquals("version1", getReloadedClazzVersion(ss.getConf().getClassLoader()));
     } catch (Exception e) {
       LOG.error("Reload auxiliary jar test fail with message: ", e);
@@ -234,7 +234,7 @@ public class TestSessionState {
       dist = new File(reloadFolder.getAbsolutePath() + File.separator + reloadClazzFileName);
 
       Files.copy(new File(HiveTestUtils.getFileFromClasspath(clazzDistFileName)), dist);
-      ss.reloadAuxJars();
+      ss.loadReloadableAuxJars();
 
       Assert.assertEquals("version1", getReloadedClazzVersion(ss.getConf().getClassLoader()));
 
@@ -242,11 +242,11 @@ public class TestSessionState {
       FileUtils.deleteQuietly(dist);
       Files.copy(new File(HiveTestUtils.getFileFromClasspath(clazzV2FileName)), dist);
 
-      ss.reloadAuxJars();
+      ss.loadReloadableAuxJars();
       Assert.assertEquals("version2", getReloadedClazzVersion(ss.getConf().getClassLoader()));
 
       FileUtils.deleteQuietly(dist);
-      ss.reloadAuxJars();
+      ss.loadReloadableAuxJars();
     } catch (Exception e) {
       LOG.error("refresh existing jar file case failed with message: ", e);
       Assert.fail(e.getMessage());

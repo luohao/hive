@@ -24,10 +24,12 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hive.conf.HiveConf;
+import org.apache.hadoop.hive.ql.CompilationOpContext;
+import org.apache.hadoop.hive.ql.exec.AbstractMapOperator;
 import org.apache.hadoop.hive.ql.exec.MapOperator;
 import org.apache.hadoop.hive.ql.exec.MapredContext;
 import org.apache.hadoop.hive.ql.exec.Operator;
@@ -58,28 +60,22 @@ import org.apache.hadoop.util.StringUtils;
  */
 public class ExecMapper extends MapReduceBase implements Mapper {
 
-  private static final String PLAN_KEY = "__MAP_PLAN__";
-  private MapOperator mo;
+  private AbstractMapOperator mo;
   private OutputCollector oc;
   private JobConf jc;
   private boolean abort = false;
   private Reporter rp;
-  public static final Log l4j = LogFactory.getLog(ExecMapper.class);
+  public static final Logger l4j = LoggerFactory.getLogger(ExecMapper.class);
   private static boolean done;
 
   private MapredLocalWork localWork = null;
-  private boolean isLogInfoEnabled = false;
-
   private ExecMapperContext execContext = null;
 
   @Override
   public void configure(JobConf job) {
     execContext = new ExecMapperContext(job);
     // Allocate the bean at the beginning -
-
-    isLogInfoEnabled = l4j.isInfoEnabled();
-
-    try {
+      try {
       l4j.info("conf classpath = "
           + Arrays.asList(((URLClassLoader) job.getClassLoader()).getURLs()));
       l4j.info("thread classpath = "
@@ -98,10 +94,11 @@ public class ExecMapper extends MapReduceBase implements Mapper {
       // create map and fetch operators
       MapWork mrwork = Utilities.getMapWork(job);
 
+      CompilationOpContext runtimeCtx = new CompilationOpContext();
       if (mrwork.getVectorMode()) {
-        mo = new VectorMapOperator();
+        mo = new VectorMapOperator(runtimeCtx);
       } else {
-        mo = new MapOperator();
+        mo = new MapOperator(runtimeCtx);
       }
       mo.setConf(mrwork);
       // initialize map operator
@@ -168,7 +165,7 @@ public class ExecMapper extends MapReduceBase implements Mapper {
         // Don't create a new object if we are already out of memory
         throw (OutOfMemoryError) e;
       } else {
-        l4j.fatal(StringUtils.stringifyException(e));
+        l4j.error(StringUtils.stringifyException(e));
         throw new RuntimeException(e);
       }
     }
@@ -211,7 +208,7 @@ public class ExecMapper extends MapReduceBase implements Mapper {
       }
     } finally {
       MapredContext.close();
-      Utilities.clearWorkMap();
+      Utilities.clearWorkMap(jc);
     }
   }
 
@@ -237,12 +234,10 @@ public class ExecMapper extends MapReduceBase implements Mapper {
    */
   public static class ReportStats implements Operator.OperatorFunc {
     private final Reporter rp;
-    private final Configuration conf;
     private final String groupName;
 
     public ReportStats(Reporter rp, Configuration conf) {
       this.rp = rp;
-      this.conf = conf;
       this.groupName = HiveConf.getVar(conf, HiveConf.ConfVars.HIVECOUNTERGROUP);
     }
 

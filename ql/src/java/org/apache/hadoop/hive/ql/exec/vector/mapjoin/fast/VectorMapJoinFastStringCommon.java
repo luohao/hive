@@ -22,21 +22,22 @@ import java.io.IOException;
 
 import org.apache.hadoop.hive.ql.metadata.HiveException;
 import org.apache.hadoop.hive.serde2.binarysortable.fast.BinarySortableDeserializeRead;
-import org.apache.hadoop.hive.serde2.fast.DeserializeRead.ReadStringResults;
 import org.apache.hadoop.hive.serde2.typeinfo.PrimitiveTypeInfo;
 import org.apache.hadoop.hive.serde2.typeinfo.TypeInfoFactory;
 import org.apache.hadoop.io.BytesWritable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /*
  * An single byte array value hash map optimized for vector map join.
  */
 public class VectorMapJoinFastStringCommon {
 
+  public static final Logger LOG = LoggerFactory.getLogger(VectorMapJoinFastStringCommon.class);
+
   private boolean isOuterJoin;
 
   private BinarySortableDeserializeRead keyBinarySortableDeserializeRead;
-
-  private ReadStringResults readStringResults;
 
   public void adaptPutRow(VectorMapJoinFastBytesHashTable hashTable,
           BytesWritable currentKey, BytesWritable currentValue) throws HiveException, IOException {
@@ -44,24 +45,30 @@ public class VectorMapJoinFastStringCommon {
     byte[] keyBytes = currentKey.getBytes();
     int keyLength = currentKey.getLength();
     keyBinarySortableDeserializeRead.set(keyBytes, 0, keyLength);
-    if (keyBinarySortableDeserializeRead.readCheckNull()) {
-      if (isOuterJoin) {
+    try {
+      if (!keyBinarySortableDeserializeRead.readNextField()) {
         return;
-      } else {
-        // For inner join, we expect all NULL values to have been filtered out before now.
-        throw new HiveException("Unexpected NULL in map join small table");
       }
+    } catch (Exception e) {
+      throw new HiveException(
+          "\nDeserializeRead details: " +
+              keyBinarySortableDeserializeRead.getDetailedReadPositionString() +
+          "\nException: " + e.toString());
     }
-    keyBinarySortableDeserializeRead.readString(readStringResults);
 
-    hashTable.add(readStringResults.bytes, readStringResults.start, readStringResults.length,
+    hashTable.add(
+        keyBinarySortableDeserializeRead.currentBytes,
+        keyBinarySortableDeserializeRead.currentBytesStart,
+        keyBinarySortableDeserializeRead.currentBytesLength,
         currentValue);
   }
 
   public VectorMapJoinFastStringCommon(boolean isOuterJoin) {
     this.isOuterJoin = isOuterJoin;
     PrimitiveTypeInfo[] primitiveTypeInfos = { TypeInfoFactory.stringTypeInfo };
-    keyBinarySortableDeserializeRead = new BinarySortableDeserializeRead(primitiveTypeInfos);
-    readStringResults = keyBinarySortableDeserializeRead.createReadStringResults();
+    keyBinarySortableDeserializeRead =
+        new BinarySortableDeserializeRead(
+            primitiveTypeInfos,
+            /* useExternalBuffer */ false);
   }
 }

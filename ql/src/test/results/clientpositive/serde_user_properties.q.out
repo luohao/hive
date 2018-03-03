@@ -1,28 +1,7 @@
-PREHOOK: query: -- HIVE-2906 Table properties in SQL
-
-explain extended select key from src
+PREHOOK: query: explain extended select key from src
 PREHOOK: type: QUERY
-POSTHOOK: query: -- HIVE-2906 Table properties in SQL
-
-explain extended select key from src
+POSTHOOK: query: explain extended select key from src
 POSTHOOK: type: QUERY
-ABSTRACT SYNTAX TREE:
-  
-TOK_QUERY
-   TOK_FROM
-      TOK_TABREF
-         TOK_TABNAME
-            src
-   TOK_INSERT
-      TOK_DESTINATION
-         TOK_DIR
-            TOK_TMP_FILE
-      TOK_SELECT
-         TOK_SELEXPR
-            TOK_TABLE_OR_COL
-               key
-
-
 STAGE DEPENDENCIES:
   Stage-0 is a root stage
 
@@ -45,26 +24,6 @@ PREHOOK: query: explain extended select a.key from src a
 PREHOOK: type: QUERY
 POSTHOOK: query: explain extended select a.key from src a
 POSTHOOK: type: QUERY
-ABSTRACT SYNTAX TREE:
-  
-TOK_QUERY
-   TOK_FROM
-      TOK_TABREF
-         TOK_TABNAME
-            src
-         a
-   TOK_INSERT
-      TOK_DESTINATION
-         TOK_DIR
-            TOK_TMP_FILE
-      TOK_SELECT
-         TOK_SELEXPR
-            .
-               TOK_TABLE_OR_COL
-                  a
-               key
-
-
 STAGE DEPENDENCIES:
   Stage-0 is a root stage
 
@@ -87,29 +46,6 @@ PREHOOK: query: explain extended select a.key from src tablesample(1 percent) a
 PREHOOK: type: QUERY
 POSTHOOK: query: explain extended select a.key from src tablesample(1 percent) a
 POSTHOOK: type: QUERY
-ABSTRACT SYNTAX TREE:
-  
-TOK_QUERY
-   TOK_FROM
-      TOK_TABREF
-         TOK_TABNAME
-            src
-         TOK_TABLESPLITSAMPLE
-            TOK_PERCENT
-            1
-         a
-   TOK_INSERT
-      TOK_DESTINATION
-         TOK_DIR
-            TOK_TMP_FILE
-      TOK_SELECT
-         TOK_SELEXPR
-            .
-               TOK_TABLE_OR_COL
-                  a
-               key
-
-
 STAGE DEPENDENCIES:
   Stage-1 is a root stage
   Stage-0 depends on stages: Stage-1
@@ -134,13 +70,14 @@ STAGE PLANS:
                 Statistics: Num rows: 500 Data size: 5312 Basic stats: COMPLETE Column stats: NONE
 #### A masked pattern was here ####
                 table:
-                    input format: org.apache.hadoop.mapred.TextInputFormat
-                    output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
+                    input format: org.apache.hadoop.mapred.SequenceFileInputFormat
+                    output format: org.apache.hadoop.hive.ql.io.HiveSequenceFileOutputFormat
                     properties:
                       columns _col0
                       columns.types string
                       escape.delim \
                       hive.serialization.extend.additional.nesting.levels true
+                      serialization.escape.crlf true
                       serialization.format 1
                       serialization.lib org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe
                     serde: org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe
@@ -160,8 +97,9 @@ STAGE PLANS:
             input format: org.apache.hadoop.mapred.TextInputFormat
             output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
             properties:
-              COLUMN_STATS_ACCURATE true
+              COLUMN_STATS_ACCURATE {"BASIC_STATS":"true","COLUMN_STATS":{"key":"true","value":"true"}}
               bucket_count -1
+              column.name.delimiter ,
               columns key,value
               columns.comments 'default','default'
               columns.types string:string
@@ -180,8 +118,9 @@ STAGE PLANS:
               input format: org.apache.hadoop.mapred.TextInputFormat
               output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
               properties:
-                COLUMN_STATS_ACCURATE true
+                COLUMN_STATS_ACCURATE {"BASIC_STATS":"true","COLUMN_STATS":{"key":"true","value":"true"}}
                 bucket_count -1
+                column.name.delimiter ,
                 columns key,value
                 columns.comments 'default','default'
                 columns.types string:string
@@ -211,28 +150,6 @@ PREHOOK: query: explain extended select key from src ('user.defined.key'='some.v
 PREHOOK: type: QUERY
 POSTHOOK: query: explain extended select key from src ('user.defined.key'='some.value')
 POSTHOOK: type: QUERY
-ABSTRACT SYNTAX TREE:
-  
-TOK_QUERY
-   TOK_FROM
-      TOK_TABREF
-         TOK_TABNAME
-            src
-         TOK_TABLEPROPERTIES
-            TOK_TABLEPROPLIST
-               TOK_TABLEPROPERTY
-                  'user.defined.key'
-                  'some.value'
-   TOK_INSERT
-      TOK_DESTINATION
-         TOK_DIR
-            TOK_TMP_FILE
-      TOK_SELECT
-         TOK_SELEXPR
-            TOK_TABLE_OR_COL
-               key
-
-
 STAGE DEPENDENCIES:
   Stage-0 is a root stage
 
@@ -255,31 +172,6 @@ PREHOOK: query: explain extended select key from src ('user.defined.key'='some.v
 PREHOOK: type: QUERY
 POSTHOOK: query: explain extended select key from src ('user.defined.key'='some.value') tablesample(1 percent)
 POSTHOOK: type: QUERY
-ABSTRACT SYNTAX TREE:
-  
-TOK_QUERY
-   TOK_FROM
-      TOK_TABREF
-         TOK_TABNAME
-            src
-         TOK_TABLEPROPERTIES
-            TOK_TABLEPROPLIST
-               TOK_TABLEPROPERTY
-                  'user.defined.key'
-                  'some.value'
-         TOK_TABLESPLITSAMPLE
-            TOK_PERCENT
-            1
-   TOK_INSERT
-      TOK_DESTINATION
-         TOK_DIR
-            TOK_TMP_FILE
-      TOK_SELECT
-         TOK_SELEXPR
-            TOK_TABLE_OR_COL
-               key
-
-
 STAGE DEPENDENCIES:
   Stage-1 is a root stage
   Stage-0 depends on stages: Stage-1
@@ -290,6 +182,8 @@ STAGE PLANS:
       Map Operator Tree:
           TableScan
             alias: src
+            properties:
+              user.defined.key some.value
             Statistics: Num rows: 500 Data size: 5312 Basic stats: COMPLETE Column stats: NONE
             GatherStats: false
             Select Operator
@@ -304,13 +198,14 @@ STAGE PLANS:
                 Statistics: Num rows: 500 Data size: 5312 Basic stats: COMPLETE Column stats: NONE
 #### A masked pattern was here ####
                 table:
-                    input format: org.apache.hadoop.mapred.TextInputFormat
-                    output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
+                    input format: org.apache.hadoop.mapred.SequenceFileInputFormat
+                    output format: org.apache.hadoop.hive.ql.io.HiveSequenceFileOutputFormat
                     properties:
                       columns _col0
                       columns.types string
                       escape.delim \
                       hive.serialization.extend.additional.nesting.levels true
+                      serialization.escape.crlf true
                       serialization.format 1
                       serialization.lib org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe
                     serde: org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe
@@ -330,8 +225,9 @@ STAGE PLANS:
             input format: org.apache.hadoop.mapred.TextInputFormat
             output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
             properties:
-              COLUMN_STATS_ACCURATE true
+              COLUMN_STATS_ACCURATE {"BASIC_STATS":"true","COLUMN_STATS":{"key":"true","value":"true"}}
               bucket_count -1
+              column.name.delimiter ,
               columns key,value
               columns.comments 'default','default'
               columns.types string:string
@@ -351,8 +247,9 @@ STAGE PLANS:
               input format: org.apache.hadoop.mapred.TextInputFormat
               output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
               properties:
-                COLUMN_STATS_ACCURATE true
+                COLUMN_STATS_ACCURATE {"BASIC_STATS":"true","COLUMN_STATS":{"key":"true","value":"true"}}
                 bucket_count -1
+                column.name.delimiter ,
                 columns key,value
                 columns.comments 'default','default'
                 columns.types string:string
@@ -383,31 +280,6 @@ PREHOOK: query: explain extended select a.key from src ('user.defined.key'='some
 PREHOOK: type: QUERY
 POSTHOOK: query: explain extended select a.key from src ('user.defined.key'='some.value') a
 POSTHOOK: type: QUERY
-ABSTRACT SYNTAX TREE:
-  
-TOK_QUERY
-   TOK_FROM
-      TOK_TABREF
-         TOK_TABNAME
-            src
-         TOK_TABLEPROPERTIES
-            TOK_TABLEPROPLIST
-               TOK_TABLEPROPERTY
-                  'user.defined.key'
-                  'some.value'
-         a
-   TOK_INSERT
-      TOK_DESTINATION
-         TOK_DIR
-            TOK_TMP_FILE
-      TOK_SELECT
-         TOK_SELEXPR
-            .
-               TOK_TABLE_OR_COL
-                  a
-               key
-
-
 STAGE DEPENDENCIES:
   Stage-0 is a root stage
 
@@ -430,34 +302,6 @@ PREHOOK: query: explain extended select a.key from src ('user.defined.key'='some
 PREHOOK: type: QUERY
 POSTHOOK: query: explain extended select a.key from src ('user.defined.key'='some.value') tablesample(1 percent) a
 POSTHOOK: type: QUERY
-ABSTRACT SYNTAX TREE:
-  
-TOK_QUERY
-   TOK_FROM
-      TOK_TABREF
-         TOK_TABNAME
-            src
-         TOK_TABLEPROPERTIES
-            TOK_TABLEPROPLIST
-               TOK_TABLEPROPERTY
-                  'user.defined.key'
-                  'some.value'
-         TOK_TABLESPLITSAMPLE
-            TOK_PERCENT
-            1
-         a
-   TOK_INSERT
-      TOK_DESTINATION
-         TOK_DIR
-            TOK_TMP_FILE
-      TOK_SELECT
-         TOK_SELEXPR
-            .
-               TOK_TABLE_OR_COL
-                  a
-               key
-
-
 STAGE DEPENDENCIES:
   Stage-1 is a root stage
   Stage-0 depends on stages: Stage-1
@@ -468,6 +312,8 @@ STAGE PLANS:
       Map Operator Tree:
           TableScan
             alias: a
+            properties:
+              user.defined.key some.value
             Statistics: Num rows: 500 Data size: 5312 Basic stats: COMPLETE Column stats: NONE
             GatherStats: false
             Select Operator
@@ -482,13 +328,14 @@ STAGE PLANS:
                 Statistics: Num rows: 500 Data size: 5312 Basic stats: COMPLETE Column stats: NONE
 #### A masked pattern was here ####
                 table:
-                    input format: org.apache.hadoop.mapred.TextInputFormat
-                    output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
+                    input format: org.apache.hadoop.mapred.SequenceFileInputFormat
+                    output format: org.apache.hadoop.hive.ql.io.HiveSequenceFileOutputFormat
                     properties:
                       columns _col0
                       columns.types string
                       escape.delim \
                       hive.serialization.extend.additional.nesting.levels true
+                      serialization.escape.crlf true
                       serialization.format 1
                       serialization.lib org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe
                     serde: org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe
@@ -508,8 +355,9 @@ STAGE PLANS:
             input format: org.apache.hadoop.mapred.TextInputFormat
             output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
             properties:
-              COLUMN_STATS_ACCURATE true
+              COLUMN_STATS_ACCURATE {"BASIC_STATS":"true","COLUMN_STATS":{"key":"true","value":"true"}}
               bucket_count -1
+              column.name.delimiter ,
               columns key,value
               columns.comments 'default','default'
               columns.types string:string
@@ -529,8 +377,9 @@ STAGE PLANS:
               input format: org.apache.hadoop.mapred.TextInputFormat
               output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
               properties:
-                COLUMN_STATS_ACCURATE true
+                COLUMN_STATS_ACCURATE {"BASIC_STATS":"true","COLUMN_STATS":{"key":"true","value":"true"}}
                 bucket_count -1
+                column.name.delimiter ,
                 columns key,value
                 columns.comments 'default','default'
                 columns.types string:string

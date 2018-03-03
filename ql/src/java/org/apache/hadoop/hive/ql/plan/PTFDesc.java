@@ -19,41 +19,35 @@
 package org.apache.hadoop.hive.ql.plan;
 
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.hive.ql.exec.PTFUtils;
 import org.apache.hadoop.hive.ql.parse.LeadLagInfo;
+import org.apache.hadoop.hive.ql.plan.Explain.Level;
 import org.apache.hadoop.hive.ql.plan.ptf.PTFInputDef;
 import org.apache.hadoop.hive.ql.plan.ptf.PartitionedTableFunctionDef;
 import org.apache.hadoop.hive.ql.plan.ptf.WindowTableFunctionDef;
 import org.apache.hadoop.hive.ql.udf.ptf.Noop;
-
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.List;
-import org.apache.hadoop.hive.ql.plan.Explain.Level;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 
 @Explain(displayName = "PTF Operator", explainLevels = { Level.USER, Level.DEFAULT, Level.EXTENDED })
 public class PTFDesc extends AbstractOperatorDesc {
   private static final long serialVersionUID = 1L;
   @SuppressWarnings("unused")
-  private static final Log LOG = LogFactory.getLog(PTFDesc.class.getName());
+  private static final Logger LOG = LoggerFactory.getLogger(PTFDesc.class.getName());
 
   PartitionedTableFunctionDef funcDef;
-  LeadLagInfo llInfo;
+  transient LeadLagInfo llInfo;
   /*
    * is this PTFDesc for a Map-Side PTF Operation?
    */
   boolean isMapSide = false;
 
   transient Configuration cfg;
-
-  static{
-    PTFUtils.makeTransient(PTFDesc.class, "llInfo");
-    PTFUtils.makeTransient(PTFDesc.class, "cfg");
-  }
 
   public PartitionedTableFunctionDef getFuncDef() {
     return funcDef;

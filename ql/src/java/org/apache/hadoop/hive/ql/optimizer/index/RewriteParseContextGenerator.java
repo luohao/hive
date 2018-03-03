@@ -20,10 +20,11 @@ package org.apache.hadoop.hive.ql.optimizer.index;
 
 import java.io.IOException;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.ql.Context;
+import org.apache.hadoop.hive.ql.QueryState;
 import org.apache.hadoop.hive.ql.exec.Operator;
 import org.apache.hadoop.hive.ql.parse.ASTNode;
 import org.apache.hadoop.hive.ql.parse.BaseSemanticAnalyzer;
@@ -48,7 +49,7 @@ import org.apache.hadoop.hive.ql.plan.OperatorDesc;
  */
 public final class RewriteParseContextGenerator {
 
-  private static final Log LOG = LogFactory.getLog(RewriteParseContextGenerator.class.getName());
+  private static final Logger LOG = LoggerFactory.getLogger(RewriteParseContextGenerator.class.getName());
 
   /**
    * Parse the input {@link String} command and generate an operator tree.
@@ -56,16 +57,14 @@ public final class RewriteParseContextGenerator {
    * @param command
    * @throws SemanticException
    */
-  public static Operator<? extends OperatorDesc> generateOperatorTree(HiveConf conf,
+  public static Operator<? extends OperatorDesc> generateOperatorTree(QueryState queryState,
       String command) throws SemanticException {
     Operator<? extends OperatorDesc> operatorTree;
     try {
-      Context ctx = new Context(conf);
-      ParseDriver pd = new ParseDriver();
-      ASTNode tree = pd.parse(command, ctx);
-      tree = ParseUtils.findRootNonNullToken(tree);
+      Context ctx = new Context(queryState.getConf());
+      ASTNode tree = ParseUtils.parse(command, ctx);
 
-      BaseSemanticAnalyzer sem = SemanticAnalyzerFactory.get(conf, tree);
+      BaseSemanticAnalyzer sem = SemanticAnalyzerFactory.get(queryState, tree);
       assert(sem instanceof SemanticAnalyzer);
       operatorTree = doSemanticAnalysis((SemanticAnalyzer) sem, tree, ctx);
       LOG.info("Sub-query Semantic Analysis Completed");
@@ -102,9 +101,9 @@ public final class RewriteParseContextGenerator {
       ASTNode ast, Context ctx) throws SemanticException {
     QB qb = new QB(null, null, false);
     ASTNode child = ast;
-    ParseContext subPCtx = ((SemanticAnalyzer) sem).getParseContext();
+    ParseContext subPCtx = sem.getParseContext();
     subPCtx.setContext(ctx);
-    ((SemanticAnalyzer) sem).initParseCtx(subPCtx);
+    sem.initParseCtx(subPCtx);
 
     LOG.info("Starting Sub-query Semantic Analysis");
     sem.doPhase1(child, qb, sem.initPhase1Ctx(), null);

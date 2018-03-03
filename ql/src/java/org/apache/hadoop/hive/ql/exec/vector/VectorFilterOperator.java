@@ -18,11 +18,9 @@
 
 package org.apache.hadoop.hive.ql.exec.vector;
 
-import java.util.Collection;
-import java.util.concurrent.Future;
-
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hive.conf.HiveConf;
+import org.apache.hadoop.hive.ql.CompilationOpContext;
 import org.apache.hadoop.hive.ql.exec.FilterOperator;
 import org.apache.hadoop.hive.ql.exec.vector.expressions.ConstantVectorExpression;
 import org.apache.hadoop.hive.ql.exec.vector.expressions.VectorExpression;
@@ -30,6 +28,9 @@ import org.apache.hadoop.hive.ql.metadata.HiveException;
 import org.apache.hadoop.hive.ql.plan.ExprNodeDesc;
 import org.apache.hadoop.hive.ql.plan.FilterDesc;
 import org.apache.hadoop.hive.ql.plan.OperatorDesc;
+import org.apache.hadoop.hive.ql.plan.VectorFilterDesc;
+
+import com.google.common.annotations.VisibleForTesting;
 
 /**
  * Filter operator implementation.
@@ -47,25 +48,32 @@ public class VectorFilterOperator extends FilterOperator {
   // and 0 if condition needs to be computed.
   transient private int filterMode = 0;
 
-  public VectorFilterOperator(VectorizationContext vContext, OperatorDesc conf)
-      throws HiveException {
-    this();
-    ExprNodeDesc oldExpression = ((FilterDesc) conf).getPredicate();
-    conditionEvaluator = vContext.getVectorExpression(oldExpression, VectorExpressionDescriptor.Mode.FILTER);
+  public VectorFilterOperator(CompilationOpContext ctx,
+      VectorizationContext vContext, OperatorDesc conf) throws HiveException {
+    this(ctx);
     this.conf = (FilterDesc) conf;
+    conditionEvaluator = ((VectorFilterDesc) this.conf.getVectorDesc()).getPredicateExpression();
   }
 
+  /** Kryo ctor. */
+  @VisibleForTesting
   public VectorFilterOperator() {
     super();
   }
 
+  public VectorFilterOperator(CompilationOpContext ctx) {
+    super(ctx);
+  }
+
 
   @Override
-  protected Collection<Future<?>> initializeOp(Configuration hconf) throws HiveException {
-    Collection<Future<?>> result = super.initializeOp(hconf);
+  protected void initializeOp(Configuration hconf) throws HiveException {
+    super.initializeOp(hconf);
     try {
       heartbeatInterval = HiveConf.getIntVar(hconf,
           HiveConf.ConfVars.HIVESENDHEARTBEAT);
+
+      conditionEvaluator.init(hconf);
     } catch (Throwable e) {
       throw new HiveException(e);
     }
@@ -79,8 +87,6 @@ public class VectorFilterOperator extends FilterOperator {
     }
 
     temporarySelected = new int [VectorizedRowBatch.DEFAULT_SIZE];
-
-    return result;
   }
 
   public void setFilterCondition(VectorExpression expr) {

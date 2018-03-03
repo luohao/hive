@@ -18,35 +18,39 @@
 
 package org.apache.hadoop.hive.ql.exec.vector.expressions;
 
-import org.apache.hadoop.hive.common.type.HiveDecimal;
+import java.sql.Timestamp;
+
 import org.apache.hadoop.hive.ql.exec.vector.DecimalColumnVector;
-import org.apache.hadoop.hive.ql.exec.vector.LongColumnVector;
+import org.apache.hadoop.hive.ql.exec.vector.TimestampColumnVector;
+import org.apache.hadoop.hive.ql.util.TimestampUtils;
+import org.apache.hadoop.hive.serde2.io.HiveDecimalWritable;
 
 /**
  * Type cast decimal to timestamp. The decimal value is interpreted
  * as NNNN.DDDDDDDDD where NNNN is a number of seconds and DDDDDDDDD
  * is a number of nano-seconds.
  */
-public class CastDecimalToTimestamp extends FuncDecimalToLong {
+public class CastDecimalToTimestamp extends FuncDecimalToTimestamp {
   private static final long serialVersionUID = 1L;
 
-  private static transient HiveDecimal tenE9 = HiveDecimal.create(1000000000);
+  private HiveDecimalWritable scratchHiveDecimalWritable1;
+  private HiveDecimalWritable scratchHiveDecimalWritable2;
 
   public CastDecimalToTimestamp(int inputColumn, int outputColumn) {
     super(inputColumn, outputColumn);
+    scratchHiveDecimalWritable1 = new HiveDecimalWritable();
+    scratchHiveDecimalWritable2 = new HiveDecimalWritable();
   }
 
   public CastDecimalToTimestamp() {
   }
 
   @Override
-  protected void func(LongColumnVector outV, DecimalColumnVector inV,  int i) {
-    HiveDecimal result = inV.vector[i].getHiveDecimal().multiply(tenE9);
-    if (result == null) {
-      outV.noNulls = false;
-      outV.isNull[i] = true;
-    } else {
-      outV.vector[i] = result.longValue();
-    }
+  protected void func(TimestampColumnVector outV, DecimalColumnVector inV,  int i) {
+    Timestamp timestamp =
+        TimestampUtils.decimalToTimestamp(
+            inV.vector[i],
+            scratchHiveDecimalWritable1, scratchHiveDecimalWritable2);
+    outV.set(i, timestamp);
   }
 }

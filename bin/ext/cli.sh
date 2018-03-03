@@ -16,13 +16,30 @@
 THISSERVICE=cli
 export SERVICE_LIST="${SERVICE_LIST}${THISSERVICE} "
 
+# Set old CLI as the default client
+# if USE_DEPRECATED_CLI is not set or is not equal to false use old CLI
+if [ -z "$USE_DEPRECATED_CLI" ] || [ "$USE_DEPRECATED_CLI" != "false" ]; then
+  USE_DEPRECATED_CLI="true"
+fi
+
+updateCli() {
+  if [ "$USE_DEPRECATED_CLI" == "true" ]; then
+    export HADOOP_CLIENT_OPTS=" -Dproc_hivecli $HADOOP_CLIENT_OPTS "
+    CLASS=org.apache.hadoop.hive.cli.CliDriver
+    JAR=hive-cli-*.jar
+  else
+    export HADOOP_CLIENT_OPTS=" -Dproc_beeline $HADOOP_CLIENT_OPTS -Dlog4j.configurationFile=beeline-log4j2.properties"
+    CLASS=org.apache.hive.beeline.cli.HiveCli
+    JAR=hive-beeline-*.jar
+  fi
+}
+
 cli () {
-  CLASS=org.apache.hadoop.hive.cli.CliDriver
-  execHiveCmd $CLASS "$@"
+  updateCli
+  execHiveCmd $CLASS $JAR "$@"
 }
 
 cli_help () {
-  CLASS=org.apache.hadoop.hive.cli.CliDriver
-  execHiveCmd $CLASS "--help"
-} 
-
+  updateCli
+  execHiveCmd $CLASS $JAR "--help"
+}

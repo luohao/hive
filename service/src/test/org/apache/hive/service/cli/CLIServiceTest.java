@@ -18,13 +18,13 @@
 
 package org.apache.hive.service.cli;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.junit.Assert.*;
 
+import java.io.ByteArrayInputStream;
+import java.io.Serializable;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
@@ -33,11 +33,21 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.hive.ql.ErrorMsg;
+import org.apache.hadoop.hive.ql.QueryDisplay;
+import org.apache.hadoop.hive.ql.exec.Task;
+import org.apache.hadoop.hive.ql.parse.ASTNode;
+import org.apache.hadoop.hive.ql.parse.HiveSemanticAnalyzerHook;
+import org.apache.hadoop.hive.ql.parse.HiveSemanticAnalyzerHookContext;
+import org.apache.hadoop.hive.ql.parse.SemanticException;
+import org.codehaus.jackson.map.ObjectMapper;
+import org.codehaus.jackson.type.TypeReference;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.hive.conf.HiveConf;
+import org.apache.hadoop.hive.ql.plan.api.StageType;
 import org.apache.hadoop.hive.ql.session.SessionState;
-import org.apache.hive.service.server.HiveServer2;
+import org.apache.hadoop.hive.serde2.thrift.Type;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -47,7 +57,7 @@ import org.junit.Test;
  *
  */
 public abstract class CLIServiceTest {
-  private static final Log LOG = LogFactory.getLog(CLIServiceTest.class);
+  private static final Logger LOG = LoggerFactory.getLogger(CLIServiceTest.class);
 
   protected static CLIServiceClient client;
 
@@ -162,9 +172,12 @@ public abstract class CLIServiceTest {
     // Blocking execute
     queryString = "SELECT ID+1 FROM TEST_EXEC";
     opHandle = client.executeStatement(sessionHandle, queryString, confOverlay);
+
+    OperationStatus opStatus = client.getOperationStatus(opHandle, false);
+    checkOperationTimes(opHandle, opStatus);
     // Expect query to be completed now
     assertEquals("Query should be finished",
-        OperationState.FINISHED, client.getOperationStatus(opHandle).getState());
+        OperationState.FINISHED, client.getOperationStatus(opHandle, false).getState());
     client.closeOperation(opHandle);
 
     // Cleanup
@@ -259,7 +272,11 @@ public abstract class CLIServiceTest {
     opHandle = client.executeStatementAsync(sessionHandle, queryString, confOverlay);
     System.out.println("Cancelling " + opHandle);
     client.cancelOperation(opHandle);
-    state = client.getOperationStatus(opHandle).getState();
+
+    OperationStatus operationStatus = client.getOperationStatus(opHandle, false);
+    checkOperationTimes(opHandle, operationStatus);
+
+    state = client.getOperationStatus(opHandle, false).getState();
     System.out.println(opHandle + " after cancelling, state= " + state);
     assertEquals("Query should be cancelled", OperationState.CANCELED, state);
 
@@ -299,22 +316,22 @@ public abstract class CLIServiceTest {
     ExecutorService executor = Executors.newFixedThreadPool(THREAD_COUNT);
     CountDownLatch cdlIn = new CountDownLatch(THREAD_COUNT), cdlOut = new CountDownLatch(1);
     @SuppressWarnings("unchecked")
-    Callable<Void>[] cs = (Callable<Void>[])new Callable[3];
+    Callable<Void>[] cs = new Callable[3];
     // Create callables with different queries.
     String query = "SELECT ID + %1$d FROM " + tableName;
     cs[0] = createQueryCallable(
-        query, confOverlay, longPollingTimeout, QUERY_COUNT, cdlIn, cdlOut);
+        query, confOverlay, longPollingTimeout, QUERY_COUNT, OperationState.FINISHED, true, cdlIn, cdlOut);
     query = "SELECT t1.ID, SUM(t2.ID) + %1$d FROM  " + tableName + " t1 CROSS JOIN "
         + tableName + " t2 GROUP BY t1.ID HAVING t1.ID > 1";
     cs[1] = createQueryCallable(
-        query, confOverlay, longPollingTimeout, QUERY_COUNT, cdlIn, cdlOut);
+        query, confOverlay, longPollingTimeout, QUERY_COUNT, OperationState.FINISHED, true, cdlIn, cdlOut);
     query = "SELECT b.a FROM (SELECT (t1.ID + %1$d) as a , t2.* FROM  " + tableName
         + " t1 INNER JOIN " + tableName + " t2 ON t1.ID = t2.ID WHERE t2.ID > 2) b";
     cs[2] = createQueryCallable(
-        query, confOverlay, longPollingTimeout, QUERY_COUNT, cdlIn, cdlOut);
+        query, confOverlay, longPollingTimeout, QUERY_COUNT, OperationState.FINISHED, true, cdlIn, cdlOut);
 
     @SuppressWarnings("unchecked")
-    FutureTask<Void>[] tasks = (FutureTask<Void>[])new FutureTask[THREAD_COUNT];
+    FutureTask<Void>[] tasks = new FutureTask[THREAD_COUNT];
     for (int i = 0; i < THREAD_COUNT; ++i) {
       tasks[i] = new FutureTask<Void>(cs[i % cs.length]);
       executor.execute(tasks[i]);
@@ -334,12 +351,118 @@ public abstract class CLIServiceTest {
     client.closeSession(sessionHandle);
   }
 
+  public static class CompileLockTestSleepHook implements HiveSemanticAnalyzerHook {
+    @Override
+    public ASTNode preAnalyze(HiveSemanticAnalyzerHookContext context,
+      ASTNode ast) throws SemanticException {
+      try {
+        Thread.sleep(20 * 1000);
+      } catch (Throwable t) {
+        // do nothing
+      }
+      return ast;
+    }
+
+    @Override
+    public void postAnalyze(HiveSemanticAnalyzerHookContext context,
+      List<Task<? extends Serializable>> rootTasks) throws SemanticException {
+    }
+  }
+
+  @Test
+  public void testGlobalCompileLockTimeout() throws Exception {
+    String tableName = "TEST_COMPILE_LOCK_TIMEOUT";
+    String columnDefinitions = "(ID STRING)";
+
+    // Open a session and set up the test data
+    SessionHandle sessionHandle = setupTestData(tableName, columnDefinitions,
+        new HashMap<String, String>());
+    assertNotNull(sessionHandle);
+
+    int THREAD_COUNT = 3;
+    @SuppressWarnings("unchecked")
+    FutureTask<Void>[] tasks = (FutureTask<Void>[])new FutureTask[THREAD_COUNT];
+    long longPollingTimeoutMs = 10 * 60 * 1000; // Larger than max compile duration used in test
+
+    // 1st query acquires the lock and takes 20 secs to compile
+    Map<String, String> confOverlay = getConfOverlay(0, longPollingTimeoutMs);
+    confOverlay.put(HiveConf.ConfVars.SEMANTIC_ANALYZER_HOOK.varname,
+        CompileLockTestSleepHook.class.getName());
+    String query = "SELECT 0 FROM " + tableName;
+    tasks[0] = new FutureTask<Void>(
+        createQueryCallable(query, confOverlay, longPollingTimeoutMs, 1,
+            OperationState.FINISHED, false, null, null));
+    new Thread(tasks[0]).start();
+    Thread.sleep(5 * 1000);
+
+    // 2nd query's session has compile lock timeout of 1 sec, so it should
+    // not be able to acquire the lock within that time period
+    confOverlay = getConfOverlay(1, longPollingTimeoutMs);
+    query = "SELECT 1 FROM " + tableName;
+    tasks[1] = new FutureTask<Void>(
+        createQueryCallable(query, confOverlay, longPollingTimeoutMs, 1,
+            OperationState.ERROR, false, null, null));
+    new Thread(tasks[1]).start();
+
+    // 3rd query's session has compile lock timeout of 100 secs, so it should
+    // be able to acquire the lock and finish successfully
+    confOverlay = getConfOverlay(100, longPollingTimeoutMs);
+    query = "SELECT 2 FROM " + tableName;
+    tasks[2] = new FutureTask<Void>(
+        createQueryCallable(query, confOverlay, longPollingTimeoutMs, 1,
+            OperationState.FINISHED, false, null, null));
+    new Thread(tasks[2]).start();
+
+    boolean foundExpectedException = false;
+    for (int i = 0; i < THREAD_COUNT; ++i) {
+      try {
+        tasks[i].get();
+      } catch (Throwable t) {
+        if (i == 1) {
+          assertTrue(t.getMessage().contains(
+              ErrorMsg.COMPILE_LOCK_TIMED_OUT.getMsg()));
+          foundExpectedException = true;
+        } else {
+          throw new RuntimeException(t);
+        }
+      }
+    }
+    assertTrue(foundExpectedException);
+
+    // Cleanup
+    client.executeStatement(sessionHandle, "DROP TABLE " + tableName,
+        getConfOverlay(0, longPollingTimeoutMs));
+    client.closeSession(sessionHandle);
+  }
+
+  private Map<String, String> getConfOverlay(long compileLockTimeoutSecs,
+    long longPollingTimeoutMs) {
+    Map<String, String> confOverlay = new HashMap<String, String>();
+    confOverlay.put(
+        HiveConf.ConfVars.HIVE_SERVER2_PARALLEL_COMPILATION.varname, "false");
+    confOverlay.put(
+        HiveConf.ConfVars.HIVE_SERVER2_LONG_POLLING_TIMEOUT.varname,
+        longPollingTimeoutMs + "ms");
+    if (compileLockTimeoutSecs > 0) {
+      confOverlay.put(
+          HiveConf.ConfVars.HIVE_SERVER2_COMPILE_LOCK_TIMEOUT.varname,
+          compileLockTimeoutSecs + "s");
+    }
+    return confOverlay;
+  }
+
   private Callable<Void> createQueryCallable(final String queryStringFormat,
       final Map<String, String> confOverlay, final long longPollingTimeout,
-      final int queryCount, final CountDownLatch cdlIn, final CountDownLatch cdlOut) {
+      final int queryCount, final OperationState expectedOperationState,
+      final boolean syncThreadStart, final CountDownLatch cdlIn,
+      final CountDownLatch cdlOut) {
     return new Callable<Void>() {
+      @Override
       public Void call() throws Exception {
-        syncThreadStart(cdlIn, cdlOut);
+        if (syncThreadStart) {
+          syncThreadStart(cdlIn, cdlOut);
+        }
+
         SessionHandle sessionHandle = openSession(confOverlay);
         OperationHandle[] hs  = new OperationHandle[queryCount];
         for (int i = 0; i < hs.length; ++i) {
@@ -348,7 +471,7 @@ public abstract class CLIServiceTest {
           hs[i] = client.executeStatementAsync(sessionHandle, queryString, confOverlay);
         }
         for (int i = hs.length - 1; i >= 0; --i) {
-          waitForAsyncQuery(hs[i], OperationState.FINISHED, longPollingTimeout);
+          waitForAsyncQuery(hs[i], expectedOperationState, longPollingTimeout);
         }
         return null;
       }
@@ -376,7 +499,7 @@ public abstract class CLIServiceTest {
     SessionState.get().setIsHiveServerQuery(true); // Pretend we are in HS2.
 
     String queryString = "SET " + HiveConf.ConfVars.HIVE_SUPPORT_CONCURRENCY.varname
-        + " = false";
+      + " = false";
     client.executeStatement(sessionHandle, queryString, confOverlay);
     return sessionHandle;
   }
@@ -404,16 +527,16 @@ public abstract class CLIServiceTest {
     return waitForAsyncQuery(h, expectedState, longPollingTimeout);
   }
 
-
   private OperationStatus waitForAsyncQuery(OperationHandle opHandle,
-      OperationState expectedState, long longPollingTimeout) throws HiveSQLException {
+      OperationState expectedState, long maxLongPollingTimeout) throws HiveSQLException {
     long testIterationTimeout = System.currentTimeMillis() + 100000;
     long longPollingStart;
     long longPollingEnd;
     long longPollingTimeDelta;
     OperationStatus opStatus = null;
     OperationState state = null;
-    int count = 0;
+    int count = 0;    
+    long start = System.currentTimeMillis();
     while (true) {
       // Break if iteration times out
       if (System.currentTimeMillis() > testIterationTimeout) {
@@ -422,7 +545,7 @@ public abstract class CLIServiceTest {
       }
       longPollingStart = System.currentTimeMillis();
       System.out.println("Long polling starts at: " + longPollingStart);
-      opStatus = client.getOperationStatus(opHandle);
+      opStatus = client.getOperationStatus(opHandle, false);
       state = opStatus.getState();
       longPollingEnd = System.currentTimeMillis();
       System.out.println("Long polling ends at: " + longPollingEnd);
@@ -438,11 +561,14 @@ public abstract class CLIServiceTest {
       } else {
         // Verify that getOperationStatus returned only after the long polling timeout
         longPollingTimeDelta = longPollingEnd - longPollingStart;
+        // Calculate the expected timeout based on the elapsed time between waiting start time and polling start time
+        long elapsed = longPollingStart - start;
+        long expectedTimeout = Math.min(maxLongPollingTimeout, (elapsed / TimeUnit.SECONDS.toMillis(10) + 1) * 500);
         // Scale down by a factor of 0.9 to account for approximate values
-        assertTrue(longPollingTimeDelta - 0.9*longPollingTimeout > 0);
+        assertTrue(longPollingTimeDelta - 0.9*expectedTimeout > 0);
       }
     }
-    assertEquals(expectedState, client.getOperationStatus(opHandle).getState());
+    assertEquals(expectedState, client.getOperationStatus(opHandle, false).getState());
     client.closeOperation(opHandle);
     return opStatus;
   }
@@ -480,7 +606,7 @@ public abstract class CLIServiceTest {
     assertNotNull(opHandle);
     // query should pass and create the table
     assertEquals("Query should be finished",
-        OperationState.FINISHED, client.getOperationStatus(opHandle).getState());
+        OperationState.FINISHED, client.getOperationStatus(opHandle, false).getState());
     client.closeOperation(opHandle);
 
     // select from  the new table should pass
@@ -489,7 +615,7 @@ public abstract class CLIServiceTest {
     assertNotNull(opHandle);
     // query should pass and create the table
     assertEquals("Query should be finished",
-        OperationState.FINISHED, client.getOperationStatus(opHandle).getState());
+        OperationState.FINISHED, client.getOperationStatus(opHandle, false).getState());
     client.closeOperation(opHandle);
 
     // the settings in conf overlay should not be part of session config
@@ -507,5 +633,99 @@ public abstract class CLIServiceTest {
     opHandle = client.executeStatement(sessionHandle, dropTable, null);
     client.closeOperation(opHandle);
     client.closeSession(sessionHandle);
+  }
+
+  @Test
+  public void testTaskStatus() throws Exception {
+    HashMap<String, String> confOverlay = new HashMap<String, String>();
+    String tableName = "TEST_EXEC_ASYNC";
+    String columnDefinitions = "(ID STRING)";
+
+    // Open a session and set up the test data
+    SessionHandle sessionHandle = setupTestData(tableName, columnDefinitions, confOverlay);
+    assertNotNull(sessionHandle);
+    // nonblocking execute
+    String select = "select a.id, b.id from (SELECT ID + ' ' `ID` FROM TEST_EXEC_ASYNC) a full outer join "
+      + "(SELECT ID + ' ' `ID` FROM TEST_EXEC_ASYNC) b on a.ID=b.ID";
+    OperationHandle ophandle =
+      client.executeStatementAsync(sessionHandle, select, confOverlay);
+
+    OperationStatus status = null;
+    int count = 0;
+    while (true) {
+      status = client.getOperationStatus(ophandle, false);
+      checkOperationTimes(ophandle, status);
+      OperationState state = status.getState();
+      System.out.println("Polling: " + ophandle + " count=" + (++count)
+        + " state=" + state);
+
+      String jsonTaskStatus = status.getTaskStatus();
+      assertNotNull(jsonTaskStatus);
+      ObjectMapper mapper = new ObjectMapper();
+      ByteArrayInputStream in = new ByteArrayInputStream(jsonTaskStatus.getBytes("UTF-8"));
+      List<QueryDisplay.TaskDisplay> taskStatuses =
+        mapper.readValue(in, new TypeReference<List<QueryDisplay.TaskDisplay>>(){});
+      System.out.println("task statuses: " + jsonTaskStatus); // TaskDisplay doesn't have a toString, using json
+      checkTaskStatuses(taskStatuses);
+      if (OperationState.CANCELED == state || state == OperationState.CLOSED
+        || state == OperationState.FINISHED
+        || state == OperationState.ERROR) {
+        for (QueryDisplay.TaskDisplay display: taskStatuses) {
+          assertNotNull(display.getReturnValue());
+        }
+        break;
+      }
+      Thread.sleep(1000);
+    }
+  }
+
+  private void checkTaskStatuses(List<QueryDisplay.TaskDisplay> taskDisplays) {
+    assertNotNull(taskDisplays);
+    for (QueryDisplay.TaskDisplay taskDisplay: taskDisplays) {
+      switch (taskDisplay.taskState) {
+        case INITIALIZED:
+        case QUEUED:
+          assertNull(taskDisplay.getExternalHandle());
+          assertNull(taskDisplay.getBeginTime());
+          assertNull(taskDisplay.getEndTime());
+          assertNull(taskDisplay.getElapsedTime());
+          assertNull(taskDisplay.getErrorMsg());
+          assertNull(taskDisplay.getReturnValue());
+          break;
+        case RUNNING:
+          assertNotNull(taskDisplay.getBeginTime());
+          assertNull(taskDisplay.getEndTime());
+          assertNotNull(taskDisplay.getElapsedTime());
+          assertNull(taskDisplay.getErrorMsg());
+          assertNull(taskDisplay.getReturnValue());
+          break;
+        case FINISHED:
+          if (taskDisplay.getTaskType() == StageType.MAPRED || taskDisplay.getTaskType() == StageType.MAPREDLOCAL) {
+            assertNotNull(taskDisplay.getExternalHandle());
+            assertNotNull(taskDisplay.getStatusMessage());
+          }
+          assertNotNull(taskDisplay.getBeginTime());
+          assertNotNull(taskDisplay.getEndTime());
+          assertNotNull(taskDisplay.getElapsedTime());
+          break;
+        case UNKNOWN:
+        default:
+          fail("unknown task status: " + taskDisplay);
+      }
+    }
+  }
+
+
+  private void checkOperationTimes(OperationHandle operationHandle, OperationStatus status) {
+    OperationState state = status.getState();
+    assertFalse(status.getOperationStarted() ==  0);
+    if (OperationState.CANCELED == state || state == OperationState.CLOSED
+      || state == OperationState.FINISHED || state == OperationState.ERROR) {
+      System.out.println("##OP " + operationHandle.getHandleIdentifier() + " STATE:" + status.getState()
+        +" START:" + status.getOperationStarted()
+        + " END:" + status.getOperationCompleted());
+      assertFalse(status.getOperationCompleted() ==  0);
+      assertTrue(status.getOperationCompleted() - status.getOperationStarted() >= 0);
+    }
   }
 }

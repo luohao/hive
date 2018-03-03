@@ -27,8 +27,8 @@ import java.util.Date;
 import org.apache.curator.framework.CuratorFramework;
 import org.apache.hadoop.conf.Configuration;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * This does periodic cleanup
@@ -48,7 +48,7 @@ public class ZooKeeperCleanup extends Thread {
   protected static long maxage = 1000L * 60L * 60L * 24L * 7L;
 
   // The logger
-  private static final Log LOG = LogFactory.getLog(ZooKeeperCleanup.class);
+  private static final Logger LOG = LoggerFactory.getLogger(ZooKeeperCleanup.class);
 
   // Handle to cancel loop
   private boolean stop = false;
@@ -85,8 +85,6 @@ public class ZooKeeperCleanup extends Thread {
 
   /**
    * Run the cleanup loop.
-   *
-   * @throws IOException
    */
   public void run() {
     CuratorFramework zk = null;
@@ -131,8 +129,6 @@ public class ZooKeeperCleanup extends Thread {
 
   /**
    * Get the list of jobs from JobState
-   *
-   * @throws IOException
    */
   public List<String> getChildList(CuratorFramework zk) {
     try {

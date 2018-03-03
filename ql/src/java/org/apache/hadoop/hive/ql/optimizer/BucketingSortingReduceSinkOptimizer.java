@@ -26,7 +26,6 @@ import java.util.Map;
 import java.util.Stack;
 
 import org.apache.hadoop.fs.FileStatus;
-import org.apache.hadoop.hive.common.ObjectPair;
 import org.apache.hadoop.hive.metastore.api.FieldSchema;
 import org.apache.hadoop.hive.metastore.api.Order;
 import org.apache.hadoop.hive.ql.exec.FileSinkOperator;
@@ -50,7 +49,6 @@ import org.apache.hadoop.hive.ql.metadata.Partition;
 import org.apache.hadoop.hive.ql.metadata.Table;
 import org.apache.hadoop.hive.ql.parse.ParseContext;
 import org.apache.hadoop.hive.ql.parse.PrunedPartitionList;
-import org.apache.hadoop.hive.ql.parse.SemanticAnalyzer;
 import org.apache.hadoop.hive.ql.parse.SemanticException;
 import org.apache.hadoop.hive.ql.plan.ExprNodeColumnDesc;
 import org.apache.hadoop.hive.ql.plan.ExprNodeDesc;
@@ -58,6 +56,8 @@ import org.apache.hadoop.hive.ql.plan.OperatorDesc;
 import org.apache.hadoop.hive.ql.plan.SMBJoinDesc;
 import org.apache.hadoop.hive.ql.plan.SelectDesc;
 import org.apache.hadoop.hive.shims.ShimLoader;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * This transformation does optimization for enforcing bucketing and sorting.
@@ -72,7 +72,7 @@ import org.apache.hadoop.hive.shims.ShimLoader;
  * where T1, T2 and T3 are bucketized/sorted on the same key 'key', we don't need a reducer
  * to enforce bucketing and sorting
  */
-public class BucketingSortingReduceSinkOptimizer implements Transform {
+public class BucketingSortingReduceSinkOptimizer extends Transform {
 
   public BucketingSortingReduceSinkOptimizer() {
   }
@@ -120,6 +120,7 @@ public class BucketingSortingReduceSinkOptimizer implements Transform {
    *
    */
   public class BucketSortReduceSinkProcessor implements NodeProcessor {
+    private final Logger LOG = LoggerFactory.getLogger(BucketSortReduceSinkProcessor.class);
     protected ParseContext pGraphContext;
 
     public BucketSortReduceSinkProcessor(ParseContext pGraphContext) {
@@ -145,23 +146,36 @@ public class BucketingSortingReduceSinkOptimizer implements Transform {
 
     // Get the sort positions and sort order for the table
     // The sort order contains whether the sorting is happening ascending or descending
-    private ObjectPair<List<Integer>, List<Integer>> getSortPositionsOrder(
+    private List<Integer> getSortPositions(
         List<Order> tabSortCols,
         List<FieldSchema> tabCols) {
       List<Integer> sortPositions = new ArrayList<Integer>();
-      List<Integer> sortOrders = new ArrayList<Integer>();
       for (Order sortCol : tabSortCols) {
         int pos = 0;
         for (FieldSchema tabCol : tabCols) {
           if (sortCol.getCol().equals(tabCol.getName())) {
             sortPositions.add(pos);
-            sortOrders.add(sortCol.getOrder());
             break;
           }
           pos++;
         }
       }
-      return new ObjectPair<List<Integer>, List<Integer>>(sortPositions, sortOrders);
+      return sortPositions;
+    }
+
+    private List<Integer> getSortOrder(
+        List<Order> tabSortCols,
+        List<FieldSchema> tabCols) {
+      List<Integer> sortOrders = new ArrayList<Integer>();
+      for (Order sortCol : tabSortCols) {
+        for (FieldSchema tabCol : tabCols) {
+          if (sortCol.getCol().equals(tabCol.getName())) {
+            sortOrders.add(sortCol.getOrder());
+            break;
+          }
+        }
+      }
+      return sortOrders;
     }
 
     // Return true if the partition is bucketed/sorted by the specified positions
@@ -180,11 +194,13 @@ public class BucketingSortingReduceSinkOptimizer implements Transform {
 
       List<Integer> partnBucketPositions =
           getBucketPositions(partition.getBucketCols(), partition.getTable().getCols());
-      ObjectPair<List<Integer>, List<Integer>> partnSortPositionsOrder =
-          getSortPositionsOrder(partition.getSortCols(), partition.getTable().getCols());
+      List<Integer> sortPositions =
+          getSortPositions(partition.getSortCols(), partition.getTable().getCols());
+      List<Integer> sortOrder =
+          getSortOrder(partition.getSortCols(), partition.getTable().getCols());
       return bucketPositionsDest.equals(partnBucketPositions) &&
-          sortPositionsDest.equals(partnSortPositionsOrder.getFirst()) &&
-          sortOrderDest.equals(partnSortPositionsOrder.getSecond());
+          sortPositionsDest.equals(sortPositions) &&
+          sortOrderDest.equals(sortOrder);
     }
 
     // Return true if the table is bucketed/sorted by the specified positions
@@ -203,11 +219,13 @@ public class BucketingSortingReduceSinkOptimizer implements Transform {
 
       List<Integer> tableBucketPositions =
           getBucketPositions(table.getBucketCols(), table.getCols());
-      ObjectPair<List<Integer>, List<Integer>> tableSortPositionsOrder =
-          getSortPositionsOrder(table.getSortCols(), table.getCols());
+      List<Integer> sortPositions =
+          getSortPositions(table.getSortCols(), table.getCols());
+      List<Integer> sortOrder =
+          getSortOrder(table.getSortCols(), table.getCols());
       return bucketPositionsDest.equals(tableBucketPositions) &&
-          sortPositionsDest.equals(tableSortPositionsOrder.getFirst()) &&
-          sortOrderDest.equals(tableSortPositionsOrder.getSecond());
+          sortPositionsDest.equals(sortPositions) &&
+          sortOrderDest.equals(sortOrder);
     }
 
     // Store the bucket path to bucket number mapping in the table scan operator.
@@ -364,6 +382,14 @@ public class BucketingSortingReduceSinkOptimizer implements Transform {
     public Object process(Node nd, Stack<Node> stack, NodeProcessorCtx procCtx,
         Object... nodeOutputs) throws SemanticException {
 
+      // We should not use this optimization if sorted dynamic partition optimizer is used,
+      // as RS will be required.
+      if (pGraphContext.isReduceSinkAddedBySortedDynPartition()) {
+        LOG.info("Reduce Sink is added by Sorted Dynamic Partition Optimizer. Bailing out of" +
+            " Bucketing Sorting Reduce Sink Optimizer");
+        return null;
+      }
+
       // If the reduce sink has not been introduced due to bucketing/sorting, ignore it
       FileSinkOperator fsOp = (FileSinkOperator) nd;
       ReduceSinkOperator rsOp = (ReduceSinkOperator) fsOp.getParentOperators().get(0).getParentOperators().get(0);
@@ -376,14 +402,14 @@ public class BucketingSortingReduceSinkOptimizer implements Transform {
       }
 
       // Don't do this optimization with updates or deletes
-      if (pGraphContext.getContext().getAcidOperation() == AcidUtils.Operation.UPDATE ||
-          pGraphContext.getContext().getAcidOperation() == AcidUtils.Operation.DELETE){
+      if (fsOp.getConf().getWriteType() == AcidUtils.Operation.UPDATE ||
+        fsOp.getConf().getWriteType() == AcidUtils.Operation.DELETE) {
         return null;
       }
 
       if(stack.get(0) instanceof TableScanOperator) {
         TableScanOperator tso = ((TableScanOperator)stack.get(0));
-        if(SemanticAnalyzer.isAcidTable(tso.getConf().getTableMetadata())) {
+        if(AcidUtils.isAcidTable(tso.getConf().getTableMetadata())) {
           /*ACID tables have complex directory layout and require merging of delta files
           * on read thus we should not try to read bucket files directly*/
           return null;
@@ -415,10 +441,10 @@ public class BucketingSortingReduceSinkOptimizer implements Transform {
       // also match for this to be converted to a map-only job.
       List<Integer> bucketPositions =
           getBucketPositions(destTable.getBucketCols(), destTable.getCols());
-      ObjectPair<List<Integer>, List<Integer>> sortOrderPositions =
-          getSortPositionsOrder(destTable.getSortCols(), destTable.getCols());
-      List<Integer> sortPositions = sortOrderPositions.getFirst();
-      List<Integer> sortOrder = sortOrderPositions.getSecond();
+      List<Integer> sortPositions =
+          getSortPositions(destTable.getSortCols(), destTable.getCols());
+      List<Integer> sortOrder =
+          getSortOrder(destTable.getSortCols(), destTable.getCols());
       boolean useBucketSortPositions = true;
 
       // Only selects and filters are allowed
@@ -588,6 +614,12 @@ public class BucketingSortingReduceSinkOptimizer implements Transform {
             }
             // Only columns can be selected for both sorted and bucketed positions
             for (int pos : bucketPositions) {
+              if (pos >= selectDesc.getColList().size()) {
+                // e.g., INSERT OVERWRITE TABLE temp1 SELECT  c0,  c0 FROM temp2;
+                // In such a case Select Op will only have one instance of c0 and RS would have two.
+                // So, locating bucketCol in such cases will generate error. So, bail out.
+                return null;
+              }
               ExprNodeDesc selectColList = selectDesc.getColList().get(pos);
               if (!(selectColList instanceof ExprNodeColumnDesc)) {
                 return null;
@@ -596,6 +628,9 @@ public class BucketingSortingReduceSinkOptimizer implements Transform {
             }
 
             for (int pos : sortPositions) {
+              if (pos >= selectDesc.getColList().size()) {
+                return null;
+              }
               ExprNodeDesc selectColList = selectDesc.getColList().get(pos);
               if (!(selectColList instanceof ExprNodeColumnDesc)) {
                 return null;

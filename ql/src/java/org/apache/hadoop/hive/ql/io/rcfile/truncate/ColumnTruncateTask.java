@@ -26,9 +26,11 @@ import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hive.common.JavaUtils;
 import org.apache.hadoop.hive.conf.HiveConf;
+import org.apache.hadoop.hive.ql.CompilationOpContext;
 import org.apache.hadoop.hive.ql.Context;
 import org.apache.hadoop.hive.ql.DriverContext;
 import org.apache.hadoop.hive.ql.QueryPlan;
+import org.apache.hadoop.hive.ql.QueryState;
 import org.apache.hadoop.hive.ql.exec.Task;
 import org.apache.hadoop.hive.ql.exec.Utilities;
 import org.apache.hadoop.hive.ql.exec.mr.HadoopJobExecHelper;
@@ -43,10 +45,10 @@ import org.apache.hadoop.hive.ql.session.SessionState;
 import org.apache.hadoop.io.NullWritable;
 import org.apache.hadoop.mapred.Counters;
 import org.apache.hadoop.mapred.FileInputFormat;
-import org.apache.hadoop.mapred.InputFormat;
 import org.apache.hadoop.mapred.JobClient;
 import org.apache.hadoop.mapred.JobConf;
 import org.apache.hadoop.mapred.RunningJob;
+import org.apache.hadoop.mapreduce.MRJobConfig;
 
 @SuppressWarnings( { "deprecation", "unchecked" })
 public class ColumnTruncateTask extends Task<ColumnTruncateWork> implements Serializable,
@@ -58,9 +60,9 @@ public class ColumnTruncateTask extends Task<ColumnTruncateWork> implements Seri
   protected HadoopJobExecHelper jobExecHelper;
 
   @Override
-  public void initialize(HiveConf conf, QueryPlan queryPlan,
-      DriverContext driverContext) {
-    super.initialize(conf, queryPlan, driverContext);
+  public void initialize(QueryState queryState, QueryPlan queryPlan,
+      DriverContext driverContext, CompilationOpContext opContext) {
+    super.initialize(queryState, queryPlan, driverContext, opContext);
     job = new JobConf(conf, ColumnTruncateTask.class);
     jobExecHelper = new HadoopJobExecHelper(job, this.console, this, this);
   }
@@ -121,7 +123,7 @@ public class ColumnTruncateTask extends Task<ColumnTruncateWork> implements Seri
     LOG.info("Using " + inpFormat);
 
     try {
-      job.setInputFormat((Class<? extends InputFormat>) JavaUtils.loadClass(inpFormat));
+      job.setInputFormat(JavaUtils.loadClass(inpFormat));
     } catch (ClassNotFoundException e) {
       throw new RuntimeException(e.getMessage(), e);
     }
@@ -143,8 +145,8 @@ public class ColumnTruncateTask extends Task<ColumnTruncateWork> implements Seri
 
     int returnVal = 0;
     RunningJob rj = null;
-    boolean noName = StringUtils.isEmpty(HiveConf.getVar(job,
-        HiveConf.ConfVars.HADOOPJOBNAME));
+
+    boolean noName = StringUtils.isEmpty(job.get(MRJobConfig.JOB_NAME));
 
     String jobName = null;
     if (noName && this.getQueryPlan() != null) {
@@ -155,7 +157,7 @@ public class ColumnTruncateTask extends Task<ColumnTruncateWork> implements Seri
 
     if (noName) {
       // This is for a special case to ensure unit tests pass
-      HiveConf.setVar(job, HiveConf.ConfVars.HADOOPJOBNAME,
+      job.set(MRJobConfig.JOB_NAME,
           jobName != null ? jobName : "JOB" + Utilities.randGen.nextInt());
     }
 
@@ -184,12 +186,13 @@ public class ColumnTruncateTask extends Task<ColumnTruncateWork> implements Seri
 
       // Finally SUBMIT the JOB!
       rj = jc.submitJob(job);
-
-      returnVal = jobExecHelper.progress(rj, jc, null);
+      this.jobID = rj.getJobID();
+      returnVal = jobExecHelper.progress(rj, jc, ctx);
       success = (returnVal == 0);
 
     } catch (Exception e) {
       e.printStackTrace();
+      setException(e);
       String mesg = " with exception '" + Utilities.getNameMessage(e) + "'";
       if (rj != null) {
         mesg = "Ended Job = " + rj.getJobID() + mesg;
@@ -213,12 +216,11 @@ public class ColumnTruncateTask extends Task<ColumnTruncateWork> implements Seri
           if (returnVal != 0) {
             rj.killJob();
           }
-          jobID = rj.getID().toString();
         }
         ColumnTruncateMapper.jobClose(outputPath, success, job, console,
           work.getDynPartCtx(), null);
       } catch (Exception e) {
-	LOG.warn(e);
+	LOG.warn("Failed while cleaning up ", e);
       } finally {
 	HadoopJobExecHelper.runningJobs.remove(rj);
       }

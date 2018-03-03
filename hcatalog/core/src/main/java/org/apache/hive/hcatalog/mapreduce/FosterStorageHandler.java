@@ -24,17 +24,23 @@ import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hive.common.FileUtils;
 import org.apache.hadoop.hive.common.JavaUtils;
 import org.apache.hadoop.hive.metastore.HiveMetaHook;
+import org.apache.hadoop.hive.ql.io.AcidUtils;
+import org.apache.hadoop.hive.ql.io.IOConstants;
 import org.apache.hadoop.hive.ql.metadata.HiveException;
 import org.apache.hadoop.hive.ql.metadata.DefaultStorageHandler;
 import org.apache.hadoop.hive.ql.plan.TableDesc;
 import org.apache.hadoop.hive.ql.security.authorization.DefaultHiveAuthorizationProvider;
 import org.apache.hadoop.hive.ql.security.authorization.HiveAuthorizationProvider;
-import org.apache.hadoop.hive.serde2.SerDe;
+import org.apache.hadoop.hive.serde2.AbstractSerDe;
 import org.apache.hadoop.mapred.InputFormat;
 import org.apache.hadoop.mapred.JobConf;
 import org.apache.hadoop.mapred.OutputFormat;
 import org.apache.hive.hcatalog.common.HCatConstants;
 import org.apache.hive.hcatalog.common.HCatUtil;
+import org.apache.hive.hcatalog.data.schema.HCatFieldSchema;
+import org.apache.hive.hcatalog.data.schema.HCatSchema;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -48,23 +54,25 @@ import java.util.Map;
  */
 public class FosterStorageHandler extends DefaultStorageHandler {
 
+  private static final Logger LOG = LoggerFactory.getLogger(FosterStorageHandler.class);
+
   public Configuration conf;
   /** The directory under which data is initially written for a non partitioned table */
   protected static final String TEMP_DIR_NAME = "_TEMP";
 
   private Class<? extends InputFormat> ifClass;
   private Class<? extends OutputFormat> ofClass;
-  private Class<? extends SerDe> serDeClass;
+  private Class<? extends AbstractSerDe> serDeClass;
 
   public FosterStorageHandler(String ifName, String ofName, String serdeName) throws ClassNotFoundException {
     this((Class<? extends InputFormat>) JavaUtils.loadClass(ifName),
       (Class<? extends OutputFormat>) JavaUtils.loadClass(ofName),
-      (Class<? extends SerDe>) JavaUtils.loadClass(serdeName));
+      (Class<? extends AbstractSerDe>) JavaUtils.loadClass(serdeName));
   }
 
   public FosterStorageHandler(Class<? extends InputFormat> ifClass,
                 Class<? extends OutputFormat> ofClass,
-                Class<? extends SerDe> serDeClass) {
+                Class<? extends AbstractSerDe> serDeClass) {
     this.ifClass = ifClass;
     this.ofClass = ofClass;
     this.serDeClass = serDeClass;
@@ -81,7 +89,7 @@ public class FosterStorageHandler extends DefaultStorageHandler {
   }
 
   @Override
-  public Class<? extends SerDe> getSerDeClass() {
+  public Class<? extends AbstractSerDe> getSerDeClass() {
     return serDeClass;  //To change body of implemented methods use File | Settings | File Templates.
   }
 
@@ -98,6 +106,41 @@ public class FosterStorageHandler extends DefaultStorageHandler {
   @Override
   public void configureInputJobProperties(TableDesc tableDesc,
                       Map<String, String> jobProperties) {
+
+    try {
+      Map<String, String> tableProperties = tableDesc.getJobProperties();
+
+      String jobInfoProperty = tableProperties.get(HCatConstants.HCAT_KEY_JOB_INFO);
+      if (jobInfoProperty != null) {
+
+        InputJobInfo inputJobInfo = (InputJobInfo) HCatUtil.deserialize(jobInfoProperty);
+
+        HCatTableInfo tableInfo = inputJobInfo.getTableInfo();
+        HCatSchema dataColumns = tableInfo.getDataColumns();
+        List<HCatFieldSchema> dataFields = dataColumns.getFields();
+        StringBuilder columnNamesSb = new StringBuilder();
+        StringBuilder typeNamesSb = new StringBuilder();
+        for (HCatFieldSchema dataField : dataFields) {
+        if (columnNamesSb.length() > 0) {
+            columnNamesSb.append(",");
+            typeNamesSb.append(":");
+          }
+          columnNamesSb.append(dataField.getName());
+          typeNamesSb.append(dataField.getTypeString());
+        }
+        jobProperties.put(IOConstants.SCHEMA_EVOLUTION_COLUMNS, columnNamesSb.toString());
+        jobProperties.put(IOConstants.SCHEMA_EVOLUTION_COLUMNS_TYPES, typeNamesSb.toString());
+
+        boolean isAcidTable = AcidUtils.isTablePropertyTransactional(tableProperties);
+        AcidUtils.setTransactionalTableScan(jobProperties, isAcidTable);
+        AcidUtils.AcidOperationalProperties acidOperationalProperties =
+                AcidUtils.getAcidOperationalProperties(tableProperties);
+        AcidUtils.setAcidOperationalProperties(jobProperties, acidOperationalProperties);
+      }
+    } catch (IOException e) {
+      throw new IllegalStateException("Failed to set output path", e);
+    }
+
   }
 
   @Override
@@ -117,7 +160,7 @@ public class FosterStorageHandler extends DefaultStorageHandler {
       // we create a temp dir for the associated write job
       if (dynHash != null) {
         // if external table and custom root specified, update the parent path
-        if (Boolean.valueOf((String)tableDesc.getProperties().get("EXTERNAL"))
+        if (Boolean.parseBoolean((String)tableDesc.getProperties().get("EXTERNAL"))
             && jobInfo.getCustomDynamicRoot() != null
             && jobInfo.getCustomDynamicRoot().length() > 0) {
           parentPath = new Path(parentPath, jobInfo.getCustomDynamicRoot()).toString();
@@ -130,14 +173,14 @@ public class FosterStorageHandler extends DefaultStorageHandler {
       String outputLocation;
 
       if ((dynHash != null)
-          && Boolean.valueOf((String)tableDesc.getProperties().get("EXTERNAL"))
+          && Boolean.parseBoolean((String)tableDesc.getProperties().get("EXTERNAL"))
           && jobInfo.getCustomDynamicPath() != null
           && jobInfo.getCustomDynamicPath().length() > 0) {
         // dynamic partitioning with custom path; resolve the custom path
         // using partition column values
         outputLocation = HCatFileUtil.resolveCustomPath(jobInfo, null, true);
       } else if ((dynHash == null)
-           && Boolean.valueOf((String)tableDesc.getProperties().get("EXTERNAL"))
+           && Boolean.parseBoolean((String)tableDesc.getProperties().get("EXTERNAL"))
            && jobInfo.getLocation() != null && jobInfo.getLocation().length() > 0) {
         // honor custom location for external table apart from what metadata specifies
         outputLocation = jobInfo.getLocation();

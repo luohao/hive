@@ -27,28 +27,48 @@ import java.sql.SQLException;
 import java.util.Iterator;
 import java.util.LinkedList;
 
+import com.google.common.base.Optional;
+
+
 /**
  * Rows implementation which buffers all rows in a linked list.
  */
 class BufferedRows extends Rows {
   private final LinkedList<Row> list;
   private final Iterator<Row> iterator;
+  private int maxColumnWidth;
 
   BufferedRows(BeeLine beeLine, ResultSet rs) throws SQLException {
+    this(beeLine, rs, Optional.<Integer> absent());
+  }
+
+  BufferedRows(BeeLine beeLine, ResultSet rs, Optional<Integer> limit) throws SQLException {
     super(beeLine, rs);
     list = new LinkedList<Row>();
     int count = rsMeta.getColumnCount();
     list.add(new Row(count));
-    while (rs.next()) {
-      list.add(new Row(count, rs));
+
+    int numRowsBuffered = 0;
+    if (limit.isPresent()) {
+      while (limit.get() > numRowsBuffered && rs.next()) {
+        this.list.add(new Row(count, rs));
+        numRowsBuffered++;
+      }
+    } else {
+      while (rs.next()) {
+        this.list.add(new Row(count, rs));
+      }
     }
     iterator = list.iterator();
+    maxColumnWidth = beeLine.getOpts().getMaxColumnWidth();
   }
 
+  @Override
   public boolean hasNext() {
     return iterator.hasNext();
   }
 
+  @Override
   public Object next() {
     return iterator.next();
   }
@@ -66,12 +86,12 @@ class BufferedRows extends Rows {
         max = new int[row.values.length];
       }
       for (int j = 0; j < max.length; j++) {
-        max[j] = Math.max(max[j], row.sizes[j] + 1);
+        // if the max column width is too large, reset it to max allowed Column width
+        max[j] = Math.min(Math.max(max[j], row.sizes[j] + 1), maxColumnWidth);
       }
     }
     for (Row row : list) {
       row.sizes = max;
     }
   }
-
 }

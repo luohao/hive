@@ -1,14 +1,10 @@
-PREHOOK: query: -- this test reads and writes a parquet file with a map of maps
-
-CREATE TABLE parquet_map_of_maps (
+PREHOOK: query: CREATE TABLE parquet_map_of_maps (
     map_of_maps MAP<STRING, MAP<STRING, INT>>
 ) STORED AS PARQUET
 PREHOOK: type: CREATETABLE
 PREHOOK: Output: database:default
 PREHOOK: Output: default@parquet_map_of_maps
-POSTHOOK: query: -- this test reads and writes a parquet file with a map of maps
-
-CREATE TABLE parquet_map_of_maps (
+POSTHOOK: query: CREATE TABLE parquet_map_of_maps (
     map_of_maps MAP<STRING, MAP<STRING, INT>>
 ) STORED AS PARQUET
 POSTHOOK: type: CREATETABLE
@@ -34,6 +30,7 @@ POSTHOOK: type: CREATETABLE_AS_SELECT
 POSTHOOK: Input: default@parquet_map_of_maps
 POSTHOOK: Output: database:default
 POSTHOOK: Output: default@parquet_map_of_maps_copy
+POSTHOOK: Lineage: parquet_map_of_maps_copy.map_of_maps SIMPLE [(parquet_map_of_maps)parquet_map_of_maps.FieldSchema(name:map_of_maps, type:map<string,map<string,int>>, comment:null), ]
 PREHOOK: query: SELECT * FROM parquet_map_of_maps_copy
 PREHOOK: type: QUERY
 PREHOOK: Input: default@parquet_map_of_maps_copy

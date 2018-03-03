@@ -28,14 +28,15 @@ import java.util.Set;
 import java.util.Stack;
 import java.util.LinkedHashSet;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.conf.HiveConf.ConfVars;
 import org.apache.hadoop.hive.metastore.MetaStoreUtils;
 import org.apache.hadoop.hive.metastore.api.Database;
 import org.apache.hadoop.hive.metastore.api.FieldSchema;
 import org.apache.hadoop.hive.ql.ErrorMsg;
+import org.apache.hadoop.hive.ql.QueryState;
 import org.apache.hadoop.hive.ql.exec.ColumnInfo;
 import org.apache.hadoop.hive.ql.exec.FunctionRegistry;
 import org.apache.hadoop.hive.ql.exec.FunctionUtils;
@@ -44,13 +45,10 @@ import org.apache.hadoop.hive.ql.hooks.WriteEntity;
 import org.apache.hadoop.hive.ql.lib.Dispatcher;
 import org.apache.hadoop.hive.ql.lib.Node;
 import org.apache.hadoop.hive.ql.lib.PreOrderWalker;
-import org.apache.hadoop.hive.ql.metadata.Hive;
-import org.apache.hadoop.hive.ql.metadata.HiveException;
 import org.apache.hadoop.hive.ql.plan.CreateMacroDesc;
 import org.apache.hadoop.hive.ql.plan.DropMacroDesc;
 import org.apache.hadoop.hive.ql.plan.ExprNodeDesc;
 import org.apache.hadoop.hive.ql.plan.FunctionWork;
-import org.apache.hadoop.hive.ql.session.SessionState;
 import org.apache.hadoop.hive.serde2.typeinfo.TypeInfo;
 import org.apache.hadoop.hive.serde2.typeinfo.TypeInfoUtils;
 
@@ -59,11 +57,11 @@ import org.apache.hadoop.hive.serde2.typeinfo.TypeInfoUtils;
  *
  */
 public class MacroSemanticAnalyzer extends BaseSemanticAnalyzer {
-  private static final Log LOG = LogFactory
-      .getLog(MacroSemanticAnalyzer.class);
+  private static final Logger LOG = LoggerFactory
+      .getLogger(MacroSemanticAnalyzer.class);
 
-  public MacroSemanticAnalyzer(HiveConf conf) throws SemanticException {
-    super(conf);
+  public MacroSemanticAnalyzer(QueryState queryState) throws SemanticException {
+    super(queryState);
   }
 
   @Override
@@ -132,8 +130,8 @@ public class MacroSemanticAnalyzer extends BaseSemanticAnalyzer {
       throw new SemanticException("At least one parameter name was used more than once "
           + macroColNames);
     }
-    SemanticAnalyzer sa = HiveConf.getBoolVar(conf, HiveConf.ConfVars.HIVE_CBO_ENABLED) ? new CalcitePlanner(
-        conf) : new SemanticAnalyzer(conf);
+    SemanticAnalyzer sa = HiveConf.getBoolVar(conf, HiveConf.ConfVars.HIVE_CBO_ENABLED) ?
+        new CalcitePlanner(queryState) : new SemanticAnalyzer(queryState);
     ;
     ExprNodeDesc body;
     if(isNoArgumentMacro) {

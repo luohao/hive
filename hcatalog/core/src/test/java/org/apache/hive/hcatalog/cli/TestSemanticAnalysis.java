@@ -64,10 +64,14 @@ public class TestSemanticAnalysis extends HCatBaseTest {
   public void setUpHCatDriver() throws IOException {
     if (hcatDriver == null) {
       HiveConf hcatConf = new HiveConf(hiveConf);
+      hcatConf
+      .setVar(HiveConf.ConfVars.HIVE_AUTHORIZATION_MANAGER,
+          "org.apache.hadoop.hive.ql.security.authorization.plugin.sqlstd.SQLStdHiveAuthorizerFactory");
       hcatConf.set(HiveConf.ConfVars.HIVEDEFAULTRCFILESERDE.varname,
           "org.apache.hadoop.hive.serde2.columnar.ColumnarSerDe");
       hcatConf.set(HiveConf.ConfVars.SEMANTIC_ANALYZER_HOOK.varname,
           HCatSemanticAnalyzer.class.getName());
+      hcatConf.setBoolVar(HiveConf.ConfVars.METASTORE_DISALLOW_INCOMPATIBLE_COL_TYPE_CHANGES, false);
       hcatDriver = new Driver(hcatConf);
       SessionState.start(new CliSessionState(hcatConf));
     }
@@ -236,6 +240,26 @@ public class TestSemanticAnalysis extends HCatBaseTest {
     CommandProcessorResponse response = hcatDriver.run("alter table junit_sem_analysis clustered by (a) into 7 buckets");
     assertEquals(0, response.getResponseCode());
     hcatDriver.run("drop table junit_sem_analysis");
+  }
+
+  @Test
+  public void testAlterTableRename() throws CommandNeedRetryException, TException {
+    hcatDriver.run("drop table oldname");
+    hcatDriver.run("drop table newname");
+    hcatDriver.run("create table oldname (a int)");
+    Table tbl = client.getTable(MetaStoreUtils.DEFAULT_DATABASE_NAME, "oldname");
+    assertTrue("The old table location is: " + tbl.getSd().getLocation(), tbl.getSd().getLocation().contains("oldname"));
+
+    hcatDriver.run("alter table oldname rename to newNAME");
+    tbl = client.getTable(MetaStoreUtils.DEFAULT_DATABASE_NAME, "newname");
+    // since the oldname table is not under its database (See HIVE-15059), the renamed oldname table will keep
+    // its location after HIVE-14909. I changed to check the existence of the newname table and its name instead
+    // of verifying its location
+    // assertTrue(tbl.getSd().getLocation().contains("newname"));
+    assertTrue(tbl != null);
+    assertTrue(tbl.getTableName().equalsIgnoreCase("newname"));
+
+    hcatDriver.run("drop table newname");
   }
 
   @Test

@@ -24,8 +24,10 @@ import java.util.Map;
 import java.util.Set;
 import java.util.Stack;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.hive.ql.exec.OperatorUtils;
+import org.apache.hadoop.hive.ql.exec.TableScanOperator;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.ql.exec.GroupByOperator;
 import org.apache.hadoop.hive.ql.exec.JoinOperator;
@@ -46,6 +48,8 @@ import org.apache.hadoop.hive.ql.plan.MapJoinDesc;
 import org.apache.hadoop.hive.ql.plan.OpTraits;
 import org.apache.hadoop.hive.ql.plan.OperatorDesc;
 import org.apache.hadoop.hive.ql.plan.Statistics;
+import org.apache.hadoop.hive.serde.serdeConstants;
+import org.apache.hadoop.hive.serde2.binarysortable.BinarySortableSerDe;
 
 /**
  * SparkMapJoinOptimizer cloned from ConvertJoinMapJoin is an optimization that replaces a common join
@@ -56,7 +60,7 @@ import org.apache.hadoop.hive.ql.plan.Statistics;
  */
 public class SparkMapJoinOptimizer implements NodeProcessor {
 
-  private static final Log LOG = LogFactory.getLog(SparkMapJoinOptimizer.class.getName());
+  private static final Logger LOG = LoggerFactory.getLogger(SparkMapJoinOptimizer.class.getName());
 
   @Override
   /**
@@ -89,6 +93,14 @@ public class SparkMapJoinOptimizer implements NodeProcessor {
 
     LOG.info("Convert to non-bucketed map join");
     MapJoinOperator mapJoinOp = convertJoinMapJoin(joinOp, context, mapJoinConversionPos);
+    // For native vectorized map join, we require the key SerDe to be BinarySortableSerDe
+    // Note: the MJ may not really get natively-vectorized later,
+    // but changing SerDe won't hurt correctness
+    if (conf.getBoolVar(HiveConf.ConfVars.HIVE_VECTORIZATION_MAPJOIN_NATIVE_ENABLED) &&
+        conf.getBoolVar(HiveConf.ConfVars.HIVE_VECTORIZATION_ENABLED)) {
+      mapJoinOp.getConf().getKeyTblDesc().getProperties().setProperty(
+          serdeConstants.SERIALIZATION_LIB, BinarySortableSerDe.class.getName());
+    }
     if (conf.getBoolVar(HiveConf.ConfVars.HIVEOPTBUCKETMAPJOIN)) {
       LOG.info("Check if it can be converted to bucketed map join");
       numBuckets = convertJoinBucketMapJoin(joinOp, mapJoinOp,
@@ -103,7 +115,7 @@ public class SparkMapJoinOptimizer implements NodeProcessor {
     }
 
     // we can set the traits for this join operator
-    OpTraits opTraits = new OpTraits(bucketColNames, numBuckets, null);
+    OpTraits opTraits = new OpTraits(bucketColNames, numBuckets, null, joinOp.getOpTraits().getNumReduceSinks());
     mapJoinOp.setOpTraits(opTraits);
     mapJoinOp.setStatistics(joinOp.getStatistics());
     setNumberOfBucketsOnChildren(mapJoinOp);
@@ -181,12 +193,40 @@ public class SparkMapJoinOptimizer implements NodeProcessor {
     int pos = 0;
 
     // bigTableFound means we've encountered a table that's bigger than the
-    // max. This table is either the the big table or we cannot convert.
+    // max. This table is either the big table or we cannot convert.
     boolean bigTableFound = false;
+    boolean useTsStats = context.getConf().getBoolean(HiveConf.ConfVars.SPARK_USE_FILE_SIZE_FOR_MAPJOIN.varname, false);
+    boolean hasUpstreamSinks = false;
+
+    // Check whether there's any upstream RS.
+    // If so, don't use TS stats because they could be inaccurate.
+    for (Operator<? extends OperatorDesc> parentOp : joinOp.getParentOperators()) {
+      Set<ReduceSinkOperator> parentSinks =
+          OperatorUtils.findOperatorsUpstream(parentOp, ReduceSinkOperator.class);
+      parentSinks.remove(parentOp);
+      if (!parentSinks.isEmpty()) {
+        hasUpstreamSinks = true;
+      }
+    }
+
+    // If we are using TS stats and this JOIN has at least one upstream RS, disable MapJoin conversion.
+    if (useTsStats && hasUpstreamSinks) {
+      return new long[]{-1, 0, 0};
+    }
 
     for (Operator<? extends OperatorDesc> parentOp : joinOp.getParentOperators()) {
+      Statistics currInputStat;
+      if (useTsStats) {
+        currInputStat = new Statistics();
+        // Find all root TSs and add up all data sizes
+        // Not adding other stats (e.g., # of rows, col stats) since only data size is used here
+        for (TableScanOperator root : OperatorUtils.findOperatorsUpstream(parentOp, TableScanOperator.class)) {
+          currInputStat.addToDataSize(root.getStatistics().getDataSize());
+        }
+      } else {
+         currInputStat = parentOp.getStatistics();
+      }
 
-      Statistics currInputStat = parentOp.getStatistics();
       if (currInputStat == null) {
         LOG.warn("Couldn't get statistics from: " + parentOp);
         return new long[]{-1, 0, 0};

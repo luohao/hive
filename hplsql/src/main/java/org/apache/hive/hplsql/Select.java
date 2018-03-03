@@ -25,6 +25,7 @@ import java.util.List;
 import java.util.Stack;
 
 import org.antlr.v4.runtime.ParserRuleContext;
+import org.antlr.v4.runtime.Token;
 import org.antlr.v4.runtime.misc.Interval;
 
 public class Select {
@@ -92,11 +93,15 @@ public class Select {
             String into_name = getIntoVariable(ctx, i - 1);
             Var var = exec.findVariable(into_name);
             if (var != null) {
-              var.setValue(rs, rm, i);
+              if (var.type != Var.Type.ROW) {
+                var.setValue(rs, rm, i);
+              }
+              else {
+                var.setValues(rs, rm);
+              }
               if (trace) {
-                trace(ctx, "COLUMN: " + rm.getColumnName(i) + ", " + rm.getColumnTypeName(i));
-                trace(ctx, "SET " + var.getName() + " = " + var.toString());
-              }            
+                trace(ctx, var, rs, rm, i);
+              }
             } 
             else {
               trace(ctx, "Variable not found: " + into_name);
@@ -142,10 +147,10 @@ public class Select {
     }
     catch (SQLException e) {
       exec.signal(query);
-      exec.closeQuery(query, exec.conf.defaultConnection);
+      exec.closeQuery(query, conn);
       return 1;
     }
-    exec.closeQuery(query, exec.conf.defaultConnection);
+    exec.closeQuery(query, conn);
     return 0; 
   }  
 
@@ -192,29 +197,44 @@ public class Select {
   
   public Integer subselect(HplsqlParser.Subselect_stmtContext ctx) {
     StringBuilder sql = new StringBuilder();
-    if (ctx.T_SELECT() != null) {
-      sql.append(ctx.T_SELECT().getText());
+    sql.append(ctx.start.getText());
+    exec.append(sql, evalPop(ctx.select_list()).toString(), ctx.start, ctx.select_list().getStart());
+    Token last = ctx.select_list().stop;
+    if (ctx.into_clause() != null) {
+      last = ctx.into_clause().stop;
     }
-    sql.append(" " + evalPop(ctx.select_list()));
     if (ctx.from_clause() != null) {
-      sql.append(" " + evalPop(ctx.from_clause()));
-    } else {
+      exec.append(sql, evalPop(ctx.from_clause()).toString(), last, ctx.from_clause().getStart());
+      last = ctx.from_clause().stop;
+    } 
+    else if (conf.dualTable != null) {
       sql.append(" FROM " + conf.dualTable);
     }
     if (ctx.where_clause() != null) {
-      sql.append(" " + evalPop(ctx.where_clause()));
+      exec.append(sql, evalPop(ctx.where_clause()).toString(), last, ctx.where_clause().getStart());
+      last = ctx.where_clause().stop;
     }
     if (ctx.group_by_clause() != null) {
-      sql.append(" " + getText(ctx.group_by_clause()));
+      exec.append(sql, getText(ctx.group_by_clause()), last, ctx.group_by_clause().getStart());
+      last = ctx.group_by_clause().stop;
     }
     if (ctx.having_clause() != null) {
-      sql.append(" " + getText(ctx.having_clause()));
+      exec.append(sql, getText(ctx.having_clause()), last, ctx.having_clause().getStart());
+      last = ctx.having_clause().stop;
+    }
+    if (ctx.qualify_clause() != null) {
+      exec.append(sql, getText(ctx.qualify_clause()), last, ctx.qualify_clause().getStart());
+      last = ctx.qualify_clause().stop;
     }
     if (ctx.order_by_clause() != null) {
-      sql.append(" " + getText(ctx.order_by_clause()));
+      exec.append(sql, getText(ctx.order_by_clause()), last, ctx.order_by_clause().getStart());
+      last = ctx.order_by_clause().stop;
     }
     if (ctx.select_options() != null) {
-      sql.append(" " + evalPop(ctx.select_options()));
+      Var opt = evalPop(ctx.select_options());
+      if (!opt.isNull()) {
+        sql.append(" " + opt.toString());
+      }
     }
     if (ctx.select_list().select_list_limit() != null) {
       sql.append(" LIMIT " + evalPop(ctx.select_list().select_list_limit().expr()));
@@ -277,6 +297,21 @@ public class Select {
     exec.stackPush(sql);
     return 0; 
   }
+  
+  /**
+   * Subselect in FROM
+   */
+  public Integer fromSubselect(HplsqlParser.From_subselect_clauseContext ctx) {     
+    StringBuilder sql = new StringBuilder();
+    sql.append("(");
+    sql.append(evalPop(ctx.select_stmt()).toString());
+    sql.append(")");
+    if (ctx.from_alias_clause() != null) {
+      sql.append(" ").append(exec.getText(ctx.from_alias_clause()));
+    }
+    exec.stackPush(sql);
+    return 0; 
+  }
  
   /**
    * JOIN clause in FROM
@@ -320,7 +355,9 @@ public class Select {
           sql.append(", ");
         }
       }
-      sql.append(" FROM " + conf.dualTable);
+      if (conf.dualTable != null) {
+        sql.append(" FROM " + conf.dualTable);
+      }
       if (i + 1 < rows) {
         sql.append("\nUNION ALL\n");
       }
@@ -337,10 +374,13 @@ public class Select {
    * WHERE clause
    */
   public Integer where(HplsqlParser.Where_clauseContext ctx) { 
+    boolean oldBuildSql = exec.buildSql; 
+    exec.buildSql = true;
     StringBuilder sql = new StringBuilder();
     sql.append(ctx.T_WHERE().getText());
     sql.append(" " + evalPop(ctx.bool_expr()));
     exec.stackPush(sql);
+    exec.buildSql = oldBuildSql;
     return 0;
   }
   
@@ -439,4 +479,8 @@ public class Select {
   void trace(ParserRuleContext ctx, String message) {
     exec.trace(ctx, message);
   }
+  
+  void trace(ParserRuleContext ctx, Var var, ResultSet rs, ResultSetMetaData rm, int idx) throws SQLException {
+    exec.trace(ctx, var, rs, rm, idx);
+  }    
 }

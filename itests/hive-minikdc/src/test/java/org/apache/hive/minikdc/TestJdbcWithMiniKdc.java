@@ -18,10 +18,6 @@
 
 package org.apache.hive.minikdc;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
-
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.ResultSet;
@@ -46,6 +42,8 @@ import org.junit.Before;
 import org.junit.BeforeClass;
 import org.junit.Test;
 
+import static org.junit.Assert.*;
+
 public class TestJdbcWithMiniKdc {
   // Need to hive.server2.session.hook to SessionHookTest in hive-site
   public static final String SESSION_USER_NAME = "proxy.test.session.user";
@@ -59,10 +57,10 @@ public class TestJdbcWithMiniKdc {
     }
   }
 
-  private static MiniHS2 miniHS2 = null;
-  private static MiniHiveKdc miniHiveKdc = null;
-  private static Map<String, String> confOverlay = new HashMap<String, String>();
-  private Connection hs2Conn;
+  protected static MiniHS2 miniHS2 = null;
+  protected static MiniHiveKdc miniHiveKdc = null;
+  protected static Map<String, String> confOverlay = new HashMap<String, String>();
+  protected Connection hs2Conn;
 
   @BeforeClass
   public static void beforeTest() throws Exception {
@@ -123,6 +121,30 @@ public class TestJdbcWithMiniKdc {
       // expected error
       assertEquals("08S01", e.getSQLState().trim());
     }
+  }
+
+  /***
+   * Test isValid() method
+   * @throws Exception
+   */
+  @Test
+  public void testIsValid() throws Exception {
+    miniHiveKdc.loginUser(MiniHiveKdc.HIVE_TEST_SUPER_USER);
+    hs2Conn = DriverManager.getConnection(miniHS2.getJdbcURL());
+    assertTrue(hs2Conn.isValid(1000));
+    hs2Conn.close();
+  }
+
+  /***
+   * Negative test isValid() method
+   * @throws Exception
+   */
+  @Test
+  public void testIsValidNeg() throws Exception {
+    miniHiveKdc.loginUser(MiniHiveKdc.HIVE_TEST_SUPER_USER);
+    hs2Conn = DriverManager.getConnection(miniHS2.getJdbcURL());
+    hs2Conn.close();
+    assertFalse(hs2Conn.isValid(1000));
   }
 
   /***
@@ -209,7 +231,8 @@ public class TestJdbcWithMiniKdc {
       // Expected error
       e.printStackTrace();
       assertTrue(e.getMessage().contains("Failed to validate proxy privilege"));
-      assertTrue(e.getCause().getCause().getMessage().contains("is not allowed to impersonate"));
+      assertTrue(e.getCause().getCause().getCause().getMessage()
+              .contains("is not allowed to impersonate"));
     }
   }
 
@@ -219,7 +242,7 @@ public class TestJdbcWithMiniKdc {
    * @param expectedValue
    * @throws Exception
    */
-  private void verifyProperty(String propertyName, String expectedValue) throws Exception {
+  protected void verifyProperty(String propertyName, String expectedValue) throws Exception {
     Statement stmt = hs2Conn .createStatement();
     ResultSet res = stmt.executeQuery("set " + propertyName);
     assertTrue(res.next());
@@ -229,7 +252,7 @@ public class TestJdbcWithMiniKdc {
   }
 
   // Store the given token in the UGI
-  private void storeToken(String tokenStr, UserGroupInformation ugi)
+  protected void storeToken(String tokenStr, UserGroupInformation ugi)
       throws Exception {
     Utils.setTokenStr(ugi,
         tokenStr, HiveAuthFactory.HS2_CLIENT_TOKEN);

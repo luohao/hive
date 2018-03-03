@@ -44,25 +44,13 @@ import org.apache.hive.spark.client.rpc.Rpc;
 import org.apache.hive.spark.client.rpc.RpcConfiguration;
 import org.apache.hive.spark.counter.SparkCounters;
 import org.apache.spark.SparkConf;
+import org.apache.spark.SparkJobInfo;
 import org.apache.spark.api.java.JavaFutureAction;
 import org.apache.spark.api.java.JavaSparkContext;
 import org.apache.spark.scheduler.SparkListener;
-import org.apache.spark.scheduler.SparkListenerApplicationEnd;
-import org.apache.spark.scheduler.SparkListenerApplicationStart;
-import org.apache.spark.scheduler.SparkListenerBlockManagerAdded;
-import org.apache.spark.scheduler.SparkListenerBlockManagerRemoved;
-import org.apache.spark.scheduler.SparkListenerEnvironmentUpdate;
-import org.apache.spark.scheduler.SparkListenerExecutorMetricsUpdate;
 import org.apache.spark.scheduler.SparkListenerJobEnd;
 import org.apache.spark.scheduler.SparkListenerJobStart;
-import org.apache.spark.scheduler.SparkListenerStageCompleted;
-import org.apache.spark.scheduler.SparkListenerStageSubmitted;
 import org.apache.spark.scheduler.SparkListenerTaskEnd;
-import org.apache.spark.scheduler.SparkListenerTaskGettingResult;
-import org.apache.spark.scheduler.SparkListenerTaskStart;
-import org.apache.spark.scheduler.SparkListenerUnpersistRDD;
-import org.apache.spark.scheduler.SparkListenerExecutorRemoved;
-import org.apache.spark.scheduler.SparkListenerExecutorAdded;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -336,18 +324,22 @@ public class RemoteDriver {
 
     private final BaseProtocol.JobRequest<T> req;
     private final List<JavaFutureAction<?>> jobs;
-    private final AtomicInteger completed;
+    private final AtomicInteger jobEndReceived;
+    private int completed;
     private SparkCounters sparkCounters;
     private Set<Integer> cachedRDDIds;
+    private Integer sparkJobId;
 
     private Future<?> future;
 
     JobWrapper(BaseProtocol.JobRequest<T> req) {
       this.req = req;
       this.jobs = Lists.newArrayList();
-      this.completed = new AtomicInteger();
+      completed = 0;
+      jobEndReceived = new AtomicInteger(0);
       this.sparkCounters = null;
       this.cachedRDDIds = null;
+      this.sparkJobId = null;
     }
 
     @Override
@@ -364,22 +356,32 @@ public class RemoteDriver {
         });
 
         T result = req.job.call(jc);
-        synchronized (completed) {
-          while (completed.get() < jobs.size()) {
-            LOG.debug("Client job {} finished, {} of {} Spark jobs finished.",
-                req.id, completed.get(), jobs.size());
-            completed.wait();
+        // In case the job is empty, there won't be JobStart/JobEnd events. The only way
+        // to know if the job has finished is to check the futures here ourselves.
+        for (JavaFutureAction<?> future : jobs) {
+          future.get();
+          completed++;
+          LOG.debug("Client job {}: {} of {} Spark jobs finished.",
+              req.id, completed, jobs.size());
+        }
+
+        // If the job is not empty (but runs fast), we have to wait until all the TaskEnd/JobEnd
+        // events are processed. Otherwise, task metrics may get lost. See HIVE-13525.
+        if (sparkJobId != null) {
+          SparkJobInfo sparkJobInfo = jc.sc().statusTracker().getJobInfo(sparkJobId);
+          if (sparkJobInfo != null && sparkJobInfo.stageIds() != null &&
+              sparkJobInfo.stageIds().length > 0) {
+            synchronized (jobEndReceived) {
+              while (jobEndReceived.get() < jobs.size()) {
+                jobEndReceived.wait();
+              }
+            }
           }
         }
 
         SparkCounters counters = null;
         if (sparkCounters != null) {
           counters = sparkCounters.snapshot();
-        }
-        // make sure job has really succeeded
-        // at this point, future.get shall not block us
-        for (JavaFutureAction<?> future : jobs) {
-          future.get();
         }
         protocol.jobFinished(req.id, result, null, counters);
       } catch (Throwable t) {
@@ -403,9 +405,9 @@ public class RemoteDriver {
     }
 
     void jobDone() {
-      synchronized (completed) {
-        completed.incrementAndGet();
-        completed.notifyAll();
+      synchronized (jobEndReceived) {
+        jobEndReceived.incrementAndGet();
+        jobEndReceived.notifyAll();
       }
     }
 
@@ -433,24 +435,15 @@ public class RemoteDriver {
       jc.getMonitoredJobs().get(req.id).add(job);
       this.sparkCounters = sparkCounters;
       this.cachedRDDIds = cachedRDDIds;
-      protocol.jobSubmitted(req.id, job.jobIds().get(0));
+      sparkJobId = job.jobIds().get(0);
+      protocol.jobSubmitted(req.id, sparkJobId);
     }
 
   }
 
-  private class ClientListener implements SparkListener {
+  private class ClientListener extends SparkListener {
 
     private final Map<Integer, Integer> stageToJobId = Maps.newHashMap();
-
-    @Override
-    public void onExecutorRemoved(SparkListenerExecutorRemoved removed) {
-
-    }
-
-    @Override
-    public void onExecutorAdded(SparkListenerExecutorAdded added) {
-
-    }
 
     @Override
     public void onJobStart(SparkListenerJobStart jobStart) {
@@ -499,39 +492,6 @@ public class RemoteDriver {
         }
       }
     }
-
-    @Override
-    public void onStageCompleted(SparkListenerStageCompleted stageCompleted) { }
-
-    @Override
-    public void onStageSubmitted(SparkListenerStageSubmitted stageSubmitted) { }
-
-    @Override
-    public void onTaskStart(SparkListenerTaskStart taskStart) { }
-
-    @Override
-    public void onTaskGettingResult(SparkListenerTaskGettingResult taskGettingResult) { }
-
-    @Override
-    public void onEnvironmentUpdate(SparkListenerEnvironmentUpdate environmentUpdate) { }
-
-    @Override
-    public void onBlockManagerAdded(SparkListenerBlockManagerAdded blockManagerAdded) { }
-
-    @Override
-    public void onBlockManagerRemoved(SparkListenerBlockManagerRemoved blockManagerRemoved) { }
-
-    @Override
-    public void onUnpersistRDD(SparkListenerUnpersistRDD unpersistRDD) { }
-
-    @Override
-    public void onApplicationStart(SparkListenerApplicationStart applicationStart) { }
-
-    @Override
-    public void onApplicationEnd(SparkListenerApplicationEnd applicationEnd) { }
-
-    @Override
-    public void onExecutorMetricsUpdate(SparkListenerExecutorMetricsUpdate executorMetricsUpdate) { }
 
     /**
      * Returns the client job ID for the given Spark job ID.

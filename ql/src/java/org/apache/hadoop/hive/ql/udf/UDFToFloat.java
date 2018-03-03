@@ -21,13 +21,14 @@ package org.apache.hadoop.hive.ql.udf;
 import org.apache.hadoop.hive.ql.exec.UDF;
 import org.apache.hadoop.hive.ql.exec.vector.VectorizedExpressions;
 import org.apache.hadoop.hive.ql.exec.vector.expressions.CastDecimalToDouble;
-import org.apache.hadoop.hive.ql.exec.vector.expressions.gen.CastLongToDouble;
-import org.apache.hadoop.hive.ql.exec.vector.expressions.gen.CastTimestampToDoubleViaLongToDouble;
+import org.apache.hadoop.hive.ql.exec.vector.expressions.gen.CastLongToFloatViaLongToDouble;
+import org.apache.hadoop.hive.ql.exec.vector.expressions.CastTimestampToDouble;
 import org.apache.hadoop.hive.serde2.io.ByteWritable;
 import org.apache.hadoop.hive.serde2.io.DoubleWritable;
 import org.apache.hadoop.hive.serde2.io.HiveDecimalWritable;
 import org.apache.hadoop.hive.serde2.io.ShortWritable;
 import org.apache.hadoop.hive.serde2.io.TimestampWritable;
+import org.apache.hadoop.hive.serde2.lazy.LazyUtils;
 import org.apache.hadoop.io.BooleanWritable;
 import org.apache.hadoop.io.FloatWritable;
 import org.apache.hadoop.io.IntWritable;
@@ -39,7 +40,7 @@ import org.apache.hadoop.io.Text;
  * UDFToFloat.
  *
  */
-@VectorizedExpressions({CastTimestampToDoubleViaLongToDouble.class, CastLongToDouble.class,
+@VectorizedExpressions({CastTimestampToDouble.class, CastLongToFloatViaLongToDouble.class,
     CastDecimalToDouble.class})
 public class UDFToFloat extends UDF {
   private final FloatWritable floatWritable = new FloatWritable();
@@ -165,8 +166,11 @@ public class UDFToFloat extends UDF {
     if (i == null) {
       return null;
     } else {
+      if (!LazyUtils.isNumberMaybe(i.getBytes(), 0, i.getLength())) {
+        return null;
+      }
       try {
-        floatWritable.set(Float.valueOf(i.toString()));
+        floatWritable.set(Float.parseFloat(i.toString()));
         return floatWritable;
       } catch (NumberFormatException e) {
         // MySQL returns 0 if the string is not a well-formed numeric value.
@@ -192,10 +196,10 @@ public class UDFToFloat extends UDF {
   }
 
   public FloatWritable evaluate(HiveDecimalWritable i) {
-    if (i == null) {
+    if (i == null || !i.isSet()) {
       return null;
     } else {
-      floatWritable.set(i.getHiveDecimal().floatValue());
+      floatWritable.set(i.floatValue());
       return floatWritable;
     }
   }

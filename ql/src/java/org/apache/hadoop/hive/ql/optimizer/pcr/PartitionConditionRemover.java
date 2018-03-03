@@ -23,8 +23,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.hive.ql.exec.Operator;
 import org.apache.hadoop.hive.ql.exec.FilterOperator;
 import org.apache.hadoop.hive.ql.exec.TableScanOperator;
@@ -44,11 +44,11 @@ import org.apache.hadoop.hive.ql.parse.SemanticException;
  * The transformation step that does partition condition remover.
  *
  */
-public class PartitionConditionRemover implements Transform {
+public class PartitionConditionRemover extends Transform {
 
   // The log
-  private static final Log LOG = LogFactory
-      .getLog("hive.ql.optimizer.pcr.PartitionConditionRemover");
+  private static final Logger LOG = LoggerFactory
+      .getLogger("hive.ql.optimizer.pcr.PartitionConditionRemover");
 
   /*
    * (non-Javadoc)

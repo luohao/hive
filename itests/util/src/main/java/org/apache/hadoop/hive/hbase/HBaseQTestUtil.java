@@ -39,13 +39,16 @@ public class HBaseQTestUtil extends QTestUtil {
   /** A handle to this harness's cluster */
   private final HConnection conn;
 
+  private HBaseTestSetup hbaseSetup = null;
+
   public HBaseQTestUtil(
     String outDir, String logDir, MiniClusterType miniMr, HBaseTestSetup setup,
     String initScript, String cleanupScript)
     throws Exception {
 
-    super(outDir, logDir, miniMr, null, initScript, cleanupScript);
-    setup.preTest(conf);
+    super(outDir, logDir, miniMr, null, "0.20", initScript, cleanupScript, false, false);
+    hbaseSetup = setup;
+    hbaseSetup.preTest(conf);
     this.conn = setup.getConnection();
     super.init();
   }
@@ -69,8 +72,14 @@ public class HBaseQTestUtil extends QTestUtil {
   }
 
   @Override
-  public void createSources() throws Exception {
-    super.createSources();
+  protected void initConfFromSetup() throws Exception {
+    super.initConfFromSetup();
+    hbaseSetup.preTest(conf);
+  }
+
+  @Override
+  public void createSources(String tname) throws Exception {
+    super.createSources(tname);
 
     conf.setBoolean("hive.test.init.phase", true);
 
@@ -96,8 +105,8 @@ public class HBaseQTestUtil extends QTestUtil {
   }
 
   @Override
-  public void cleanUp() throws Exception {
-    super.cleanUp();
+  public void cleanUp(String tname) throws Exception {
+    super.cleanUp(tname);
 
     // drop in case leftover from unsuccessful run
     db.dropTable(MetaStoreUtils.DEFAULT_DATABASE_NAME, HBASE_SRC_NAME);
@@ -111,5 +120,11 @@ public class HBaseQTestUtil extends QTestUtil {
     } finally {
       if (admin != null) admin.close();
     }
+  }
+
+  @Override
+  public void clearTestSideEffects() throws Exception {
+    super.clearTestSideEffects();
+    hbaseSetup.preTest(conf);
   }
 }

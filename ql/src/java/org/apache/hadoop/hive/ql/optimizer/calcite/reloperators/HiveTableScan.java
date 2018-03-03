@@ -24,19 +24,19 @@ import java.util.Map;
 import java.util.Set;
 
 import org.apache.calcite.plan.RelOptCluster;
-import org.apache.calcite.plan.RelOptCost;
 import org.apache.calcite.plan.RelOptPlanner;
 import org.apache.calcite.plan.RelTraitSet;
 import org.apache.calcite.rel.RelNode;
 import org.apache.calcite.rel.RelWriter;
-import org.apache.calcite.rel.core.RelFactories;
 import org.apache.calcite.rel.core.TableScan;
 import org.apache.calcite.rel.metadata.RelMetadataQuery;
 import org.apache.calcite.rel.type.RelDataType;
 import org.apache.calcite.rel.type.RelDataTypeField;
 import org.apache.calcite.rex.RexBuilder;
 import org.apache.calcite.rex.RexNode;
+import org.apache.calcite.tools.RelBuilder;
 import org.apache.calcite.util.ImmutableBitSet;
+import org.apache.calcite.util.Pair;
 import org.apache.hadoop.hive.ql.optimizer.calcite.HiveCalciteUtil;
 import org.apache.hadoop.hive.ql.optimizer.calcite.RelOptHiveTable;
 import org.apache.hadoop.hive.ql.optimizer.calcite.TraitsUtil;
@@ -44,6 +44,7 @@ import org.apache.hadoop.hive.ql.plan.ColStatistics;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableList.Builder;
+import com.google.common.collect.ImmutableSet;
 
 
 /**
@@ -61,6 +62,9 @@ public class HiveTableScan extends TableScan implements HiveRelNode {
   private final String tblAlias;
   private final String concatQbIDAlias;
   private final boolean useQBIdInDigest;
+  private final ImmutableSet<Integer> viurtualOrPartColIndxsInTS;
+  // insiderView will tell this TableScan is inside a view or not.
+  private final boolean insideView;
 
   public String getTableAlias() {
     return tblAlias;
@@ -83,19 +87,22 @@ public class HiveTableScan extends TableScan implements HiveRelNode {
    *          HiveDB table
    */
   public HiveTableScan(RelOptCluster cluster, RelTraitSet traitSet, RelOptHiveTable table,
-      String alias, String concatQbIDAlias, boolean useQBIdInDigest) {
-    this(cluster, traitSet, table, alias, concatQbIDAlias, table.getRowType(), useQBIdInDigest);
+      String alias, String concatQbIDAlias, boolean useQBIdInDigest, boolean insideView) {
+    this(cluster, traitSet, table, alias, concatQbIDAlias, table.getRowType(), useQBIdInDigest, insideView);
   }
 
   private HiveTableScan(RelOptCluster cluster, RelTraitSet traitSet, RelOptHiveTable table,
-      String alias, String concatQbIDAlias, RelDataType newRowtype, boolean useQBIdInDigest) {
+      String alias, String concatQbIDAlias, RelDataType newRowtype, boolean useQBIdInDigest, boolean insideView) {
     super(cluster, TraitsUtil.getDefaultTraitSet(cluster), table);
     assert getConvention() == HiveRelNode.CONVENTION;
     this.tblAlias = alias;
     this.concatQbIDAlias = concatQbIDAlias;
     this.hiveTableScanRowType = newRowtype;
-    this.neededColIndxsFrmReloptHT = buildNeededColIndxsFrmReloptHT(table.getRowType(), newRowtype);
+    Pair<ImmutableList<Integer>, ImmutableSet<Integer>> colIndxPair = buildColIndxsFrmReloptHT(table, newRowtype);
+    this.neededColIndxsFrmReloptHT = colIndxPair.getKey();
+    this.viurtualOrPartColIndxsInTS = colIndxPair.getValue();
     this.useQBIdInDigest = useQBIdInDigest;
+    this.insideView = insideView;
   }
 
   @Override
@@ -113,12 +120,7 @@ public class HiveTableScan extends TableScan implements HiveRelNode {
    */
   public HiveTableScan copy(RelDataType newRowtype) {
     return new HiveTableScan(getCluster(), getTraitSet(), ((RelOptHiveTable) table), this.tblAlias, this.concatQbIDAlias,
-            newRowtype, this.useQBIdInDigest);
-  }
-
-  @Override
-  public RelOptCost computeSelfCost(RelOptPlanner planner) {
-    return RelMetadataQuery.getNonCumulativeCost(this);
+            newRowtype, this.useQBIdInDigest, this.insideView);
   }
 
   @Override public RelWriter explainTerms(RelWriter pw) {
@@ -127,7 +129,7 @@ public class HiveTableScan extends TableScan implements HiveRelNode {
       return super.explainTerms(pw)
           .item("qbid:alias", concatQbIDAlias);
     } else {
-      return super.explainTerms(pw);
+      return super.explainTerms(pw).item("table:alias", tblAlias);
     }
   }
 
@@ -142,7 +144,7 @@ public class HiveTableScan extends TableScan implements HiveRelNode {
   }
 
   @Override
-  public double getRows() {
+  public double estimateRowCount(RelMetadataQuery mq) {
     return ((RelOptHiveTable) table).getRowCount();
   }
 
@@ -152,7 +154,7 @@ public class HiveTableScan extends TableScan implements HiveRelNode {
 
   @Override
   public RelNode project(ImmutableBitSet fieldsUsed, Set<RelDataTypeField> extraFields,
-      RelFactories.ProjectFactory projectFactory) {
+      RelBuilder relBuilder) {
 
     // 1. If the schema is the same then bail out
     final int fieldCount = getRowType().getFieldCount();
@@ -183,7 +185,13 @@ public class HiveTableScan extends TableScan implements HiveRelNode {
         fieldNames));
 
     // 5. Add Proj on top of TS
-    return projectFactory.createProject(newHT, exprList, new ArrayList<String>(fieldNames));
+    HiveProject hp = (HiveProject) relBuilder.push(newHT)
+        .project(exprList, new ArrayList<String>(fieldNames)).build();
+
+    // 6. Set synthetic flag, so that we would push filter below this one
+    hp.setSynthetic();
+
+    return hp;
   }
 
   public List<Integer> getNeededColIndxsFrmReloptHT() {
@@ -194,17 +202,48 @@ public class HiveTableScan extends TableScan implements HiveRelNode {
     return hiveTableScanRowType;
   }
 
-  private static ImmutableList<Integer> buildNeededColIndxsFrmReloptHT(RelDataType htRowtype,
-      RelDataType scanRowType) {
+  public Set<Integer> getPartOrVirtualCols() {
+    return viurtualOrPartColIndxsInTS;
+  }
+
+  private static Pair<ImmutableList<Integer>, ImmutableSet<Integer>> buildColIndxsFrmReloptHT(
+      RelOptHiveTable relOptHTable, RelDataType scanRowType) {
+    RelDataType relOptHtRowtype = relOptHTable.getRowType();
+    ImmutableList<Integer> neededColIndxsFrmReloptHT;
     Builder<Integer> neededColIndxsFrmReloptHTBldr = new ImmutableList.Builder<Integer>();
-    Map<String, Integer> colNameToPosInReloptHT = HiveCalciteUtil.getRowColNameIndxMap(htRowtype
-        .getFieldList());
+    ImmutableSet<Integer> viurtualOrPartColIndxsInTS;
+    ImmutableSet.Builder<Integer> viurtualOrPartColIndxsInTSBldr = new ImmutableSet.Builder<Integer>();
+
+    Map<String, Integer> colNameToPosInReloptHT = HiveCalciteUtil
+        .getRowColNameIndxMap(relOptHtRowtype.getFieldList());
     List<String> colNamesInScanRowType = scanRowType.getFieldNames();
 
+    int partOrVirtualColStartPosInrelOptHtRowtype = relOptHTable.getNonPartColumns().size();
+    int tmp;
     for (int i = 0; i < colNamesInScanRowType.size(); i++) {
-      neededColIndxsFrmReloptHTBldr.add(colNameToPosInReloptHT.get(colNamesInScanRowType.get(i)));
+      tmp = colNameToPosInReloptHT.get(colNamesInScanRowType.get(i));
+      neededColIndxsFrmReloptHTBldr.add(tmp);
+      if (tmp >= partOrVirtualColStartPosInrelOptHtRowtype) {
+        viurtualOrPartColIndxsInTSBldr.add(i);
+      }
     }
 
-    return neededColIndxsFrmReloptHTBldr.build();
+    neededColIndxsFrmReloptHT = neededColIndxsFrmReloptHTBldr.build();
+    viurtualOrPartColIndxsInTS = viurtualOrPartColIndxsInTSBldr.build();
+
+    return new Pair<ImmutableList<Integer>, ImmutableSet<Integer>>(neededColIndxsFrmReloptHT,
+        viurtualOrPartColIndxsInTS);
   }
+
+  public boolean isInsideView() {
+    return insideView;
+  }
+
+  // We need to include isInsideView inside digest to differentiate direct
+  // tables and tables inside view. Otherwise, Calcite will treat them as the same.
+  public String computeDigest() {
+    String digest = super.computeDigest();
+    return digest + "[" + this.isInsideView() + "]";
+  }
+
 }

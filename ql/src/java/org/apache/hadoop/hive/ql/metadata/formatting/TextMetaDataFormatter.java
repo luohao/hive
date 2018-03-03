@@ -27,20 +27,25 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hive.common.util.HiveStringUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.apache.commons.lang.StringEscapeUtils;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hive.common.FileUtils;
+import org.apache.hadoop.hive.common.StatsSetupConst;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.metastore.MetaStoreUtils;
 import org.apache.hadoop.hive.metastore.api.ColumnStatisticsObj;
 import org.apache.hadoop.hive.metastore.api.FieldSchema;
 import org.apache.hadoop.hive.ql.exec.Utilities;
+import org.apache.hadoop.hive.ql.metadata.ForeignKeyInfo;
 import org.apache.hadoop.hive.ql.metadata.Hive;
 import org.apache.hadoop.hive.ql.metadata.HiveException;
 import org.apache.hadoop.hive.ql.metadata.Partition;
+import org.apache.hadoop.hive.ql.metadata.PrimaryKeyInfo;
 import org.apache.hadoop.hive.ql.metadata.Table;
 import org.apache.hadoop.hive.ql.session.SessionState;
 
@@ -49,7 +54,7 @@ import org.apache.hadoop.hive.ql.session.SessionState;
  * simple lines of text.
  */
 class TextMetaDataFormatter implements MetaDataFormatter {
-  private static final Log LOG = LogFactory.getLog(TextMetaDataFormatter.class);
+  private static final Logger LOG = LoggerFactory.getLogger(TextMetaDataFormatter.class);
 
   private static final int separator = Utilities.tabCode;
   private static final int terminator = Utilities.newLineCode;
@@ -117,7 +122,7 @@ class TextMetaDataFormatter implements MetaDataFormatter {
   public void describeTable(DataOutputStream outStream,  String colPath,
       String tableName, Table tbl, Partition part, List<FieldSchema> cols,
       boolean isFormatted, boolean isExt, boolean isPretty,
-      boolean isOutputPadded, List<ColumnStatisticsObj> colStats) throws HiveException {
+      boolean isOutputPadded, List<ColumnStatisticsObj> colStats, PrimaryKeyInfo pkInfo, ForeignKeyInfo fkInfo) throws HiveException {
     try {
       String output;
       if (colPath.equals(tableName)) {
@@ -129,6 +134,14 @@ class TextMetaDataFormatter implements MetaDataFormatter {
                   MetaDataFormatUtils.getAllColumnsInformation(cols, partCols, isFormatted, isOutputPadded, showPartColsSeparately);
       } else {
         output = MetaDataFormatUtils.getAllColumnsInformation(cols, isFormatted, isOutputPadded, colStats);
+        String statsState;
+        if (tbl.getParameters() != null && (statsState = tbl.getParameters().get(StatsSetupConst.COLUMN_STATS_ACCURATE)) != null) {
+          StringBuilder str = new StringBuilder();
+          MetaDataFormatUtils.formatOutput(StatsSetupConst.COLUMN_STATS_ACCURATE,
+              isFormatted ? StringEscapeUtils.escapeJava(statsState) : HiveStringUtils.escapeJava(statsState),
+              str, isOutputPadded);
+          output = output.concat(str.toString());
+        }
       }
       outStream.write(output.getBytes("UTF-8"));
 
@@ -137,9 +150,15 @@ class TextMetaDataFormatter implements MetaDataFormatter {
           if (part != null) {
             output = MetaDataFormatUtils.getPartitionInformation(part);
           } else {
-            output = MetaDataFormatUtils.getTableInformation(tbl);
+            output = MetaDataFormatUtils.getTableInformation(tbl, isOutputPadded);
           }
           outStream.write(output.getBytes("UTF-8"));
+
+          if ((pkInfo != null && !pkInfo.getColNames().isEmpty()) ||
+              (fkInfo != null && !fkInfo.getForeignKeys().isEmpty())) {
+            output = MetaDataFormatUtils.getConstraintsInformation(pkInfo, fkInfo);
+            outStream.write(output.getBytes("UTF-8"));
+          }
         }
 
         // if extended desc table then show the complete details of the table
@@ -161,6 +180,19 @@ class TextMetaDataFormatter implements MetaDataFormatter {
             outStream.write(tbl.getTTable().toString().getBytes("UTF-8"));
             outStream.write(separator);
             outStream.write(terminator);
+          }
+          if ((pkInfo != null && !pkInfo.getColNames().isEmpty()) ||
+              (fkInfo != null && !fkInfo.getForeignKeys().isEmpty())) {
+              outStream.write(("Constraints").getBytes("UTF-8"));
+              outStream.write(separator);
+              if (pkInfo != null && !pkInfo.getColNames().isEmpty()) {
+                outStream.write(pkInfo.toString().getBytes("UTF-8"));
+                outStream.write(terminator);
+              }
+              if (fkInfo != null && !fkInfo.getForeignKeys().isEmpty()) {
+                outStream.write(fkInfo.toString().getBytes("UTF-8"));
+                outStream.write(terminator);
+              }
           }
         }
       }
@@ -439,7 +471,7 @@ class TextMetaDataFormatter implements MetaDataFormatter {
       outStream.write(database.getBytes("UTF-8"));
       outStream.write(separator);
       if (comment != null) {
-        outStream.write(comment.getBytes("UTF-8"));
+        outStream.write(HiveStringUtils.escapeJava(comment).getBytes("UTF-8"));
       }
       outStream.write(separator);
       if (location != null) {

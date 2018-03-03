@@ -18,16 +18,18 @@
 
 package org.apache.hadoop.hive.ql.exec;
 
-import java.util.Collection;
 import java.util.List;
 import java.util.Properties;
-import java.util.concurrent.Future;
 
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hive.ql.CompilationOpContext;
 import org.apache.hadoop.hive.ql.metadata.HiveException;
 import org.apache.hadoop.hive.ql.plan.ListSinkDesc;
 import org.apache.hadoop.hive.ql.plan.api.OperatorType;
 import org.apache.hadoop.hive.serde.serdeConstants;
+import org.apache.hadoop.hive.serde2.DefaultFetchFormatter;
+import org.apache.hadoop.hive.serde2.FetchFormatter;
+import org.apache.hadoop.hive.serde2.SerDeUtils;
 import org.apache.hadoop.util.ReflectionUtils;
 
 /**
@@ -35,27 +37,31 @@ import org.apache.hadoop.util.ReflectionUtils;
  * and finally arrives to this operator.
  */
 public class ListSinkOperator extends Operator<ListSinkDesc> {
-
-  public static final String OUTPUT_FORMATTER = "output.formatter";
-  public static final String OUTPUT_PROTOCOL = "output.protocol";
-
   private transient List res;
   private transient FetchFormatter fetcher;
   private transient int numRows;
 
+  /** Kryo ctor. */
+  protected ListSinkOperator() {
+    super();
+  }
+
+  public ListSinkOperator(CompilationOpContext ctx) {
+    super(ctx);
+  }
+
   @Override
-  protected Collection<Future<?>> initializeOp(Configuration hconf) throws HiveException {
-    Collection<Future<?>> result = super.initializeOp(hconf);
+  protected void initializeOp(Configuration hconf) throws HiveException {
+    super.initializeOp(hconf);
     try {
       fetcher = initializeFetcher(hconf);
     } catch (Exception e) {
       throw new HiveException(e);
     }
-    return result;
   }
 
   private FetchFormatter initializeFetcher(Configuration conf) throws Exception {
-    String formatterName = conf.get(OUTPUT_FORMATTER);
+    String formatterName = conf.get(SerDeUtils.LIST_SINK_OUTPUT_FORMATTER);
     FetchFormatter fetcher;
     if (formatterName != null && !formatterName.isEmpty()) {
       Class<? extends FetchFormatter> fetcherClass = Class.forName(formatterName, true,
@@ -64,12 +70,10 @@ public class ListSinkOperator extends Operator<ListSinkDesc> {
     } else {
       fetcher = new DefaultFetchFormatter();
     }
-
     // selectively used by fetch formatter
     Properties props = new Properties();
     props.put(serdeConstants.SERIALIZATION_FORMAT, "" + Utilities.tabCode);
     props.put(serdeConstants.SERIALIZATION_NULL_FORMAT, getConf().getSerializationNullFormat());
-
     fetcher.initialize(conf, props);
     return fetcher;
   }
@@ -89,6 +93,7 @@ public class ListSinkOperator extends Operator<ListSinkDesc> {
     try {
       res.add(fetcher.convert(row, inputObjInspectors[0]));
       numRows++;
+      runTimeNumRows++;
     } catch (Exception e) {
       throw new HiveException(e);
     }
@@ -97,5 +102,14 @@ public class ListSinkOperator extends Operator<ListSinkDesc> {
   @Override
   public OperatorType getType() {
     return OperatorType.FORWARD;
+  }
+
+  @Override
+  public String getName() {
+    return ListSinkOperator.getOperatorName();
+  }
+
+  public static String getOperatorName() {
+    return "LIST_SINK";
   }
 }

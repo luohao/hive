@@ -26,15 +26,16 @@ import java.util.List;
 
 import junit.framework.TestCase;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.metastore.MetaStoreUtils;
+import org.apache.hadoop.hive.ql.CompilationOpContext;
 import org.apache.hadoop.hive.ql.DriverContext;
-import org.apache.hadoop.hive.ql.WindowsPathUtil;
+import org.apache.hadoop.hive.ql.QueryState;
 import org.apache.hadoop.hive.ql.exec.mr.ExecDriver;
 import org.apache.hadoop.hive.ql.exec.mr.MapRedTask;
 import org.apache.hadoop.hive.ql.io.AcidUtils;
@@ -70,26 +71,27 @@ import org.apache.hadoop.util.Shell;
  */
 public class TestExecDriver extends TestCase {
 
+  static QueryState queryState;
   static HiveConf conf;
 
   private static final String tmpdir;
-  private static final Log LOG = LogFactory.getLog(TestExecDriver.class);
+  private static final Logger LOG = LoggerFactory.getLogger(TestExecDriver.class);
   private static final Path tmppath;
   private static Hive db;
   private static FileSystem fs;
+  private static CompilationOpContext ctx = null;
 
   static {
     try {
-      conf = new HiveConf(ExecDriver.class);
+      queryState = new QueryState(new HiveConf(ExecDriver.class));
+      conf = queryState.getConf();
       conf.setBoolVar(HiveConf.ConfVars.SUBMITVIACHILD, true);
       conf.setBoolVar(HiveConf.ConfVars.SUBMITLOCALTASKVIACHILD, true);
+      conf.setVar(HiveConf.ConfVars.HIVE_AUTHORIZATION_MANAGER,
+          "org.apache.hadoop.hive.ql.security.authorization.plugin.sqlstd.SQLStdHiveAuthorizerFactory");
 
       SessionState.start(conf);
 
-      //convert possible incompatible Windows path in config
-      if (Shell.WINDOWS) {
-        WindowsPathUtil.convertPathsFromWindowsToHdfs(conf);
-      }
       tmpdir = System.getProperty("test.tmp.dir");
       tmppath = new Path(tmpdir);
 
@@ -139,7 +141,7 @@ public class TestExecDriver extends TestCase {
         db.dropTable(MetaStoreUtils.DEFAULT_DATABASE_NAME, src, true, true);
         db.createTable(src, cols, null, TextInputFormat.class,
             HiveIgnoreKeyTextOutputFormat.class);
-        db.loadTable(hadoopDataFile[i], src, false, false, true, false, false);
+        db.loadTable(hadoopDataFile[i], src, false, true, false, false, false);
         i++;
       }
 
@@ -153,10 +155,11 @@ public class TestExecDriver extends TestCase {
   @Override
   protected void setUp() {
     mr = PlanUtils.getMapRedWork();
+    ctx = new CompilationOpContext();
   }
 
   public static void addMapWork(MapredWork mr, Table tbl, String alias, Operator<?> work) {
-    mr.getMapWork().addMapWork(tbl.getDataLocation().toString(), alias, work, new PartitionDesc(
+    mr.getMapWork().addMapWork(tbl.getDataLocation(), alias, work, new PartitionDesc(
         Utilities.getTableDesc(tbl), null));
   }
 
@@ -173,9 +176,8 @@ public class TestExecDriver extends TestCase {
     }
     FSDataInputStream fi_test = fs.open((fs.listStatus(di_test))[0].getPath());
 
-    boolean ignoreWhitespace = Shell.WINDOWS;
     FileInputStream fi_gold = new FileInputStream(new File(testFileDir,datafile));
-    if (!Utilities.contentsEqual(fi_gold, fi_test, ignoreWhitespace)) {
+    if (!Utilities.contentsEqual(fi_gold, fi_test, false)) {
       LOG.error(di_test.toString() + " does not match " + datafile);
       assertEquals(false, true);
     }
@@ -210,10 +212,9 @@ public class TestExecDriver extends TestCase {
   @SuppressWarnings("unchecked")
   private void populateMapPlan1(Table src) throws Exception {
 
-    Operator<FileSinkDesc> op2 = OperatorFactory.get(new FileSinkDesc(new Path(tmpdir + File.separator
+    Operator<FileSinkDesc> op2 = OperatorFactory.get(ctx, new FileSinkDesc(new Path(tmpdir + File.separator
         + "mapplan1.out"), Utilities.defaultTd, true));
-    Operator<FilterDesc> op1 = OperatorFactory.get(getTestFilterDesc("key"),
-        op2);
+    Operator<FilterDesc> op1 = OperatorFactory.get(getTestFilterDesc("key"), op2);
 
     addMapWork(mr, src, "a", op1);
   }
@@ -221,7 +222,7 @@ public class TestExecDriver extends TestCase {
   @SuppressWarnings("unchecked")
   private void populateMapPlan2(Table src) throws Exception {
 
-    Operator<FileSinkDesc> op3 = OperatorFactory.get(new FileSinkDesc(new Path(tmpdir + File.separator
+    Operator<FileSinkDesc> op3 = OperatorFactory.get(ctx, new FileSinkDesc(new Path(tmpdir + File.separator
         + "mapplan2.out"), Utilities.defaultTd, false));
 
     Operator<ScriptDesc> op2 = OperatorFactory.get(new ScriptDesc("cat",
@@ -244,7 +245,7 @@ public class TestExecDriver extends TestCase {
       outputColumns.add("_col" + i);
     }
     // map-side work
-    Operator<ReduceSinkDesc> op1 = OperatorFactory.get(PlanUtils
+    Operator<ReduceSinkDesc> op1 = OperatorFactory.get(ctx, PlanUtils
         .getReduceSinkDesc(Utilities.makeList(getStringColumn("key")),
         Utilities.makeList(getStringColumn("value")), outputColumns, true,
         -1, 1, -1, AcidUtils.Operation.NOT_ACID));
@@ -257,7 +258,7 @@ public class TestExecDriver extends TestCase {
     mr.setReduceWork(rWork);
 
     // reduce side work
-    Operator<FileSinkDesc> op3 = OperatorFactory.get(new FileSinkDesc(new Path(tmpdir + File.separator
+    Operator<FileSinkDesc> op3 = OperatorFactory.get(ctx, new FileSinkDesc(new Path(tmpdir + File.separator
         + "mapredplan1.out"), Utilities.defaultTd, false));
 
     List<ExprNodeDesc> cols = new ArrayList<ExprNodeDesc>();
@@ -276,7 +277,7 @@ public class TestExecDriver extends TestCase {
       outputColumns.add("_col" + i);
     }
     // map-side work
-    Operator<ReduceSinkDesc> op1 = OperatorFactory.get(PlanUtils
+    Operator<ReduceSinkDesc> op1 = OperatorFactory.get(ctx, PlanUtils
         .getReduceSinkDesc(Utilities.makeList(getStringColumn("key")),
         Utilities
         .makeList(getStringColumn("key"), getStringColumn("value")),
@@ -290,7 +291,7 @@ public class TestExecDriver extends TestCase {
     mr.setReduceWork(rWork);
 
     // reduce side work
-    Operator<FileSinkDesc> op4 = OperatorFactory.get(new FileSinkDesc(new Path(tmpdir + File.separator
+    Operator<FileSinkDesc> op4 = OperatorFactory.get(ctx, new FileSinkDesc(new Path(tmpdir + File.separator
         + "mapredplan2.out"), Utilities.defaultTd, false));
 
     Operator<FilterDesc> op3 = OperatorFactory.get(getTestFilterDesc("0"), op4);
@@ -313,14 +314,14 @@ public class TestExecDriver extends TestCase {
       outputColumns.add("_col" + i);
     }
     // map-side work
-    Operator<ReduceSinkDesc> op1 = OperatorFactory.get(PlanUtils
+    Operator<ReduceSinkDesc> op1 = OperatorFactory.get(ctx, PlanUtils
         .getReduceSinkDesc(Utilities.makeList(getStringColumn("key")),
         Utilities.makeList(getStringColumn("value")), outputColumns, true,
         Byte.valueOf((byte) 0), 1, -1, AcidUtils.Operation.NOT_ACID));
 
     addMapWork(mr, src, "a", op1);
 
-    Operator<ReduceSinkDesc> op2 = OperatorFactory.get(PlanUtils
+    Operator<ReduceSinkDesc> op2 = OperatorFactory.get(ctx, PlanUtils
         .getReduceSinkDesc(Utilities.makeList(getStringColumn("key")),
         Utilities.makeList(getStringColumn("key")), outputColumns, true,
         Byte.valueOf((byte) 1), Integer.MAX_VALUE, -1, AcidUtils.Operation.NOT_ACID));
@@ -336,7 +337,7 @@ public class TestExecDriver extends TestCase {
     rWork.getTagToValueDesc().add(op2.getConf().getValueSerializeInfo());
 
     // reduce side work
-    Operator<FileSinkDesc> op4 = OperatorFactory.get(new FileSinkDesc(new Path(tmpdir + File.separator
+    Operator<FileSinkDesc> op4 = OperatorFactory.get(ctx, new FileSinkDesc(new Path(tmpdir + File.separator
         + "mapredplan3.out"), Utilities.defaultTd, false));
 
     Operator<SelectDesc> op5 = OperatorFactory.get(new SelectDesc(Utilities
@@ -356,7 +357,7 @@ public class TestExecDriver extends TestCase {
     for (int i = 0; i < 2; i++) {
       outputColumns.add("_col" + i);
     }
-    Operator<ReduceSinkDesc> op1 = OperatorFactory.get(PlanUtils
+    Operator<ReduceSinkDesc> op1 = OperatorFactory.get(ctx, PlanUtils
         .getReduceSinkDesc(Utilities.makeList(getStringColumn("tkey")),
         Utilities.makeList(getStringColumn("tkey"),
         getStringColumn("tvalue")), outputColumns, false, -1, 1, -1, AcidUtils.Operation.NOT_ACID));
@@ -379,7 +380,7 @@ public class TestExecDriver extends TestCase {
     mr.setReduceWork(rWork);
 
     // reduce side work
-    Operator<FileSinkDesc> op3 = OperatorFactory.get(new FileSinkDesc(new Path(tmpdir + File.separator
+    Operator<FileSinkDesc> op3 = OperatorFactory.get(ctx, new FileSinkDesc(new Path(tmpdir + File.separator
         + "mapredplan4.out"), Utilities.defaultTd, false));
     List<ExprNodeDesc> cols = new ArrayList<ExprNodeDesc>();
     cols.add(getStringColumn(Utilities.ReduceField.KEY + ".reducesinkkey" + 0));
@@ -401,7 +402,7 @@ public class TestExecDriver extends TestCase {
     for (int i = 0; i < 2; i++) {
       outputColumns.add("_col" + i);
     }
-    Operator<ReduceSinkDesc> op0 = OperatorFactory.get(PlanUtils
+    Operator<ReduceSinkDesc> op0 = OperatorFactory.get(ctx, PlanUtils
         .getReduceSinkDesc(Utilities.makeList(getStringColumn("0")), Utilities
         .makeList(getStringColumn("0"), getStringColumn("1")),
         outputColumns, false, -1, 1, -1, AcidUtils.Operation.NOT_ACID));
@@ -418,7 +419,7 @@ public class TestExecDriver extends TestCase {
     rWork.getTagToValueDesc().add(op0.getConf().getValueSerializeInfo());
 
     // reduce side work
-    Operator<FileSinkDesc> op3 = OperatorFactory.get(new FileSinkDesc(new Path(tmpdir + File.separator
+    Operator<FileSinkDesc> op3 = OperatorFactory.get(ctx, new FileSinkDesc(new Path(tmpdir + File.separator
         + "mapredplan5.out"), Utilities.defaultTd, false));
 
     List<ExprNodeDesc> cols = new ArrayList<ExprNodeDesc>();
@@ -436,7 +437,7 @@ public class TestExecDriver extends TestCase {
     for (int i = 0; i < 2; i++) {
       outputColumns.add("_col" + i);
     }
-    Operator<ReduceSinkDesc> op1 = OperatorFactory.get(PlanUtils
+    Operator<ReduceSinkDesc> op1 = OperatorFactory.get(ctx, PlanUtils
         .getReduceSinkDesc(Utilities.makeList(getStringColumn("tkey")),
         Utilities.makeList(getStringColumn("tkey"),
         getStringColumn("tvalue")), outputColumns, false, -1, 1, -1, AcidUtils.Operation.NOT_ACID));
@@ -460,7 +461,7 @@ public class TestExecDriver extends TestCase {
     rWork.getTagToValueDesc().add(op1.getConf().getValueSerializeInfo());
 
     // reduce side work
-    Operator<FileSinkDesc> op3 = OperatorFactory.get(new FileSinkDesc(new Path(tmpdir + File.separator
+    Operator<FileSinkDesc> op3 = OperatorFactory.get(ctx, new FileSinkDesc(new Path(tmpdir + File.separator
         + "mapredplan6.out"), Utilities.defaultTd, false));
 
     Operator<FilterDesc> op2 = OperatorFactory.get(getTestFilterDesc("0"), op3);
@@ -478,7 +479,7 @@ public class TestExecDriver extends TestCase {
     MapRedTask mrtask = new MapRedTask();
     DriverContext dctx = new DriverContext ();
     mrtask.setWork(mr);
-    mrtask.initialize(conf, null, dctx);
+    mrtask.initialize(queryState, null, dctx, null);
     int exitVal =  mrtask.execute(dctx);
 
     if (exitVal != 0) {

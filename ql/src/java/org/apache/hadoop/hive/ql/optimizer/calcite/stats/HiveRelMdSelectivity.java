@@ -23,7 +23,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import org.apache.calcite.rel.core.Join;
 import org.apache.calcite.rel.core.JoinRelType;
+import org.apache.calcite.rel.core.SemiJoin;
 import org.apache.calcite.rel.metadata.ReflectiveRelMetadataProvider;
 import org.apache.calcite.rel.metadata.RelMdSelectivity;
 import org.apache.calcite.rel.metadata.RelMdUtil;
@@ -41,15 +43,18 @@ import org.apache.hadoop.hive.ql.optimizer.calcite.reloperators.HiveTableScan;
 import com.google.common.collect.ImmutableMap;
 
 public class HiveRelMdSelectivity extends RelMdSelectivity {
-  public static final RelMetadataProvider SOURCE = ReflectiveRelMetadataProvider.reflectiveSource(
-                                                     BuiltInMethod.SELECTIVITY.method,
-                                                     new HiveRelMdSelectivity());
 
-  protected HiveRelMdSelectivity() {
-    super();
-  }
+  public static final RelMetadataProvider SOURCE =
+      ReflectiveRelMetadataProvider.reflectiveSource(
+          BuiltInMethod.SELECTIVITY.method, new HiveRelMdSelectivity());
 
-  public Double getSelectivity(HiveTableScan t, RexNode predicate) {
+  //~ Constructors -----------------------------------------------------------
+
+  private HiveRelMdSelectivity() {}
+
+  //~ Methods ----------------------------------------------------------------
+
+  public Double getSelectivity(HiveTableScan t, RelMetadataQuery mq, RexNode predicate) {
     if (predicate != null) {
       FilterSelectivityEstimator filterSelEstmator = new FilterSelectivityEstimator(t);
       return filterSelEstmator.estimateSelectivity(predicate);
@@ -58,15 +63,24 @@ public class HiveRelMdSelectivity extends RelMdSelectivity {
     return 1.0;
   }
 
-  public Double getSelectivity(HiveJoin j, RexNode predicate) throws CalciteSemanticException {
+  public Double getSelectivity(Join j, RelMetadataQuery mq, RexNode predicate) {
     if (j.getJoinType().equals(JoinRelType.INNER)) {
-      return computeInnerJoinSelectivity(j, predicate);
+      return computeInnerJoinSelectivity(j, mq, predicate);
+    } else if (j.getJoinType().equals(JoinRelType.LEFT) ||
+            j.getJoinType().equals(JoinRelType.RIGHT)) {
+      double left = mq.getRowCount(j.getLeft());
+      double right = mq.getRowCount(j.getRight());
+      double product = left * right;
+      double innerJoinSelectivity = computeInnerJoinSelectivity(j, mq, predicate);
+      if (j.getJoinType().equals(JoinRelType.LEFT)) {
+        return Math.max(innerJoinSelectivity, left/product);
+      }
+      return Math.max(innerJoinSelectivity, right/product);
     }
     return 1.0;
   }
 
-  private Double computeInnerJoinSelectivity(HiveJoin j, RexNode predicate) throws CalciteSemanticException {
-    double ndvCrossProduct = 1;
+  private Double computeInnerJoinSelectivity(Join j, RelMetadataQuery mq, RexNode predicate) {
     Pair<Boolean, RexNode> predInfo =
         getCombinedPredicateForJoin(j, predicate);
     if (!predInfo.getKey()) {
@@ -76,8 +90,13 @@ public class HiveRelMdSelectivity extends RelMdSelectivity {
     }
 
     RexNode combinedPredicate = predInfo.getValue();
-    JoinPredicateInfo jpi = JoinPredicateInfo.constructJoinPredicateInfo(j,
-        combinedPredicate);
+    JoinPredicateInfo jpi;
+    try {
+      jpi = JoinPredicateInfo.constructJoinPredicateInfo(j,
+          combinedPredicate);
+    } catch (CalciteSemanticException e) {
+      throw new RuntimeException(e);
+    }
     ImmutableMap.Builder<Integer, Double> colStatMapBuilder = ImmutableMap
         .builder();
     ImmutableMap<Integer, Double> colStatMap;
@@ -87,14 +106,14 @@ public class HiveRelMdSelectivity extends RelMdSelectivity {
     // Join which are part of join keys
     for (Integer ljk : jpi.getProjsFromLeftPartOfJoinKeysInChildSchema()) {
       colStatMapBuilder.put(ljk,
-          HiveRelMdDistinctRowCount.getDistinctRowCount(j.getLeft(), ljk));
+          HiveRelMdDistinctRowCount.getDistinctRowCount(j.getLeft(), mq, ljk));
     }
 
     // 2. Update Col Stats Map with col stats for columns from right side of
     // Join which are part of join keys
     for (Integer rjk : jpi.getProjsFromRightPartOfJoinKeysInChildSchema()) {
       colStatMapBuilder.put(rjk + rightOffSet,
-          HiveRelMdDistinctRowCount.getDistinctRowCount(j.getRight(), rjk));
+          HiveRelMdDistinctRowCount.getDistinctRowCount(j.getRight(), mq, rjk));
     }
     colStatMap = colStatMapBuilder.build();
 
@@ -102,15 +121,19 @@ public class HiveRelMdSelectivity extends RelMdSelectivity {
     // NDV of the join can not exceed the cardinality of cross join.
     List<JoinLeafPredicateInfo> peLst = jpi.getEquiJoinPredicateElements();
     int noOfPE = peLst.size();
+    double ndvCrossProduct = 1;
     if (noOfPE > 0) {
       ndvCrossProduct = exponentialBackoff(peLst, colStatMap);
 
-      if (j.isLeftSemiJoin())
-        ndvCrossProduct = Math.min(RelMetadataQuery.getRowCount(j.getLeft()),
+      if (j instanceof SemiJoin) {
+        ndvCrossProduct = Math.min(mq.getRowCount(j.getLeft()),
             ndvCrossProduct);
-      else
-        ndvCrossProduct = Math.min(RelMetadataQuery.getRowCount(j.getLeft())
-            * RelMetadataQuery.getRowCount(j.getRight()), ndvCrossProduct);
+      }else if (j instanceof HiveJoin){
+        ndvCrossProduct = Math.min(mq.getRowCount(j.getLeft())
+            * mq.getRowCount(j.getRight()), ndvCrossProduct);
+      } else {
+        throw new RuntimeException("Unexpected Join type: " + j.getClass().getName());
+      }
     }
 
     // 4. Join Selectivity = 1/NDV
@@ -190,7 +213,7 @@ public class HiveRelMdSelectivity extends RelMdSelectivity {
    * @return if predicate is the join condition return (true, joinCond)
    * else return (false, minusPred)
    */
-  private Pair<Boolean,RexNode> getCombinedPredicateForJoin(HiveJoin j, RexNode additionalPredicate) {
+  private Pair<Boolean,RexNode> getCombinedPredicateForJoin(Join j, RexNode additionalPredicate) {
     RexNode minusPred = RelMdUtil.minusPreds(j.getCluster().getRexBuilder(), additionalPredicate,
         j.getCondition());
 

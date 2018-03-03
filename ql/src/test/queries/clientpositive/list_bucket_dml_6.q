@@ -1,4 +1,4 @@
-set hive.mapred.supports.subdirectories=true;
+set hive.mapred.mode=nonstrict;
 set hive.exec.dynamic.partition=true;
 set hive.exec.dynamic.partition.mode=nonstrict;
 set hive.input.format=org.apache.hadoop.hive.ql.io.BucketizedHiveInputFormat;
@@ -47,7 +47,6 @@ set hive.merge.mapredfiles=false;
 
 -- INCLUDE_HADOOP_MAJOR_VERSIONS(0.23)
 -- SORT_QUERY_RESULTS
--- JAVA_VERSION_SPECIFIC_OUTPUT
 
 -- create a skewed table
 create table list_bucketing_dynamic_part (key String, value String) 

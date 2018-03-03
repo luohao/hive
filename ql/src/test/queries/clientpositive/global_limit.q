@@ -1,3 +1,6 @@
+set hive.strict.checks.bucketing=false;
+
+set hive.mapred.mode=nonstrict;
 set hive.limit.optimize.enable=true;
 set hive.limit.optimize.limit.file=2;
 

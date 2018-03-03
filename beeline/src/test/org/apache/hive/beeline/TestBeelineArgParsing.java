@@ -23,12 +23,14 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
-
 import java.io.File;
 import java.io.FileOutputStream;
+import java.io.PrintStream;
+import java.nio.file.Files;
+import java.nio.file.Paths;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hive.common.util.HiveTestUtils;
 import org.junit.Assert;
 import org.junit.Before;
@@ -42,7 +44,7 @@ import org.junit.runners.Parameterized.Parameters;
  */
 @RunWith(Parameterized.class)
 public class TestBeelineArgParsing {
-  private static final Log LOG = LogFactory.getLog(TestBeelineArgParsing.class.getName());
+  private static final Logger LOG = LoggerFactory.getLogger(TestBeelineArgParsing.class.getName());
 
   private static final String dummyDriverClazzName = "DummyDriver";
 
@@ -68,7 +70,7 @@ public class TestBeelineArgParsing {
     @Override
     boolean dispatch(String command) {
       String connectCommand = "!connect";
-      String propertyCommand = "!property";
+      String propertyCommand = "!properties";
       if (command.startsWith(connectCommand)) {
         this.connectArgs = command.substring(connectCommand.length() + 1, command.length());
       } else if (command.startsWith(propertyCommand)) {
@@ -185,6 +187,42 @@ public class TestBeelineArgParsing {
     Assert.assertTrue(bl.getOpts().getTruncateTable());
   }
 
+  @Test
+  public void testBeelineAutoCommit() throws Exception {
+    TestBeeline bl = new TestBeeline();
+    String[] args = {};
+    bl.initArgs(args);
+    Assert.assertTrue(bl.getOpts().getAutoCommit());
+
+    args = new String[] {"--autoCommit=false"};
+    bl.initArgs(args);
+    Assert.assertFalse(bl.getOpts().getAutoCommit());
+
+    args = new String[] {"--autoCommit=true"};
+    bl.initArgs(args);
+    Assert.assertTrue(bl.getOpts().getAutoCommit());
+    bl.close();
+  }
+
+  @Test
+  public void testBeelineShowDbInPromptOptsDefault() throws Exception {
+    TestBeeline bl = new TestBeeline();
+    String args[] = new String[] { "-u", "url" };
+    Assert.assertEquals(0, bl.initArgs(args));
+    Assert.assertFalse(bl.getOpts().getShowDbInPrompt());
+    Assert.assertEquals("", bl.getFormattedDb());
+  }
+
+  @Test
+  public void testBeelineShowDbInPromptOptsTrue() throws Exception {
+    TestBeeline bl = new TestBeeline();
+    String args[] = new String[] { "-u", "url", "--showDbInPrompt=true" };
+    Assert.assertEquals(0, bl.initArgs(args));
+    Assert.assertTrue(bl.getOpts().getShowDbInPrompt());
+    Assert.assertEquals(" (default)", bl.getFormattedDb());
+  }
+
+
   /**
    * Test setting script file with -f option.
    */
@@ -199,6 +237,16 @@ public class TestBeelineArgParsing {
   }
 
   /**
+   * Test beeline with -f and -e simultaneously
+   */
+  @Test
+  public void testCommandAndFileSimultaneously() throws Exception {
+    TestBeeline bl = new TestBeeline();
+    String args[] = new String[] {"-e", "myselect", "-f", "myscript"};
+    Assert.assertEquals(1, bl.initArgs(args));
+  }
+
+  /**
    * Displays the usage.
    */
   @Test
@@ -206,6 +254,7 @@ public class TestBeelineArgParsing {
     TestBeeline bl = new TestBeeline();
     String args[] = new String[] {"--help"};
     Assert.assertEquals(0, bl.initArgs(args));
+    Assert.assertEquals(true, bl.getOpts().isHelpAsked());
   }
 
   /**
@@ -240,7 +289,46 @@ public class TestBeelineArgParsing {
       Assert.assertNull(bl.findLocalDriver(connectionString));
     } else {
       // no need to add for the default supported local jar driver
+      Assert.assertNotNull(bl.findLocalDriver(connectionString));
       Assert.assertEquals(bl.findLocalDriver(connectionString).getClass().getName(), driverClazzName);
     }
+  }
+
+  @Test
+  public void testBeelinePasswordMask() throws Exception {
+    TestBeeline bl = new TestBeeline();
+    File errFile = File.createTempFile("test", "tmp");
+    bl.setErrorStream(new PrintStream(new FileOutputStream(errFile)));
+    String args[] =
+        new String[] { "-u", "url", "-n", "name", "-p", "password", "-d", "driver",
+            "--autoCommit=true", "--verbose", "--truncateTable" };
+    bl.initArgs(args);
+    bl.close();
+    String errContents = new String(Files.readAllBytes(Paths.get(errFile.toString())));
+    Assert.assertTrue(errContents.contains(BeeLine.PASSWD_MASK));
+  }
+
+  /**
+   * Test property file parameter option.
+   */
+  @Test
+  public void testPropertyFile() throws Exception {
+    TestBeeline bl = new TestBeeline();
+    String args[] = new String[] {"--property-file", "props"};
+    Assert.assertEquals(0, bl.initArgs(args));
+    Assert.assertTrue(bl.properties.get(0).equals("props"));
+    bl.close();
+  }
+
+  /**
+   * Test maxHistoryRows parameter option.
+   */
+  @Test
+  public void testMaxHistoryRows() throws Exception {
+    TestBeeline bl = new TestBeeline();
+    String args[] = new String[] {"--maxHistoryRows=100"};
+    Assert.assertEquals(0, bl.initArgs(args));
+    Assert.assertTrue(bl.getOpts().getMaxHistoryRows() == 100);
+    bl.close();
   }
 }

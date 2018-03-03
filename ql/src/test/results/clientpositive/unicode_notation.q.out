@@ -1,12 +1,8 @@
-PREHOOK: query: -- HIVE-4618 hive should accept unicode notation like \uxxxx
-
-CREATE  TABLE k1( a string)ROW FORMAT DELIMITED FIELDS TERMINATED BY '\u0001'
+PREHOOK: query: CREATE  TABLE k1( a string)ROW FORMAT DELIMITED FIELDS TERMINATED BY '\u0001'
 PREHOOK: type: CREATETABLE
 PREHOOK: Output: database:default
 PREHOOK: Output: default@k1
-POSTHOOK: query: -- HIVE-4618 hive should accept unicode notation like \uxxxx
-
-CREATE  TABLE k1( a string)ROW FORMAT DELIMITED FIELDS TERMINATED BY '\u0001'
+POSTHOOK: query: CREATE  TABLE k1( a string)ROW FORMAT DELIMITED FIELDS TERMINATED BY '\u0001'
 POSTHOOK: type: CREATETABLE
 POSTHOOK: Output: database:default
 POSTHOOK: Output: default@k1
@@ -27,6 +23,11 @@ Retention:          	0
 #### A masked pattern was here ####
 Table Type:         	MANAGED_TABLE       	 
 Table Parameters:	 	 
+	COLUMN_STATS_ACCURATE	{\"BASIC_STATS\":\"true\"}
+	numFiles            	0                   
+	numRows             	0                   
+	rawDataSize         	0                   
+	totalSize           	0                   
 #### A masked pattern was here ####
 	 	 
 # Storage Information	 	 
@@ -73,6 +74,11 @@ Retention:          	0
 #### A masked pattern was here ####
 Table Type:         	MANAGED_TABLE       	 
 Table Parameters:	 	 
+	COLUMN_STATS_ACCURATE	{\"BASIC_STATS\":\"true\"}
+	numFiles            	0                   
+	numRows             	0                   
+	rawDataSize         	0                   
+	totalSize           	0                   
 #### A masked pattern was here ####
 	 	 
 # Storage Information	 	 
@@ -119,6 +125,11 @@ Retention:          	0
 #### A masked pattern was here ####
 Table Type:         	MANAGED_TABLE       	 
 Table Parameters:	 	 
+	COLUMN_STATS_ACCURATE	{\"BASIC_STATS\":\"true\"}
+	numFiles            	0                   
+	numRows             	0                   
+	rawDataSize         	0                   
+	totalSize           	0                   
 #### A masked pattern was here ####
 	 	 
 # Storage Information	 	 

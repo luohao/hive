@@ -1,5 +1,4 @@
-set hive.enforce.bucketing = true;
-set hive.enforce.sorting = true;
+set hive.mapred.mode=nonstrict;
 set hive.exec.reducers.max = 1;
 
 CREATE TABLE tbl1(key int, value string) CLUSTERED BY (key) SORTED BY (key) INTO 2 BUCKETS;
@@ -14,7 +13,7 @@ select * from src where key < 10;
 set hive.optimize.bucketmapjoin = true;
 set hive.optimize.bucketmapjoin.sortedmerge = true;
 set hive.input.format = org.apache.hadoop.hive.ql.io.BucketizedHiveInputFormat;
-
+set hive.cbo.enable=false;
 -- A join is being performed across different sub-queries, where a mapjoin is being performed in each of them.
 -- Each sub-query should be converted to a sort-merge join.
 -- A join followed by mapjoin is not allowed, so this query should fail.

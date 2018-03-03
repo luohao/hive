@@ -97,6 +97,8 @@ POSTHOOK: type: CREATETABLE_AS_SELECT
 POSTHOOK: Input: default@src5
 POSTHOOK: Output: database:default
 POSTHOOK: Output: default@total_ordered
+POSTHOOK: Lineage: total_ordered.key SIMPLE [(src5)src5.FieldSchema(name:key, type:string, comment:null), ]
+POSTHOOK: Lineage: total_ordered.value SIMPLE [(src5)src5.FieldSchema(name:value, type:string, comment:null), ]
 PREHOOK: query: desc formatted total_ordered
 PREHOOK: type: DESCTABLE
 PREHOOK: Input: default@total_ordered
@@ -115,7 +117,7 @@ Retention:          	0
 #### A masked pattern was here ####
 Table Type:         	MANAGED_TABLE       	 
 Table Parameters:	 	 
-	COLUMN_STATS_ACCURATE	true                
+	COLUMN_STATS_ACCURATE	{\"BASIC_STATS\":\"true\"}
 	numFiles            	4                   
 	numRows             	48                  
 	rawDataSize         	512                 
@@ -188,15 +190,11 @@ POSTHOOK: Input: default@total_ordered
 86	val_86
 98	val_98
 98	val_98
-PREHOOK: query: -- rolling back to single task in case that the number of sample is not enough
-
-drop table total_ordered
+PREHOOK: query: drop table total_ordered
 PREHOOK: type: DROPTABLE
 PREHOOK: Input: default@total_ordered
 PREHOOK: Output: default@total_ordered
-POSTHOOK: query: -- rolling back to single task in case that the number of sample is not enough
-
-drop table total_ordered
+POSTHOOK: query: drop table total_ordered
 POSTHOOK: type: DROPTABLE
 POSTHOOK: Input: default@total_ordered
 POSTHOOK: Output: default@total_ordered
@@ -210,6 +208,8 @@ POSTHOOK: type: CREATETABLE_AS_SELECT
 POSTHOOK: Input: default@src5
 POSTHOOK: Output: database:default
 POSTHOOK: Output: default@total_ordered
+POSTHOOK: Lineage: total_ordered.key SIMPLE [(src5)src5.FieldSchema(name:key, type:string, comment:null), ]
+POSTHOOK: Lineage: total_ordered.value SIMPLE [(src5)src5.FieldSchema(name:value, type:string, comment:null), ]
 PREHOOK: query: desc formatted total_ordered
 PREHOOK: type: DESCTABLE
 PREHOOK: Input: default@total_ordered
@@ -228,7 +228,7 @@ Retention:          	0
 #### A masked pattern was here ####
 Table Type:         	MANAGED_TABLE       	 
 Table Parameters:	 	 
-	COLUMN_STATS_ACCURATE	true                
+	COLUMN_STATS_ACCURATE	{\"BASIC_STATS\":\"true\"}
 	numFiles            	4                   
 	numRows             	48                  
 	rawDataSize         	512                 

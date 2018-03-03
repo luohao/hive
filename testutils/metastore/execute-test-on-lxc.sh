@@ -69,7 +69,8 @@ lxc_exists() {
 }
 
 lxc_create() {
-	lxc-create -n $1 -t download -- --dist "ubuntu" --release "trusty" --arch "amd64" || return 1
+	# Oracle works better on 32-bits machines only, so we use i386 containers.
+	lxc-create -n $1 -t download -- --dist "ubuntu" --release "trusty" --arch "i386" || return 1
 	lxc_start $1 || return 1
 }
 
@@ -91,7 +92,7 @@ lxc_prepare() {
 	echo "Downloading hive source code from SVN, branch='$BRANCH' ..."
 
 	lxc-attach -n $1 -- apt-get update
-	lxc-attach -n $1 -- apt-get install -y patch git
+	lxc-attach -n $1 -- apt-get install -y patch git wget curl
 
 	tmpfile=$(mktemp)
 	cat>$tmpfile<<EOF

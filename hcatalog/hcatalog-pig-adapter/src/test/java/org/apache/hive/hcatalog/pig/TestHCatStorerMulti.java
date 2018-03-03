@@ -18,8 +18,6 @@
  */
 package org.apache.hive.hcatalog.pig;
 
-import com.google.common.collect.ImmutableSet;
-
 import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
@@ -77,7 +75,7 @@ public class TestHCatStorerMulti {
         }});
       }};
 
-  private String storageFormat;
+  private final String storageFormat;
 
   @Parameterized.Parameters
   public static Collection<Object[]> generateParameters() {
@@ -119,6 +117,10 @@ public class TestHCatStorerMulti {
       hiveConf.set(HiveConf.ConfVars.POSTEXECHOOKS.varname, "");
       hiveConf.set(HiveConf.ConfVars.HIVE_SUPPORT_CONCURRENCY.varname, "false");
       hiveConf.set(HiveConf.ConfVars.METASTOREWAREHOUSE.varname, TEST_WAREHOUSE_DIR);
+      hiveConf.setVar(HiveConf.ConfVars.HIVEMAPREDMODE, "nonstrict");
+      hiveConf
+      .setVar(HiveConf.ConfVars.HIVE_AUTHORIZATION_MANAGER,
+          "org.apache.hadoop.hive.ql.security.authorization.plugin.sqlstd.SQLStdHiveAuthorizerFactory");
       driver = new Driver(hiveConf);
       SessionState.start(new CliSessionState(hiveConf));
     }

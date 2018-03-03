@@ -19,11 +19,10 @@
 package org.apache.hadoop.hive.ql.exec;
 
 import java.io.Serializable;
-import java.util.Collection;
-import java.util.concurrent.Future;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hive.conf.HiveConf;
+import org.apache.hadoop.hive.ql.CompilationOpContext;
 import org.apache.hadoop.hive.ql.io.IOContext;
 import org.apache.hadoop.hive.ql.io.IOContextMap;
 import org.apache.hadoop.hive.ql.metadata.HiveException;
@@ -45,18 +44,23 @@ public class FilterOperator extends Operator<FilterDesc> implements
   private transient IOContext ioContext;
   protected transient int heartbeatInterval;
 
-  public FilterOperator() {
+  /** Kryo ctor. */
+  protected FilterOperator() {
     super();
+  }
+
+  public FilterOperator(CompilationOpContext ctx) {
+    super(ctx);
     consecutiveSearches = 0;
   }
 
   @Override
-  protected Collection<Future<?>> initializeOp(Configuration hconf) throws HiveException {
-    Collection<Future<?>> result = super.initializeOp(hconf);
+  protected void initializeOp(Configuration hconf) throws HiveException {
+    super.initializeOp(hconf);
     try {
       heartbeatInterval = HiveConf.getIntVar(hconf,
           HiveConf.ConfVars.HIVESENDHEARTBEAT);
-      conditionEvaluator = ExprNodeEvaluatorFactory.get(conf.getPredicate());
+      conditionEvaluator = ExprNodeEvaluatorFactory.get(conf.getPredicate(), hconf);
       if (HiveConf.getBoolVar(hconf, HiveConf.ConfVars.HIVEEXPREVALUATIONCACHE)) {
         conditionEvaluator = ExprNodeEvaluatorFactory.toCachedEval(conditionEvaluator);
       }
@@ -66,7 +70,6 @@ public class FilterOperator extends Operator<FilterDesc> implements
     } catch (Throwable e) {
       throw new HiveException(e);
     }
-    return result;
   }
 
   @Override
@@ -129,7 +132,7 @@ public class FilterOperator extends Operator<FilterDesc> implements
    */
   @Override
   public String getName() {
-    return getOperatorName();
+    return FilterOperator.getOperatorName();
   }
 
   static public String getOperatorName() {

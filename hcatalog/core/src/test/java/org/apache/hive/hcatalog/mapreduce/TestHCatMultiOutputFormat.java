@@ -33,13 +33,15 @@ import org.apache.hadoop.fs.FileUtil;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.hive.conf.HiveConf;
-import org.apache.hadoop.hive.metastore.HiveMetaStore;
 import org.apache.hadoop.hive.metastore.HiveMetaStoreClient;
+import org.apache.hadoop.hive.metastore.MetaStoreUtils;
 import org.apache.hadoop.hive.metastore.api.FieldSchema;
 import org.apache.hadoop.hive.metastore.api.NoSuchObjectException;
 import org.apache.hadoop.hive.metastore.api.SerDeInfo;
 import org.apache.hadoop.hive.metastore.api.StorageDescriptor;
 import org.apache.hadoop.hive.metastore.api.Table;
+import org.apache.hadoop.hive.ql.CompilationOpContext;
+import org.apache.hadoop.hive.ql.QueryState;
 import org.apache.hadoop.hive.ql.exec.FetchTask;
 import org.apache.hadoop.hive.ql.exec.Utilities;
 import org.apache.hadoop.hive.ql.metadata.Hive;
@@ -87,29 +89,13 @@ public class TestHCatMultiOutputFormat {
   private static HiveConf hiveConf;
   private static File workDir;
 
-  private static final String msPort = "20199";
+  private static int msPort;
   private static Thread t;
 
   static {
     schemaMap.put(tableNames[0], new HCatSchema(ColumnHolder.hCattest1Cols));
     schemaMap.put(tableNames[1], new HCatSchema(ColumnHolder.hCattest2Cols));
     schemaMap.put(tableNames[2], new HCatSchema(ColumnHolder.hCattest3Cols));
-  }
-
-  private static class RunMS implements Runnable {
-
-    @Override
-    public void run() {
-      try {
-        String warehouseConf = HiveConf.ConfVars.METASTOREWAREHOUSE.varname + "="
-          + warehousedir.toString();
-        HiveMetaStore.main(new String[]{"-v", "-p", msPort, "--hiveconf", warehouseConf});
-      } catch (Throwable t) {
-        System.err.println("Exiting. Got exception from metastore: " + t.getMessage());
-        t.printStackTrace();
-      }
-    }
-
   }
 
   /**
@@ -171,10 +157,11 @@ public class TestHCatMultiOutputFormat {
 
     warehousedir = new Path(System.getProperty("test.warehouse.dir"));
 
-    // Run hive metastore server
-    t = new Thread(new RunMS());
-    t.start();
+    HiveConf metastoreConf = new HiveConf();
+    metastoreConf.setVar(HiveConf.ConfVars.METASTOREWAREHOUSE, warehousedir.toString());
 
+    // Run hive metastore server
+    msPort = MetaStoreUtils.startMetaStore(metastoreConf);
     // LocalJobRunner does not work with mapreduce OutputCommitter. So need
     // to use MiniMRCluster. MAPREDUCE-2350
     Configuration conf = new Configuration(true);
@@ -208,7 +195,7 @@ public class TestHCatMultiOutputFormat {
 
     hiveConf.set(HiveConf.ConfVars.METASTOREWAREHOUSE.varname, warehousedir.toString());
     try {
-      hmsc = new HiveMetaStoreClient(hiveConf, null);
+      hmsc = new HiveMetaStoreClient(hiveConf);
       initalizeTables();
     } catch (Throwable e) {
       LOG.error("Exception encountered while setting up testcase", e);
@@ -369,7 +356,8 @@ public class TestHCatMultiOutputFormat {
    * @throws Exception if any error occurs
    */
   private List<String> getTableData(String table, String database) throws Exception {
-    HiveConf conf = new HiveConf();
+    QueryState queryState = new QueryState(null);
+    HiveConf conf = queryState.getConf();
     conf.addResource("hive-site.xml");
     ArrayList<String> results = new ArrayList<String>();
     ArrayList<String> temp = new ArrayList<String>();
@@ -392,7 +380,7 @@ public class TestHCatMultiOutputFormat {
     }
     FetchTask task = new FetchTask();
     task.setWork(work);
-    task.initialize(conf, null, null);
+    task.initialize(queryState, null, null, new CompilationOpContext());
     task.fetch(temp);
     for (String str : temp) {
       results.add(str.replace("\t", ","));

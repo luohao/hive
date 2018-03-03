@@ -27,11 +27,14 @@ import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.List;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.hive.common.metrics.common.Metrics;
+import org.apache.hadoop.hive.common.metrics.common.MetricsConstant;
 import org.apache.hadoop.hive.conf.HiveConf;
+import org.apache.hadoop.hive.ql.CompilationOpContext;
 import org.apache.hadoop.hive.ql.DriverContext;
+import org.apache.hadoop.hive.ql.QueryDisplay;
 import org.apache.hadoop.hive.ql.QueryPlan;
+import org.apache.hadoop.hive.ql.QueryState;
 import org.apache.hadoop.hive.ql.lib.Node;
 import org.apache.hadoop.hive.ql.metadata.Hive;
 import org.apache.hadoop.hive.ql.metadata.HiveException;
@@ -41,6 +44,8 @@ import org.apache.hadoop.hive.ql.plan.api.StageType;
 import org.apache.hadoop.hive.ql.session.SessionState;
 import org.apache.hadoop.hive.ql.session.SessionState.LogHelper;
 import org.apache.hadoop.util.StringUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Task implementation.
@@ -48,19 +53,11 @@ import org.apache.hadoop.util.StringUtils;
 
 public abstract class Task<T extends Serializable> implements Serializable, Node {
 
-  static {
-    PTFUtils.makeTransient(Task.class, "fetchSource");
-  }
-
   private static final long serialVersionUID = 1L;
   public transient HashMap<String, Long> taskCounters;
   public transient TaskHandle taskHandle;
-  protected transient boolean started;
-  protected transient boolean initialized;
-  protected transient boolean isdone;
-  protected transient boolean queued;
   protected transient HiveConf conf;
-  protected transient Hive db;
+  protected transient QueryState queryState;
   protected transient LogHelper console;
   protected transient QueryPlan queryPlan;
   protected transient DriverContext driverContext;
@@ -68,7 +65,7 @@ public abstract class Task<T extends Serializable> implements Serializable, Node
   protected transient String jobID;
   protected Task<? extends Serializable> backupTask;
   protected List<Task<? extends Serializable>> backupChildrenTasks = new ArrayList<Task<? extends Serializable>>();
-  protected static transient Log LOG = LogFactory.getLog(Task.class);
+  protected static transient Logger LOG = LoggerFactory.getLogger(Task.class);
   protected int taskTag;
   private boolean isLocalMode =false;
   private boolean retryCmdWhenFail = false;
@@ -85,17 +82,50 @@ public abstract class Task<T extends Serializable> implements Serializable, Node
   // created in case the mapjoin failed.
   public static final int MAPJOIN_ONLY_NOBACKUP = 7;
   public static final int CONVERTED_SORTMERGEJOIN = 8;
-
+  public QueryDisplay queryDisplay = null;
   // Descendants tasks who subscribe feeds from this task
   protected transient List<Task<? extends Serializable>> feedSubscribers;
 
   protected String id;
   protected T work;
-
+  private TaskState taskState = TaskState.CREATED;
+  private String statusMessage;
+  private String diagnosticMesg;
   private transient boolean fetchSource;
 
-  public static enum FeedType {
+  public void setDiagnosticMessage(String diagnosticMesg) {
+    this.diagnosticMesg = diagnosticMesg;
+  }
+
+  public String getDiagnosticsMessage() {
+    return diagnosticMesg;
+  }
+
+  public void setStatusMessage(String statusMessage) {
+    this.statusMessage = statusMessage;
+    updateStatusInQueryDisplay();
+  }
+
+  public String getStatusMessage() {
+    return statusMessage;
+  }
+
+  public enum FeedType {
     DYNAMIC_PARTITIONS, // list of dynamic partitions
+  }
+  public enum TaskState {
+    // Task data structures have been initialized
+    INITIALIZED,
+    // Task has been queued for execution by the driver
+    QUEUED,
+    // Task is currently running
+    RUNNING,
+    // Task has completed
+    FINISHED,
+    // Task is just created
+    CREATED,
+    // Task state is unkown
+    UNKNOWN
   }
 
   // Bean methods
@@ -112,10 +142,6 @@ public abstract class Task<T extends Serializable> implements Serializable, Node
   private Throwable exception;
 
   public Task() {
-    isdone = false;
-    started = false;
-    initialized = false;
-    queued = false;
     this.taskCounters = new HashMap<String, Long>();
     taskTag = Task.NO_TAG;
   }
@@ -124,24 +150,37 @@ public abstract class Task<T extends Serializable> implements Serializable, Node
     return taskHandle;
   }
 
-  public void initialize(HiveConf conf, QueryPlan queryPlan, DriverContext driverContext) {
+  public void initialize(QueryState queryState, QueryPlan queryPlan, DriverContext driverContext,
+      CompilationOpContext opContext) {
     this.queryPlan = queryPlan;
-    isdone = false;
-    started = false;
     setInitialized();
-    this.conf = conf;
+    this.queryState = queryState;
+    this.conf = queryState.getConf();
+    this.driverContext = driverContext;
+    console = new LogHelper(LOG);
+  }
+  public void setQueryDisplay(QueryDisplay queryDisplay) {
+    this.queryDisplay = queryDisplay;
+  }
 
+  protected void updateStatusInQueryDisplay() {
+    if (queryDisplay != null) {
+      queryDisplay.updateTaskStatus(this);
+    }
+  }
+
+  protected void setState(TaskState state) {
+    this.taskState = state;
+    updateStatusInQueryDisplay();
+  }
+
+  protected Hive getHive() {
     try {
-      db = Hive.get(conf);
+      return Hive.getWithFastCheck(conf);
     } catch (HiveException e) {
-      // Bail out ungracefully - we should never hit
-      // this here - but would have hit it in SemanticAnalyzer
       LOG.error(StringUtils.stringifyException(e));
       throw new RuntimeException(e);
     }
-    this.driverContext = driverContext;
-
-    console = new LogHelper(LOG);
   }
 
   /**
@@ -297,6 +336,22 @@ public abstract class Task<T extends Serializable> implements Serializable, Node
     return ret;
   }
 
+  @SuppressWarnings({"unchecked", "rawtypes"})
+  public static List<Task<? extends Serializable>>
+      findLeafs(List<Task<? extends Serializable>> rootTasks) {
+    final List<Task<? extends Serializable>> leafTasks = new ArrayList<Task<?>>();
+
+    NodeUtils.iterateTask(rootTasks, Task.class, new NodeUtils.Function<Task>() {
+      public void apply(Task task) {
+        List dependents = task.getDependentTasks();
+        if (dependents == null || dependents.isEmpty()) {
+          leafTasks.add(task);
+        }
+      }
+    });
+    return leafTasks;
+  }
+
   /**
    * Remove the dependent task.
    *
@@ -311,37 +366,36 @@ public abstract class Task<T extends Serializable> implements Serializable, Node
       }
     }
   }
-
   public void setStarted() {
-    this.started = true;
+    setState(TaskState.RUNNING);
   }
 
   public boolean started() {
-    return started;
+    return taskState == TaskState.RUNNING;
   }
 
   public boolean done() {
-    return isdone;
+    return taskState == TaskState.FINISHED;
   }
 
   public void setDone() {
-    isdone = true;
+    setState(TaskState.FINISHED);
   }
 
   public void setQueued() {
-    queued = true;
+    setState(TaskState.QUEUED);
   }
 
   public boolean getQueued() {
-    return queued;
+    return taskState == TaskState.QUEUED;
   }
 
   public void setInitialized() {
-    initialized = true;
+    setState(TaskState.INITIALIZED);
   }
 
   public boolean getInitialized() {
-    return initialized;
+    return taskState == TaskState.INITIALIZED;
   }
 
   public boolean isRunnable() {
@@ -377,6 +431,14 @@ public abstract class Task<T extends Serializable> implements Serializable, Node
 
   public String getId() {
     return id;
+  }
+
+  public String getExternalHandle() {
+    return null;
+  }
+
+  public TaskState getTaskState() {
+    return taskState;
   }
 
   public boolean isMapRedTask() {
@@ -474,6 +536,13 @@ public abstract class Task<T extends Serializable> implements Serializable, Node
     }
   }
 
+  /**
+   * Provide metrics on the type and number of tasks executed by the HiveServer
+   * @param metrics
+   */
+  public void updateTaskMetrics(Metrics metrics) {
+    // no metrics gathered by default
+   }
 
   public int getTaskTag() {
     return taskTag;
@@ -505,6 +574,14 @@ public abstract class Task<T extends Serializable> implements Serializable, Node
 
   public QueryPlan getQueryPlan() {
     return queryPlan;
+  }
+
+  public DriverContext getDriverContext() {
+    return driverContext;
+  }
+
+  public void setDriverContext(DriverContext driverContext) {
+    this.driverContext = driverContext;
   }
 
   public void setQueryPlan(QueryPlan queryPlan) {
@@ -552,4 +629,6 @@ public abstract class Task<T extends Serializable> implements Serializable, Node
   public boolean equals(Object obj) {
     return toString().equals(String.valueOf(obj));
   }
+
+
 }

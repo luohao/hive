@@ -38,22 +38,27 @@ import org.apache.hadoop.hive.metastore.api.StorageDescriptor;
 import org.apache.hadoop.hive.metastore.api.StringColumnStatsData;
 import org.apache.hadoop.hive.ql.index.HiveIndex;
 import org.apache.hadoop.hive.ql.index.HiveIndex.IndexType;
+import org.apache.hadoop.hive.ql.metadata.ForeignKeyInfo;
 import org.apache.hadoop.hive.ql.metadata.Partition;
+import org.apache.hadoop.hive.ql.metadata.PrimaryKeyInfo;
 import org.apache.hadoop.hive.ql.metadata.Table;
+import org.apache.hadoop.hive.ql.metadata.ForeignKeyInfo.ForeignKeyCol;
 import org.apache.hadoop.hive.ql.plan.DescTableDesc;
 import org.apache.hadoop.hive.ql.plan.PlanUtils;
 import org.apache.hadoop.hive.ql.plan.ShowIndexesDesc;
 import org.apache.hadoop.hive.serde2.io.DateWritable;
+import org.apache.hive.common.util.HiveStringUtils;
 
 import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.Date;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Set;
+import java.util.TreeMap;
 
 
 /**
@@ -150,7 +155,13 @@ public final class MetaDataFormatUtils {
     if (val == null) {
       return "";
     }
-    return HiveDecimal.create(new BigInteger(val.getUnscaled()), val.getScale()).toString();
+
+    HiveDecimal result = HiveDecimal.create(new BigInteger(val.getUnscaled()), val.getScale());
+    if (result != null) {
+      return result.toString();
+    } else {
+      return "";
+    }
   }
 
   private static String convertToString(org.apache.hadoop.hive.metastore.api.Date val) {
@@ -221,11 +232,11 @@ public final class MetaDataFormatUtils {
         appendColumnStatsNoFormatting(colBuffer, "", "", "", "", "", "", "", "");
       }
     }
-    colBuffer.append(comment == null ? "" : comment);
+    colBuffer.append(comment == null ? "" : HiveStringUtils.escapeJava(comment));
     colBuffer.append(LINE_DELIM);
   }
 
-  public static String getAllColumnsInformation(Index index) {
+  public static String getIndexInformation(Index index, boolean isOutputPadded) {
     StringBuilder indexInfo = new StringBuilder(DEFAULT_STRINGBUILDER_SIZE);
 
     List<String> indexColumns = new ArrayList<String>();
@@ -256,11 +267,75 @@ public final class MetaDataFormatUtils {
     IndexType indexType = HiveIndex.getIndexTypeByClassName(indexHandlerClass);
     indexColumns.add(indexType.getName());
 
-    indexColumns.add(index.getParameters().get("comment"));
+    String comment = index.getParameters().get("comment");
+    indexColumns.add(comment == null ? null : HiveStringUtils.escapeJava(comment));
 
-    formatOutput(indexColumns.toArray(new String[0]), indexInfo);
+    formatOutput(indexColumns.toArray(new String[0]), indexInfo, isOutputPadded);
 
     return indexInfo.toString();
+  }
+
+  public static String getConstraintsInformation(PrimaryKeyInfo pkInfo, ForeignKeyInfo fkInfo) {
+    StringBuilder constraintsInfo = new StringBuilder(DEFAULT_STRINGBUILDER_SIZE);
+
+    constraintsInfo.append(LINE_DELIM).append("# Constraints").append(LINE_DELIM);
+    if (pkInfo != null && !pkInfo.getColNames().isEmpty()) {
+      constraintsInfo.append(LINE_DELIM).append("# Primary Key").append(LINE_DELIM);
+      getPrimaryKeyInformation(constraintsInfo, pkInfo);
+    }
+    if (fkInfo != null && !fkInfo.getForeignKeys().isEmpty()) {
+      constraintsInfo.append(LINE_DELIM).append("# Foreign Keys").append(LINE_DELIM);
+      getForeignKeysInformation(constraintsInfo, fkInfo);
+    }
+    return constraintsInfo.toString();
+  }
+
+  private static void  getPrimaryKeyInformation(StringBuilder constraintsInfo,
+    PrimaryKeyInfo pkInfo) {
+    formatOutput("Table:", pkInfo.getDatabaseName()+"."+pkInfo.getTableName(), constraintsInfo);
+    formatOutput("Constraint Name:", pkInfo.getConstraintName(), constraintsInfo);
+    Map<Integer, String> colNames = pkInfo.getColNames();
+    final String columnNames = "Column Names:";
+    constraintsInfo.append(String.format("%-" + ALIGNMENT + "s", columnNames)).append(FIELD_DELIM);
+    if (colNames != null && colNames.size() > 0) {
+      formatOutput(colNames.values().toArray(new String[colNames.size()]), constraintsInfo);
+    }
+  }
+
+  private static void getForeignKeyColInformation(StringBuilder constraintsInfo,
+    ForeignKeyCol fkCol) {
+      String[] fkcFields = new String[3];
+      fkcFields[0] = "Parent Column Name:" + fkCol.parentDatabaseName +
+          "."+ fkCol.parentTableName + "." + fkCol.parentColName;
+      fkcFields[1] = "Column Name:" + fkCol.childColName;
+      fkcFields[2] = "Key Sequence:" + fkCol.position;
+      formatOutput(fkcFields, constraintsInfo);
+  }
+
+  private static void getForeignKeyRelInformation(
+    StringBuilder constraintsInfo,
+    String constraintName,
+    List<ForeignKeyCol> fkRel) {
+    formatOutput("Constraint Name:", constraintName, constraintsInfo);
+    if (fkRel != null && fkRel.size() > 0) {
+      for (ForeignKeyCol fkc : fkRel) {
+        getForeignKeyColInformation(constraintsInfo, fkc);
+      }
+    }
+    constraintsInfo.append(LINE_DELIM);
+  }
+
+  private static void  getForeignKeysInformation(StringBuilder constraintsInfo,
+    ForeignKeyInfo fkInfo) {
+    formatOutput("Table:",
+                 fkInfo.getChildDatabaseName()+"."+fkInfo.getChildTableName(),
+                 constraintsInfo);
+    Map<String, List<ForeignKeyCol>> foreignKeys = fkInfo.getForeignKeys();
+    if (foreignKeys != null && foreignKeys.size() > 0) {
+      for (Map.Entry<String, List<ForeignKeyCol>> me : foreignKeys.entrySet()) {
+        getForeignKeyRelInformation(constraintsInfo, me.getKey(), me.getValue());
+      }
+    }
   }
 
   public static String getPartitionInformation(Partition part) {
@@ -279,18 +354,18 @@ public final class MetaDataFormatUtils {
     return tableInfo.toString();
   }
 
-  public static String getTableInformation(Table table) {
+  public static String getTableInformation(Table table, boolean isOutputPadded) {
     StringBuilder tableInfo = new StringBuilder(DEFAULT_STRINGBUILDER_SIZE);
 
     // Table Metadata
     tableInfo.append(LINE_DELIM).append("# Detailed Table Information").append(LINE_DELIM);
-    getTableMetaDataInformation(tableInfo, table);
+    getTableMetaDataInformation(tableInfo, table, isOutputPadded);
 
     // Storage information.
     tableInfo.append(LINE_DELIM).append("# Storage Information").append(LINE_DELIM);
     getStorageDescriptorInfo(tableInfo, table.getTTable().getSd());
 
-    if (table.isView()) {
+    if (table.isView() || table.isMaterializedView()) {
       tableInfo.append(LINE_DELIM).append("# View Information").append(LINE_DELIM);
       getViewInfo(tableInfo, table);
     }
@@ -301,6 +376,7 @@ public final class MetaDataFormatUtils {
   private static void getViewInfo(StringBuilder tableInfo, Table tbl) {
     formatOutput("View Original Text:", tbl.getViewOriginalText(), tableInfo);
     formatOutput("View Expanded Text:", tbl.getViewExpandedText(), tableInfo);
+    formatOutput("View Rewrite Enabled:", tbl.isRewriteEnabled() ? "Yes" : "No", tableInfo);
   }
 
   private static void getStorageDescriptorInfo(StringBuilder tableInfo,
@@ -318,22 +394,23 @@ public final class MetaDataFormatUtils {
     }
 
     if (null != storageDesc.getSkewedInfo()) {
-      List<String> skewedColNames = storageDesc.getSkewedInfo().getSkewedColNames();
+      List<String> skewedColNames = sortedList(storageDesc.getSkewedInfo().getSkewedColNames());
       if ((skewedColNames != null) && (skewedColNames.size() > 0)) {
         formatOutput("Skewed Columns:", skewedColNames.toString(), tableInfo);
       }
 
-      List<List<String>> skewedColValues = storageDesc.getSkewedInfo().getSkewedColValues();
+      List<List<String>> skewedColValues = sortedList(
+          storageDesc.getSkewedInfo().getSkewedColValues(), new VectorComparator<String>());
       if ((skewedColValues != null) && (skewedColValues.size() > 0)) {
         formatOutput("Skewed Values:", skewedColValues.toString(), tableInfo);
       }
 
-      Map<List<String>, String> skewedColMap = storageDesc.getSkewedInfo()
-          .getSkewedColValueLocationMaps();
+      Map<List<String>, String> skewedColMap = new TreeMap<>(new VectorComparator<String>());
+      skewedColMap.putAll(storageDesc.getSkewedInfo().getSkewedColValueLocationMaps());
       if ((skewedColMap!=null) && (skewedColMap.size() > 0)) {
         formatOutput("Skewed Value to Path:", skewedColMap.toString(),
             tableInfo);
-        Map<List<String>, String> truncatedSkewedColMap = new HashMap<List<String>, String>();
+        Map<List<String>, String> truncatedSkewedColMap = new TreeMap<List<String>, String>(new VectorComparator<String>());
         // walk through existing map to truncate path so that test won't mask it
         // then we can verify location is right
         Set<Entry<List<String>, String>> entries = skewedColMap.entrySet();
@@ -352,7 +429,8 @@ public final class MetaDataFormatUtils {
     }
   }
 
-  private static void getTableMetaDataInformation(StringBuilder tableInfo, Table  tbl) {
+  private static void getTableMetaDataInformation(StringBuilder tableInfo, Table  tbl,
+      boolean isOutputPadded) {
     formatOutput("Database:", tbl.getDbName(), tableInfo);
     formatOutput("Owner:", tbl.getOwner(), tableInfo);
     formatOutput("CreateTime:", formatDate(tbl.getTTable().getCreateTime()), tableInfo);
@@ -365,7 +443,7 @@ public final class MetaDataFormatUtils {
 
     if (tbl.getParameters().size() > 0) {
       tableInfo.append("Table Parameters:").append(LINE_DELIM);
-      displayAllParameters(tbl.getParameters(), tableInfo);
+      displayAllParameters(tbl.getParameters(), tableInfo, false, isOutputPadded);
     }
   }
 
@@ -384,17 +462,87 @@ public final class MetaDataFormatUtils {
     }
   }
 
+  /**
+   * Display key, value pairs of the parameters. The characters will be escaped
+   * including unicode.
+   */
   private static void displayAllParameters(Map<String, String> params, StringBuilder tableInfo) {
+    displayAllParameters(params, tableInfo, true, false);
+  }
+
+  /**
+   * Display key, value pairs of the parameters. The characters will be escaped
+   * including unicode if escapeUnicode is true; otherwise the characters other
+   * than unicode will be escaped.
+   */
+  private static void displayAllParameters(Map<String, String> params, StringBuilder tableInfo,
+      boolean escapeUnicode, boolean isOutputPadded) {
     List<String> keys = new ArrayList<String>(params.keySet());
     Collections.sort(keys);
     for (String key : keys) {
       tableInfo.append(FIELD_DELIM); // Ensures all params are indented.
-      formatOutput(key, StringEscapeUtils.escapeJava(params.get(key)), tableInfo);
+      formatOutput(key,
+          escapeUnicode ? StringEscapeUtils.escapeJava(params.get(key))
+              : HiveStringUtils.escapeJava(params.get(key)),
+          tableInfo, isOutputPadded);
     }
   }
 
   static String getComment(FieldSchema col) {
     return col.getComment() != null ? col.getComment() : "";
+  }
+
+  /**
+   * Compares to lists of object T as vectors
+   *
+   * @param <T> the base object type. Must be {@link Comparable}
+   */
+  private static class VectorComparator<T extends Comparable<T>>  implements Comparator<List<T>>{
+
+    @Override
+    public int compare(List<T> listA, List<T> listB) {
+      for (int i = 0; i < listA.size() && i < listB.size(); i++) {
+        T valA = listA.get(i);
+        T valB = listB.get(i);
+        if (valA != null) {
+          int ret = valA.compareTo(valB);
+          if (ret != 0) {
+            return ret;
+          }
+        } else {
+          if (valB != null) {
+            return -1;
+          }
+        }
+      }
+      return Integer.compare(listA.size(), listB.size());
+    }
+  }
+
+  /**
+   * Returns a sorted version of the given list
+   */
+  static <T extends Comparable<T>> List<T> sortedList(List<T> list){
+    if (list == null || list.size() <= 1) {
+      return list;
+    }
+    ArrayList<T> ret = new ArrayList<>();
+    ret.addAll(list);
+    Collections.sort(ret);
+    return ret;
+  }
+
+  /**
+   * Returns a sorted version of the given list, using the provided comparator
+   */
+  static <T> List<T> sortedList(List<T> list, Comparator<T> comp) {
+    if (list == null || list.size() <= 1) {
+      return list;
+    }
+    ArrayList<T> ret = new ArrayList<>();
+    ret.addAll(list);
+    Collections.sort(ret,comp);
+    return ret;
   }
 
   private static String formatDate(long timeInSeconds) {
@@ -405,21 +553,74 @@ public final class MetaDataFormatUtils {
     return "UNKNOWN";
   }
 
-  private static void formatOutput(String[] fields, StringBuilder tableInfo) {
-    for (String field : fields) {
-      if (field == null) {
-        tableInfo.append(FIELD_DELIM);
-        continue;
+  /**
+   * Prints a row with the given fields into the builder
+   * The last field could be a multiline field, and the extra lines should be padded
+   * @param fields The fields to print
+   * @param tableInfo The target builder
+   * @param isLastLinePadded Is the last field could be printed in multiple lines, if contains
+   *                         newlines?
+   */
+  private static void formatOutput(String[] fields, StringBuilder tableInfo,
+      boolean isLastLinePadded) {
+    int[] paddings = new int[fields.length-1];
+    if (fields.length > 1) {
+      for (int i = 0; i < fields.length - 1; i++) {
+        if (fields[i] == null) {
+          tableInfo.append(FIELD_DELIM);
+          continue;
+        }
+        tableInfo.append(String.format("%-" + ALIGNMENT + "s", fields[i])).append(FIELD_DELIM);
+        paddings[i] = ALIGNMENT > fields[i].length() ? ALIGNMENT : fields[i].length();
       }
-      tableInfo.append(String.format("%-" + ALIGNMENT + "s", field)).append(FIELD_DELIM);
     }
-    tableInfo.append(LINE_DELIM);
+    if (fields.length > 0) {
+      String value = fields[fields.length-1];
+      String unescapedValue =
+          (isLastLinePadded && value != null) ? value.replaceAll("\\\\n|\\\\r|\\\\r\\\\n","\n")
+              :value;
+      indentMultilineValue(unescapedValue, tableInfo, paddings, false);
+    } else {
+      tableInfo.append(LINE_DELIM);
+    }
   }
 
-  private static void formatOutput(String name, String value,
-      StringBuilder tableInfo) {
+  /**
+   * Prints a row the given fields to a formatted line
+   * @param fields The fields to print
+   * @param tableInfo The target builder
+   */
+  private static void formatOutput(String[] fields, StringBuilder tableInfo) {
+    formatOutput(fields, tableInfo, false);
+  }
+
+  /**
+   * Prints the name value pair, and if the value contains newlines, it add one more empty field
+   * before the two values (Assumes, the name value pair is already indented with it)
+   * @param name The field name to print
+   * @param value The value to print - might contain newlines
+   * @param tableInfo The target builder
+   */
+  private static void formatOutput(String name, String value, StringBuilder tableInfo) {
     tableInfo.append(String.format("%-" + ALIGNMENT + "s", name)).append(FIELD_DELIM);
-    tableInfo.append(String.format("%-" + ALIGNMENT + "s", value)).append(LINE_DELIM);
+    int colNameLength = ALIGNMENT > name.length() ? ALIGNMENT : name.length();
+    indentMultilineValue(value, tableInfo, new int[] {0, colNameLength}, true);
+  }
+
+  /**
+   * Prints the name value pair
+   * It the output is padded then unescape the value, so it could be printed in multiple lines.
+   * In this case it assumes the pair is already indented with a field delimiter
+   * @param name The field name to print
+   * @param value The value t print
+   * @param tableInfo The target builder
+   * @param isOutputPadded Should the value printed as a padded string?
+   */
+  protected static void formatOutput(String name, String value, StringBuilder tableInfo,
+      boolean isOutputPadded) {
+    String unescapedValue =
+        (isOutputPadded && value != null) ? value.replaceAll("\\\\n|\\\\r|\\\\r\\\\n","\n"):value;
+    formatOutput(name, unescapedValue, tableInfo);
   }
 
   private static void formatWithIndentation(String colName, String colType, String colComment,
@@ -445,8 +646,8 @@ public final class MetaDataFormatUtils {
               bcsd.getNumTrues(), bcsd.getNumFalses());
         } else if (csd.isSetDecimalStats()) {
           DecimalColumnStatsData dcsd = csd.getDecimalStats();
-          appendColumnStats(tableInfo, convertToString(dcsd.getLowValue()), 
-              convertToString(dcsd.getHighValue()), dcsd.getNumNulls(), dcsd.getNumDVs(), 
+          appendColumnStats(tableInfo, convertToString(dcsd.getLowValue()),
+              convertToString(dcsd.getHighValue()), dcsd.getNumNulls(), dcsd.getNumDVs(),
               "", "", "", "");
         } else if (csd.isSetDoubleStats()) {
           DoubleColumnStatsData dcsd = csd.getDoubleStats();
@@ -468,17 +669,51 @@ public final class MetaDataFormatUtils {
       }
     }
 
-    // comment indent processing for multi-line comments
-    // comments should be indented the same amount on each line
-    // if the first line comment starts indented by k,
-    // the following line comments should also be indented by k
-    String[] commentSegments = colComment.split("\n|\r|\r\n");
-    tableInfo.append(String.format("%-" + ALIGNMENT + "s", commentSegments[0])).append(LINE_DELIM);
     int colNameLength = ALIGNMENT > colName.length() ? ALIGNMENT : colName.length();
     int colTypeLength = ALIGNMENT > colType.length() ? ALIGNMENT : colType.length();
-    for (int i = 1; i < commentSegments.length; i++) {
-      tableInfo.append(String.format("%" + colNameLength + "s" + FIELD_DELIM + "%"
-          + colTypeLength + "s" + FIELD_DELIM + "%s", "", "", commentSegments[i])).append(LINE_DELIM);
+    indentMultilineValue(colComment, tableInfo, new int[]{colNameLength, colTypeLength}, false);
+  }
+
+  /**
+   * comment indent processing for multi-line values
+   * values should be indented the same amount on each line
+   * if the first line comment starts indented by k,
+   * the following line comments should also be indented by k
+   * @param value the value to write
+   * @param tableInfo the buffer to write to
+   * @param columnWidths the widths of the previous columns
+   * @param printNull print null as a string, or do not print anything
+   */
+  private static void indentMultilineValue(String value, StringBuilder tableInfo,
+      int[] columnWidths, boolean printNull) {
+    if (value==null) {
+      if (printNull) {
+        tableInfo.append(String.format("%-" + ALIGNMENT + "s", value));
+      }
+      tableInfo.append(LINE_DELIM);
+    } else {
+      String[] valueSegments = value.split("\n|\r|\r\n");
+      tableInfo.append(String.format("%-" + ALIGNMENT + "s", valueSegments[0])).append(LINE_DELIM);
+      for (int i = 1; i < valueSegments.length; i++) {
+        printPadding(tableInfo, columnWidths);
+        tableInfo.append(String.format("%-" + ALIGNMENT + "s", valueSegments[i]))
+            .append(LINE_DELIM);
+      }
+    }
+  }
+
+  /**
+   * Print the rigth padding, with the given column widths
+   * @param tableInfo The buffer to write to
+   * @param columnWidths The column widths
+   */
+  private static void printPadding(StringBuilder tableInfo, int[] columnWidths) {
+    for (int columnWidth : columnWidths) {
+      if (columnWidth == 0) {
+        tableInfo.append(FIELD_DELIM);
+      } else {
+        tableInfo.append(String.format("%" + columnWidth + "s" + FIELD_DELIM, ""));
+      }
     }
   }
 
@@ -520,6 +755,7 @@ public final class MetaDataFormatUtils {
     formatOutput(ShowIndexesDesc.getSchema().split("#")[0].split(","), indexCols);
     return indexCols.toString();
   }
+
   public static MetaDataFormatter getFormatter(HiveConf conf) {
     if ("json".equals(conf.get(HiveConf.ConfVars.HIVE_DDL_OUTPUT_FORMAT.varname, "text"))) {
       return new JsonMetaDataFormatter();

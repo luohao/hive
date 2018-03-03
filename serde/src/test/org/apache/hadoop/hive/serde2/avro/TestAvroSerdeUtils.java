@@ -25,14 +25,14 @@ import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.junit.Test;
 
 import java.io.IOException;
-import java.net.MalformedURLException;
 import java.net.URISyntaxException;
+import java.util.Arrays;
+import java.util.List;
 import java.util.Properties;
 
 import static org.apache.hadoop.hive.serde2.avro.AvroSerdeUtils.EXCEPTION_MESSAGE;
-import static org.apache.hadoop.hive.serde2.avro.AvroSerdeUtils.SCHEMA_LITERAL;
 import static org.apache.hadoop.hive.serde2.avro.AvroSerdeUtils.SCHEMA_NONE;
-import static org.apache.hadoop.hive.serde2.avro.AvroSerdeUtils.SCHEMA_URL;
+import org.apache.hadoop.hive.serde2.avro.AvroSerdeUtils.AvroTableProperties;
 import static org.apache.hadoop.hive.serde2.avro.AvroSerdeUtils.determineSchemaOrThrowException;
 import static org.apache.hadoop.hive.serde2.avro.AvroSerdeUtils.getOtherTypeFromNullableType;
 import static org.apache.hadoop.hive.serde2.avro.AvroSerdeUtils.isNullableType;
@@ -70,14 +70,32 @@ public class TestAvroSerdeUtils {
 
   @Test
   public void isNullableTypeIdentifiesUnionsOfMoreThanTwoTypes() {
-    String schemaString = "{\n" +
-      "  \"type\": \"record\", \n" +
-      "  \"name\": \"shouldNotPass\",\n" +
-      "  \"fields\" : [\n" +
-      "    {\"name\":\"mayBeNull\", \"type\":[\"string\", \"int\", \"null\"]}\n" +
-      "  ]\n" +
-      "}";
-    testField(schemaString, "mayBeNull", false);
+    List<String> schemaStrings = Arrays.asList(
+        "{\n" +
+            "  \"type\": \"record\", \n" +
+            "  \"name\": \"shouldNotPass\",\n" +
+            "  \"fields\" : [\n" +
+            "    {\"name\":\"mayBeNull\", \"type\":[\"string\", \"int\", \"null\"]}\n" +
+            "  ]\n" +
+            "}",
+        "{\n" +
+            "  \"type\": \"record\", \n" +
+            "  \"name\": \"shouldNotPass\",\n" +
+            "  \"fields\" : [\n" +
+            "    {\"name\":\"mayBeNull\", \"type\":[\"string\", \"null\", \"int\"]}\n" +
+            "  ]\n" +
+            "}",
+        "{\n" +
+            "  \"type\": \"record\", \n" +
+            "  \"name\": \"shouldNotPass\",\n" +
+            "  \"fields\" : [\n" +
+            "    {\"name\":\"mayBeNull\", \"type\":[\"null\", \"string\", \"int\"]}\n" +
+            "  ]\n" +
+            "}"
+    );
+    for (String schemaString : schemaStrings) {
+      testField(schemaString, "mayBeNull", true);
+    }
   }
 
   @Test
@@ -127,7 +145,7 @@ public class TestAvroSerdeUtils {
     String schema = TestAvroObjectInspectorGenerator.RECORD_SCHEMA;
     Configuration conf = new Configuration();
     Properties props = new Properties();
-    props.put(AvroSerdeUtils.SCHEMA_LITERAL, schema);
+    props.put(AvroTableProperties.SCHEMA_LITERAL.getPropName(), schema);
     Schema expected = AvroSerdeUtils.getSchemaFor(schema);
     assertEquals(expected, AvroSerdeUtils.determineSchemaOrThrowException(conf, props));
   }
@@ -136,7 +154,7 @@ public class TestAvroSerdeUtils {
   public void detemineSchemaTriesToOpenUrl() throws AvroSerdeException, IOException {
     Configuration conf = new Configuration();
     Properties props = new Properties();
-    props.put(AvroSerdeUtils.SCHEMA_URL, "not:///a.real.url");
+    props.put(AvroTableProperties.SCHEMA_URL.getPropName(), "not:///a.real.url");
 
     try {
       AvroSerdeUtils.determineSchemaOrThrowException(conf, props);
@@ -152,8 +170,8 @@ public class TestAvroSerdeUtils {
     Properties props = new Properties();
 
     // Combo 1: Both set to none
-    props.put(SCHEMA_URL, SCHEMA_NONE);
-    props.put(SCHEMA_LITERAL, SCHEMA_NONE);
+    props.put(AvroTableProperties.SCHEMA_URL.getPropName(), SCHEMA_NONE);
+    props.put(AvroTableProperties.SCHEMA_LITERAL.getPropName(), SCHEMA_NONE);
     try {
       determineSchemaOrThrowException(conf, props);
       fail("Should have thrown exception with none set for both url and literal");
@@ -162,7 +180,7 @@ public class TestAvroSerdeUtils {
     }
 
     // Combo 2: Literal set, url set to none
-    props.put(SCHEMA_LITERAL, TestAvroObjectInspectorGenerator.RECORD_SCHEMA);
+    props.put(AvroTableProperties.SCHEMA_LITERAL.getPropName(), TestAvroObjectInspectorGenerator.RECORD_SCHEMA);
     Schema s;
     try {
       s = determineSchemaOrThrowException(conf, props);
@@ -173,8 +191,8 @@ public class TestAvroSerdeUtils {
     }
 
     // Combo 3: url set, literal set to none
-    props.put(SCHEMA_LITERAL, SCHEMA_NONE);
-    props.put(SCHEMA_URL, "not:///a.real.url");
+    props.put(AvroTableProperties.SCHEMA_LITERAL.getPropName(), SCHEMA_NONE);
+    props.put(AvroTableProperties.SCHEMA_URL.getPropName(), "not:///a.real.url");
     try {
       determineSchemaOrThrowException(conf, props);
       fail("Should have tried to open that bogus URL");

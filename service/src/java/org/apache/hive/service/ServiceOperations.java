@@ -18,16 +18,16 @@
 
 package org.apache.hive.service;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.hive.conf.HiveConf;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * ServiceOperations.
  *
  */
 public final class ServiceOperations {
-  private static final Log LOG = LogFactory.getLog(AbstractService.class);
+  private static final Logger LOG = LoggerFactory.getLogger(AbstractService.class);
 
   private ServiceOperations() {
   }

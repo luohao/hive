@@ -27,6 +27,8 @@ import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.ql.Driver;
 import org.apache.hadoop.hive.ql.metadata.*;
@@ -72,6 +74,11 @@ public final class CommandProcessorFactory {
     if (!availableCommands.contains(cmd[0].trim().toLowerCase())) {
       throw new SQLException("Insufficient privileges to execute " + cmd[0], "42000");
     }
+    if (cmd.length > 1 && "reload".equalsIgnoreCase(cmd[0])
+      && "function".equalsIgnoreCase(cmd[1])) {
+      // special handling for SQL "reload function"
+      return null;
+    }
     switch (hiveCommand) {
       case SET:
         return new SetProcessor();
@@ -101,6 +108,7 @@ public final class CommandProcessorFactory {
     }
   }
 
+  static Logger LOG = LoggerFactory.getLogger(CommandProcessorFactory.class);
   public static CommandProcessor get(String[] cmd, HiveConf conf)
       throws SQLException {
     CommandProcessor result = getForHiveCommand(cmd, conf);
@@ -117,6 +125,8 @@ public final class CommandProcessorFactory {
       if (drv == null) {
         drv = new Driver();
         mapDrivers.put(conf, drv);
+      } else {
+        drv.resetQueryState();
       }
       drv.init();
       return drv;

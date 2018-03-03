@@ -17,6 +17,8 @@
  */
 package org.apache.hadoop.hive.ql.exec.tez;
 
+import java.util.concurrent.ConcurrentHashMap;
+
 import com.google.common.base.Function;
 import com.google.common.collect.Iterators;
 import com.google.common.collect.Lists;
@@ -36,11 +38,13 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import org.apache.commons.io.FilenameUtils;
 import org.apache.commons.lang.StringUtils;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
@@ -50,6 +54,7 @@ import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.conf.HiveConf.ConfVars;
 import org.apache.hadoop.hive.ql.Context;
 import org.apache.hadoop.hive.ql.ErrorMsg;
+import org.apache.hadoop.hive.ql.QueryPlan;
 import org.apache.hadoop.hive.ql.exec.Operator;
 import org.apache.hadoop.hive.ql.exec.Utilities;
 import org.apache.hadoop.hive.ql.exec.mr.ExecMapper;
@@ -74,6 +79,7 @@ import org.apache.hadoop.hive.ql.plan.TezEdgeProperty.EdgeType;
 import org.apache.hadoop.hive.ql.plan.TezWork;
 import org.apache.hadoop.hive.ql.plan.TezWork.VertexType;
 import org.apache.hadoop.hive.ql.session.SessionState;
+import org.apache.hadoop.hive.ql.stats.StatsCollectionContext;
 import org.apache.hadoop.hive.ql.stats.StatsFactory;
 import org.apache.hadoop.hive.ql.stats.StatsPublisher;
 import org.apache.hadoop.hive.shims.Utils;
@@ -108,6 +114,7 @@ import org.apache.tez.dag.api.TezConfiguration;
 import org.apache.tez.dag.api.TezException;
 import org.apache.tez.dag.api.UserPayload;
 import org.apache.tez.dag.api.Vertex;
+import org.apache.tez.dag.api.Vertex.VertexExecutionContext;
 import org.apache.tez.dag.api.VertexGroup;
 import org.apache.tez.dag.api.VertexManagerPluginDescriptor;
 import org.apache.tez.dag.library.vertexmanager.ShuffleVertexManager;
@@ -134,22 +141,30 @@ import org.apache.tez.runtime.library.input.ConcatenatedMergedKeyValueInput;
 public class DagUtils {
 
   public static final String TEZ_TMP_DIR_KEY = "_hive_tez_tmp_dir";
-  private static final Log LOG = LogFactory.getLog(DagUtils.class.getName());
+  private static final Logger LOG = LoggerFactory.getLogger(DagUtils.class.getName());
   private static final String TEZ_DIR = "_tez_scratch_dir";
-  private static DagUtils instance;
+  private static final DagUtils instance = new DagUtils();
   // The merge file being currently processed.
   public static final String TEZ_MERGE_CURRENT_MERGE_FILE_PREFIX =
       "hive.tez.current.merge.file.prefix";
   // "A comma separated list of work names used as prefix.
   public static final String TEZ_MERGE_WORK_FILE_PREFIXES = "hive.tez.merge.file.prefixes";
 
+  /**
+   * Notifiers to synchronize resource localization across threads. If one thread is localizing
+   * a file, other threads can wait on the corresponding notifier object instead of just sleeping
+   * before re-checking HDFS. This is used just to avoid unnecesary waits; HDFS check still needs
+   * to be performed to make sure the resource is there and matches the expected file.
+   */
+  private final ConcurrentHashMap<String, Object> copyNotifiers = new ConcurrentHashMap<>();
+
   private void addCredentials(MapWork mapWork, DAG dag) {
-    Set<String> paths = mapWork.getPathToAliases().keySet();
+    Set<Path> paths = mapWork.getPathToAliases().keySet();
     if (!paths.isEmpty()) {
-      Iterator<URI> pathIterator = Iterators.transform(paths.iterator(), new Function<String, URI>() {
+      Iterator<URI> pathIterator = Iterators.transform(paths.iterator(), new Function<Path, URI>() {
         @Override
-        public URI apply(String input) {
-          return new Path(input).toUri();
+        public URI apply(Path path) {
+          return path.toUri();
         }
       });
 
@@ -209,10 +224,6 @@ public class DagUtils {
 
     if (mapWork.isUseBucketizedHiveInputFormat()) {
       inpFormat = BucketizedHiveInputFormat.class.getName();
-    }
-
-    if (mapWork.isUseOneNullRowInputFormat()) {
-      inpFormat = CombineHiveInputFormat.class.getName();
     }
 
     if (mapWork.getDummyTableScan()) {
@@ -445,7 +456,7 @@ public class DagUtils {
    * Falls back to Map-reduces map java opts if no tez specific options
    * are set
    */
-  private String getContainerJavaOpts(Configuration conf) {
+  private static String getContainerJavaOpts(Configuration conf) {
     String javaOpts = HiveConf.getVar(conf, HiveConf.ConfVars.HIVETEZJAVAOPTS);
 
     String logLevel = HiveConf.getVar(conf, HiveConf.ConfVars.HIVETEZLOGLEVEL);
@@ -574,8 +585,9 @@ public class DagUtils {
       // exist before jobClose (before renaming after job completion)
       Path tempOutPath = Utilities.toTempPath(outputPath);
       try {
-        if (!fs.exists(tempOutPath)) {
-          fs.mkdirs(tempOutPath);
+        FileSystem tmpOutFS = tempOutPath.getFileSystem(conf);
+        if (!tmpOutFS.exists(tempOutPath)) {
+          tmpOutFS.mkdirs(tempOutPath);
         }
       } catch (IOException e) {
         throw new RuntimeException(
@@ -585,8 +597,7 @@ public class DagUtils {
 
     // remember mapping of plan to input
     conf.set(Utilities.INPUT_NAME, mapWork.getName());
-    if (HiveConf.getBoolVar(conf, ConfVars.HIVE_AM_SPLIT_GENERATION)
-        && !mapWork.isUseOneNullRowInputFormat()) {
+    if (HiveConf.getBoolVar(conf, ConfVars.HIVE_AM_SPLIT_GENERATION)) {
 
       // set up the operator plan. (before setting up splits on the AM)
       Utilities.setMapWork(conf, mapWork, mrScratchDir, false);
@@ -611,6 +622,16 @@ public class DagUtils {
       }
     } else {
       // Setup client side split generation.
+
+      // we need to set this, because with HS2 and client side split
+      // generation we end up not finding the map work. This is
+      // because of thread local madness (tez split generation is
+      // multi-threaded - HS2 plan cache uses thread locals). Setting
+      // VECTOR_MODE/USE_VECTORIZED_INPUT_FILE_FORMAT causes the split gen code to use the conf instead
+      // of the map work.
+      conf.setBoolean(Utilities.VECTOR_MODE, mapWork.getVectorMode());
+      conf.setBoolean(Utilities.USE_VECTORIZED_INPUT_FILE_FORMAT, mapWork.getUseVectorizedInputFileFormat());
+
       dataSource = MRInputHelpers.configureMRInputWithLegacySplitGeneration(conf, new Path(tezDir,
           "split_" + mapWork.getName().replaceAll(" ", "_")), true);
       numTasks = dataSource.getNumberOfShards();
@@ -624,10 +645,14 @@ public class DagUtils {
     if (mapWork instanceof MergeFileWork) {
       procClassName = MergeFileTezProcessor.class.getName();
     }
+
+    VertexExecutionContext executionContext = createVertexExecutionContext(mapWork);
+
     map = Vertex.create(mapWork.getName(), ProcessorDescriptor.create(procClassName)
         .setUserPayload(serializedConf), numTasks, getContainerResource(conf));
 
     map.setTaskEnvironment(getContainerEnvironment(conf, true));
+    map.setExecutionContext(executionContext);
     map.setTaskLaunchCmdOpts(getContainerJavaOpts(conf));
 
     assert mapWork.getAliasToWork().keySet().size() == 1;
@@ -659,10 +684,23 @@ public class DagUtils {
 
     boolean useSpeculativeExecReducers = HiveConf.getBoolVar(conf,
         HiveConf.ConfVars.HIVESPECULATIVEEXECREDUCERS);
-    HiveConf.setBoolVar(conf, HiveConf.ConfVars.HADOOPSPECULATIVEEXECREDUCERS,
+    conf.setBoolean(org.apache.hadoop.mapreduce.MRJobConfig.REDUCE_SPECULATIVE,
         useSpeculativeExecReducers);
 
     return conf;
+  }
+
+  private VertexExecutionContext createVertexExecutionContext(BaseWork work) {
+    VertexExecutionContext vertexExecutionContext = VertexExecutionContext.createExecuteInContainers(true);
+    if (work.getLlapMode()) {
+      vertexExecutionContext = VertexExecutionContext
+          .create(TezSessionState.LLAP_SERVICE, TezSessionState.LLAP_SERVICE,
+              TezSessionState.LLAP_SERVICE);
+    }
+    if (work.getUberMode()) {
+      vertexExecutionContext = VertexExecutionContext.createExecuteInAm(true);
+    }
+    return vertexExecutionContext;
   }
 
   /*
@@ -679,14 +717,18 @@ public class DagUtils {
     // create the directories FileSinkOperators need
     Utilities.createTmpDirs(conf, reduceWork);
 
+    VertexExecutionContext vertexExecutionContext = createVertexExecutionContext(reduceWork);
+
     // create the vertex
     Vertex reducer = Vertex.create(reduceWork.getName(),
         ProcessorDescriptor.create(ReduceTezProcessor.class.getName()).
-        setUserPayload(TezUtils.createUserPayloadFromConf(conf)),
-            reduceWork.isAutoReduceParallelism() ? reduceWork.getMaxReduceTasks() : reduceWork
-                .getNumReduceTasks(), getContainerResource(conf));
+            setUserPayload(TezUtils.createUserPayloadFromConf(conf)),
+        reduceWork.isAutoReduceParallelism() ?
+            reduceWork.getMaxReduceTasks() :
+            reduceWork.getNumReduceTasks(), getContainerResource(conf));
 
     reducer.setTaskEnvironment(getContainerEnvironment(conf, false));
+    reducer.setExecutionContext(vertexExecutionContext);
     reducer.setTaskLaunchCmdOpts(getContainerJavaOpts(conf));
 
     Map<String, LocalResource> localResources = new HashMap<String, LocalResource>();
@@ -715,7 +757,7 @@ public class DagUtils {
     URL resourceURL = ConverterUtils.getYarnUrlFromPath(file);
     long resourceSize = fstat.getLen();
     long resourceModificationTime = fstat.getModificationTime();
-    LOG.info("Resource modification time: " + resourceModificationTime);
+    LOG.info("Resource modification time: " + resourceModificationTime + " for " + file);
 
     LocalResource lr = Records.newRecord(LocalResource.class);
     lr.setResource(resourceURL);
@@ -865,7 +907,7 @@ public class DagUtils {
 
   public FileStatus getHiveJarDirectory(Configuration conf) throws IOException, LoginException {
     FileStatus fstatus = null;
-    String hdfsDirPathStr = HiveConf.getVar(conf, HiveConf.ConfVars.HIVE_JAR_DIRECTORY, null);
+    String hdfsDirPathStr = HiveConf.getVar(conf, HiveConf.ConfVars.HIVE_JAR_DIRECTORY, (String)null);
     if (hdfsDirPathStr != null) {
       LOG.info("Hive jar directory is " + hdfsDirPathStr);
       fstatus = validateTargetDir(new Path(hdfsDirPathStr), conf);
@@ -873,7 +915,7 @@ public class DagUtils {
 
     if (fstatus == null) {
       Path destDir = getDefaultDestDir(conf);
-      LOG.info("Jar dir is null/directory doesn't exist. Choosing HIVE_INSTALL_DIR - " + destDir);
+      LOG.info("Jar dir is null / directory doesn't exist. Choosing HIVE_INSTALL_DIR - " + destDir);
       fstatus = validateTargetDir(destDir, conf);
     }
 
@@ -923,10 +965,9 @@ public class DagUtils {
    * @return true if the file names match else returns false.
    * @throws IOException when any file system related call fails
    */
-  private boolean checkPreExisting(Path src, Path dest, Configuration conf)
+  private boolean checkPreExisting(FileSystem sourceFS, Path src, Path dest, Configuration conf)
     throws IOException {
     FileSystem destFS = dest.getFileSystem(conf);
-    FileSystem sourceFS = src.getFileSystem(conf);
     FileStatus destStatus = FileUtils.getFileStatusOrNull(destFS, dest);
     if (destStatus != null) {
       return (sourceFS.getFileStatus(src).getLen() == destStatus.getLen());
@@ -935,6 +976,7 @@ public class DagUtils {
   }
 
   /**
+   * Localizes a resources. Should be thread-safe.
    * @param src path to the source for the resource
    * @param dest path in hdfs for the resource
    * @param type local resource type (File/Archive)
@@ -942,49 +984,83 @@ public class DagUtils {
    * @return localresource from tez localization.
    * @throws IOException when any file system related calls fails.
    */
-  public LocalResource localizeResource(Path src, Path dest, LocalResourceType type, Configuration conf)
-    throws IOException {
+  public LocalResource localizeResource(
+      Path src, Path dest, LocalResourceType type, Configuration conf) throws IOException {
     FileSystem destFS = dest.getFileSystem(conf);
-
-    if (src != null && checkPreExisting(src, dest, conf) == false) {
+    // We call copyFromLocal below, so we basically assume src is a local file.
+    FileSystem srcFs = FileSystem.getLocal(conf);
+    if (src != null && !checkPreExisting(srcFs, src, dest, conf)) {
       // copy the src to the destination and create local resource.
       // do not overwrite.
-      LOG.info("Localizing resource because it does not exist: " + src + " to dest: " + dest);
+      String srcStr = src.toString();
+      LOG.info("Localizing resource because it does not exist: " + srcStr + " to dest: " + dest);
+      Object notifierNew = new Object(),
+          notifierOld = copyNotifiers.putIfAbsent(srcStr, notifierNew),
+          notifier = (notifierOld == null) ? notifierNew : notifierOld;
+      // To avoid timing issues with notifications (and given that HDFS check is anyway the
+      // authoritative one), don't wait infinitely for the notifier, just wait a little bit
+      // and check HDFS before and after.
+      if (notifierOld != null
+          && checkOrWaitForTheFile(srcFs, src, dest, conf, notifierOld, 1, 150, false)) {
+        return createLocalResource(destFS, dest, type, LocalResourceVisibility.PRIVATE);
+      }
       try {
         destFS.copyFromLocalFile(false, false, src, dest);
-      } catch (IOException e) {
-        LOG.info("Looks like another thread is writing the same file will wait.");
-        int waitAttempts =
-            conf.getInt(HiveConf.ConfVars.HIVE_LOCALIZE_RESOURCE_NUM_WAIT_ATTEMPTS.varname,
-                HiveConf.ConfVars.HIVE_LOCALIZE_RESOURCE_NUM_WAIT_ATTEMPTS.defaultIntVal);
-        long sleepInterval = HiveConf.getTimeVar(
-            conf, HiveConf.ConfVars.HIVE_LOCALIZE_RESOURCE_WAIT_INTERVAL,
-            TimeUnit.MILLISECONDS);
-        LOG.info("Number of wait attempts: " + waitAttempts + ". Wait interval: "
-            + sleepInterval);
-        boolean found = false;
-        for (int i = 0; i < waitAttempts; i++) {
-          if (!checkPreExisting(src, dest, conf)) {
-            try {
-              Thread.sleep(sleepInterval);
-            } catch (InterruptedException interruptedException) {
-              throw new IOException(interruptedException);
-            }
-          } else {
-            found = true;
-            break;
-          }
+        synchronized (notifier) {
+          notifier.notifyAll(); // Notify if we have successfully copied the file.
         }
-        if (!found) {
+        copyNotifiers.remove(srcStr, notifier);
+      } catch (IOException e) {
+        if ("Exception while contacting value generator".equals(e.getMessage())) {
+          // HADOOP-13155, fixed version: 2.8.0, 3.0.0-alpha1
+          throw new IOException("copyFromLocalFile failed due to HDFS KMS failure", e);
+        }
+
+        LOG.info("Looks like another thread or process is writing the same file");
+        int waitAttempts = HiveConf.getIntVar(
+            conf, ConfVars.HIVE_LOCALIZE_RESOURCE_NUM_WAIT_ATTEMPTS);
+        long sleepInterval = HiveConf.getTimeVar(
+            conf, HiveConf.ConfVars.HIVE_LOCALIZE_RESOURCE_WAIT_INTERVAL, TimeUnit.MILLISECONDS);
+        // Only log on the first wait, and check after wait on the last iteration.
+        if (!checkOrWaitForTheFile(
+            srcFs, src, dest, conf, notifierOld, waitAttempts, sleepInterval, true)) {
           LOG.error("Could not find the jar that was being uploaded");
           throw new IOException("Previous writer likely failed to write " + dest +
               ". Failing because I am unlikely to write too.");
         }
+      } finally {
+        if (notifier == notifierNew) {
+          copyNotifiers.remove(srcStr, notifierNew);
+        }
       }
     }
-
     return createLocalResource(destFS, dest, type,
         LocalResourceVisibility.PRIVATE);
+  }
+
+  public boolean checkOrWaitForTheFile(FileSystem srcFs, Path src, Path dest, Configuration conf,
+      Object notifier, int waitAttempts, long sleepInterval, boolean doLog) throws IOException {
+    for (int i = 0; i < waitAttempts; i++) {
+      if (checkPreExisting(srcFs, src, dest, conf)) return true;
+      if (doLog && i == 0) {
+        LOG.info("Waiting for the file " + dest + " (" + waitAttempts + " attempts, with "
+            + sleepInterval + "ms interval)");
+      }
+      try {
+        if (notifier != null) {
+          // The writing thread has given us an object to wait on.
+          synchronized (notifier) {
+            notifier.wait(sleepInterval);
+          }
+        } else {
+          // Some other process is probably writing the file. Just sleep.
+          Thread.sleep(sleepInterval);
+        }
+      } catch (InterruptedException interruptedException) {
+        throw new IOException(interruptedException);
+      }
+    }
+    return checkPreExisting(srcFs, src, dest, conf); // One last check.
   }
 
   /**
@@ -1015,7 +1091,10 @@ public class DagUtils {
     conf.set("mapred.partitioner.class", HiveConf.getVar(conf, HiveConf.ConfVars.HIVEPARTITIONER));
     conf.set("tez.runtime.partitioner.class", MRPartitioner.class.getName());
 
-    Utilities.stripHivePasswordDetails(conf);
+    // Removing job credential entry/ cannot be set on the tasks
+    conf.unset("mapreduce.job.credentials.binary");
+
+    hiveConf.stripHiddenConfigurations(conf);
     return conf;
   }
 
@@ -1091,8 +1170,10 @@ public class DagUtils {
       StatsPublisher statsPublisher;
       StatsFactory factory = StatsFactory.newFactory(conf);
       if (factory != null) {
+        StatsCollectionContext sCntxt = new StatsCollectionContext(conf);
+        sCntxt.setStatsTmpDirs(Utilities.getStatsTmpDirs(work, conf));
         statsPublisher = factory.getStatsPublisher();
-        if (!statsPublisher.init(conf)) { // creating stats table if not exists
+        if (!statsPublisher.init(sCntxt)) { // creating stats table if not exists
           if (HiveConf.getBoolVar(conf, HiveConf.ConfVars.HIVE_STATS_RELIABLE)) {
             throw
               new HiveException(ErrorMsg.STATSPUBLISHER_INITIALIZATION_ERROR.getErrorCodedMsg());
@@ -1163,9 +1244,6 @@ public class DagUtils {
    * @return instance of this class
    */
   public static DagUtils getInstance() {
-    if (instance == null) {
-      instance = new DagUtils();
-    }
     return instance;
   }
 
@@ -1188,7 +1266,112 @@ public class DagUtils {
     }
   }
 
+  public String createDagName(Configuration conf, QueryPlan plan) {
+    String name = getUserSpecifiedDagName(conf);
+    if (name == null) {
+      name = plan.getQueryId();
+    }
+
+    assert name != null;
+    return name;
+  }
+
+  public static String getUserSpecifiedDagName(Configuration conf) {
+    String name = HiveConf.getVar(conf, HiveConf.ConfVars.HIVEQUERYNAME);
+    return (name != null) ? name : conf.get("mapred.job.name");
+  }
+
   private DagUtils() {
     // don't instantiate
+  }
+
+  /**
+   * TODO This method is temporary. Ideally Hive should only need to pass to Tez the amount of memory
+   *      it requires to do the map join, and Tez should take care of figuring out how much to allocate
+   * Adjust the percentage of memory to be reserved for the processor from Tez
+   * based on the actual requested memory by the Map Join, i.e. HIVECONVERTJOINNOCONDITIONALTASKTHRESHOLD
+   * @return the adjusted percentage
+   */
+  static double adjustMemoryReserveFraction(long memoryRequested, HiveConf conf) {
+    // User specified fraction always takes precedence
+    if (conf.getFloatVar(ConfVars.TEZ_TASK_SCALE_MEMORY_RESERVE_FRACTION) > 0) {
+      return conf.getFloatVar(ConfVars.TEZ_TASK_SCALE_MEMORY_RESERVE_FRACTION);
+    }
+
+    float tezHeapFraction = conf.getFloatVar(ConfVars.TEZ_CONTAINER_MAX_JAVA_HEAP_FRACTION);
+    float tezMinReserveFraction = conf.getFloatVar(ConfVars.TEZ_TASK_SCALE_MEMORY_RESERVE_FRACTION_MIN);
+    float tezMaxReserveFraction = conf.getFloatVar(ConfVars.TEZ_TASK_SCALE_MEMORY_RESERVE_FRACTION_MAX);
+
+    Resource resource = getContainerResource(conf);
+    long containerSize = (long) resource.getMemory() * 1024 * 1024;
+    String javaOpts = getContainerJavaOpts(conf);
+    long xmx = parseRightmostXmx(javaOpts);
+
+    if (xmx <= 0) {
+      xmx = (long) (tezHeapFraction * containerSize);
+    }
+
+    long actualMemToBeAllocated = (long) (tezMinReserveFraction * xmx);
+
+    if (actualMemToBeAllocated < memoryRequested) {
+      LOG.warn("The actual amount of memory to be allocated " + actualMemToBeAllocated +
+          " is less than the amount of requested memory for Map Join conversion " + memoryRequested);
+      float frac = (float) memoryRequested / xmx;
+      LOG.info("Fraction after calculation: " + frac);
+      if (frac <= tezMinReserveFraction) {
+        return tezMinReserveFraction;
+      } else if (frac > tezMinReserveFraction && frac < tezMaxReserveFraction) {
+        LOG.info("Will adjust Tez setting " + TezConfiguration.TEZ_TASK_SCALE_MEMORY_RESERVE_FRACTION +
+            " to " + frac + " to allocate more memory");
+        return frac;
+      } else {  // frac >= tezMaxReserveFraction
+        return tezMaxReserveFraction;
+      }
+    }
+
+    return tezMinReserveFraction;  // the default fraction
+  }
+
+  /**
+   * Parse a Java opts string, try to find the rightmost -Xmx option value (since there may be more than one)
+   * @param javaOpts Java opts string to parse
+   * @return the rightmost -Xmx value in bytes. If Xmx is not set, return -1
+   */
+  static long parseRightmostXmx(String javaOpts) {
+    // Find the last matching -Xmx following word boundaries
+    // Format: -Xmx<size>[g|G|m|M|k|K]
+    Pattern JAVA_OPTS_XMX_PATTERN = Pattern.compile(".*(?:^|\\s)-Xmx(\\d+)([gGmMkK]?)(?:$|\\s).*");
+    Matcher m = JAVA_OPTS_XMX_PATTERN.matcher(javaOpts);
+
+    if (m.matches()) {
+      long size = Long.parseLong(m.group(1));
+      if (size <= 0) {
+        return -1;
+      }
+
+      if (m.group(2).isEmpty()) {
+        // -Xmx specified in bytes
+        return size;
+      }
+
+      char unit = m.group(2).charAt(0);
+      switch (unit) {
+        case 'k':
+        case 'K':
+          // -Xmx specified in KB
+          return size * 1024;
+        case 'm':
+        case 'M':
+          // -Xmx specified in MB
+          return size * 1024 * 1024;
+        case 'g':
+        case 'G':
+          // -Xmx speficied in GB
+          return size * 1024 * 1024 * 1024;
+      }
+    }
+
+    // -Xmx not specified
+    return -1;
   }
 }

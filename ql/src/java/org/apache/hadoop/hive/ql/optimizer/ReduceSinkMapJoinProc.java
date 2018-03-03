@@ -18,18 +18,16 @@
 
 package org.apache.hadoop.hive.ql.optimizer;
 
+import static org.apache.hadoop.hive.ql.plan.ReduceSinkDesc.ReducerTraits.FIXED;
+
 import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.Stack;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
-import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.ql.exec.HashTableDummyOperator;
 import org.apache.hadoop.hive.ql.exec.MapJoinOperator;
 import org.apache.hadoop.hive.ql.exec.Operator;
@@ -60,14 +58,14 @@ import org.apache.hadoop.hive.ql.plan.TezEdgeProperty.EdgeType;
 import org.apache.hadoop.hive.ql.plan.TezWork;
 import org.apache.hadoop.hive.ql.plan.TezWork.VertexType;
 import org.apache.hadoop.hive.ql.stats.StatsUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import com.google.common.collect.Sets;
 
-import static org.apache.hadoop.hive.ql.plan.ReduceSinkDesc.ReducerTraits.FIXED;
-
 public class ReduceSinkMapJoinProc implements NodeProcessor {
 
-  private final static Log LOG = LogFactory.getLog(ReduceSinkMapJoinProc.class.getName());
+  private final static Logger LOG = LoggerFactory.getLogger(ReduceSinkMapJoinProc.class.getName());
 
   /* (non-Javadoc)
    * This processor addresses the RS-MJ case that occurs in tez on the small/hash
@@ -215,8 +213,15 @@ public class ReduceSinkMapJoinProc implements NodeProcessor {
         tableSize /= bucketCount;
       }
     }
-    LOG.info("Mapjoin " + mapJoinOp + ", pos: " + pos + " --> " + parentWork.getName() + " ("
-      + keyCount + " keys estimated from " + rowCount + " rows, " + bucketCount + " buckets)");
+    if (keyCount == 0) {
+      keyCount = 1;
+    }
+    if (tableSize == 0) {
+      tableSize = 1;
+    }
+    LOG.info("Mapjoin " + mapJoinOp + "(bucket map join = )" + joinConf.isBucketMapJoin()
+    + ", pos: " + pos + " --> " + parentWork.getName() + " (" + keyCount
+    + " keys estimated from " + rowCount + " rows, " + bucketCount + " buckets)");
     joinConf.getParentToInput().put(pos, parentWork.getName());
     if (keyCount != Long.MAX_VALUE) {
       joinConf.getParentKeyCounts().put(pos, keyCount);
@@ -226,10 +231,6 @@ public class ReduceSinkMapJoinProc implements NodeProcessor {
     int numBuckets = -1;
     EdgeType edgeType = EdgeType.BROADCAST_EDGE;
     if (joinConf.isBucketMapJoin()) {
-
-      // disable auto parallelism for bucket map joins
-      parentRS.getConf().setReducerTraits(EnumSet.of(FIXED));
-
       numBuckets = (Integer) joinConf.getBigTableBucketNumMapping().values().toArray()[0];
       /*
        * Here, we can be in one of 4 states.
@@ -246,10 +247,9 @@ public class ReduceSinkMapJoinProc implements NodeProcessor {
        * 4. If we don't find a table scan operator, it has to be a reduce side operation.
        */
       if (mapJoinWork == null) {
-        Operator<?> rootOp =
-          OperatorUtils.findSingleOperatorUpstream(
-              mapJoinOp.getParentOperators().get(joinConf.getPosBigTable()),
-              ReduceSinkOperator.class);
+        Operator<?> rootOp = OperatorUtils.findSingleOperatorUpstreamJoinAccounted(
+            mapJoinOp.getParentOperators().get(joinConf.getPosBigTable()),
+            ReduceSinkOperator.class);
         if (rootOp == null) {
           // likely we found a table scan operator
           edgeType = EdgeType.CUSTOM_EDGE;
@@ -258,10 +258,9 @@ public class ReduceSinkMapJoinProc implements NodeProcessor {
           edgeType = EdgeType.CUSTOM_SIMPLE_EDGE;
         }
       } else {
-        Operator<?> rootOp =
-            OperatorUtils.findSingleOperatorUpstream(
-                mapJoinOp.getParentOperators().get(joinConf.getPosBigTable()),
-                TableScanOperator.class);
+        Operator<?> rootOp = OperatorUtils.findSingleOperatorUpstreamJoinAccounted(
+            mapJoinOp.getParentOperators().get(joinConf.getPosBigTable()),
+            TableScanOperator.class);
         if (rootOp != null) {
           // likely we found a table scan operator
           edgeType = EdgeType.CUSTOM_EDGE;
@@ -272,6 +271,10 @@ public class ReduceSinkMapJoinProc implements NodeProcessor {
       }
     } else if (mapJoinOp.getConf().isDynamicPartitionHashJoin()) {
       edgeType = EdgeType.CUSTOM_SIMPLE_EDGE;
+    }
+    if (edgeType == EdgeType.CUSTOM_EDGE) {
+      // disable auto parallelism for bucket map joins
+      parentRS.getConf().setReducerTraits(EnumSet.of(FIXED));
     }
     TezEdgeProperty edgeProp = new TezEdgeProperty(null, edgeType, numBuckets);
 
@@ -290,6 +293,7 @@ public class ReduceSinkMapJoinProc implements NodeProcessor {
           LOG.debug("Cloning reduce sink for multi-child broadcast edge");
           // we've already set this one up. Need to clone for the next work.
           r = (ReduceSinkOperator) OperatorFactory.getAndMakeChild(
+              parentRS.getCompilationOpContext(),
               (ReduceSinkDesc) parentRS.getConf().clone(),
               new RowSchema(parentRS.getSchema()),
               parentRS.getParentOperators());
@@ -314,7 +318,7 @@ public class ReduceSinkMapJoinProc implements NodeProcessor {
     context.linkOpWithWorkMap.put(mapJoinOp, linkWorkMap);
 
     List<ReduceSinkOperator> reduceSinks
-      = context.linkWorkWithReduceSinkMap.get(parentWork);
+    = context.linkWorkWithReduceSinkMap.get(parentWork);
     if (reduceSinks == null) {
       reduceSinks = new ArrayList<ReduceSinkOperator>();
     }
@@ -327,7 +331,8 @@ public class ReduceSinkMapJoinProc implements NodeProcessor {
     // create an new operator: HashTableDummyOperator, which share the table desc
     HashTableDummyDesc desc = new HashTableDummyDesc();
     @SuppressWarnings("unchecked")
-    HashTableDummyOperator dummyOp = (HashTableDummyOperator) OperatorFactory.get(desc);
+    HashTableDummyOperator dummyOp = (HashTableDummyOperator) OperatorFactory.get(
+        parentRS.getCompilationOpContext(), desc);
     TableDesc tbl;
 
     // need to create the correct table descriptor for key/value
@@ -338,17 +343,20 @@ public class ReduceSinkMapJoinProc implements NodeProcessor {
     Map<Byte, List<ExprNodeDesc>> keyExprMap = mapJoinOp.getConf().getKeys();
     List<ExprNodeDesc> keyCols = keyExprMap.get(Byte.valueOf((byte) 0));
     StringBuilder keyOrder = new StringBuilder();
+    StringBuilder keyNullOrder = new StringBuilder();
     for (ExprNodeDesc k: keyCols) {
       keyOrder.append("+");
+      keyNullOrder.append("a");
     }
     TableDesc keyTableDesc = PlanUtils.getReduceKeyTableDesc(PlanUtils
-        .getFieldSchemasFromColumnList(keyCols, "mapjoinkey"), keyOrder.toString());
+        .getFieldSchemasFromColumnList(keyCols, "mapjoinkey"), keyOrder.toString(),
+        keyNullOrder.toString());
     mapJoinOp.getConf().setKeyTableDesc(keyTableDesc);
 
     // let the dummy op be the parent of mapjoin op
     mapJoinOp.replaceParent(parentRS, dummyOp);
     List<Operator<? extends OperatorDesc>> dummyChildren =
-      new ArrayList<Operator<? extends OperatorDesc>>();
+        new ArrayList<Operator<? extends OperatorDesc>>();
     dummyChildren.add(mapJoinOp);
     dummyOp.setChildOperators(dummyChildren);
     dummyOperators.add(dummyOp);
@@ -362,6 +370,7 @@ public class ReduceSinkMapJoinProc implements NodeProcessor {
     // at task startup
     if (mapJoinWork != null) {
       for (BaseWork myWork: mapJoinWork) {
+        LOG.debug("adding dummy op to work " + myWork.getName() + " from MJ work: " + dummyOp);
         myWork.addDummyOp(dummyOp);
       }
     }

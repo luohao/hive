@@ -19,11 +19,13 @@
 
 package org.apache.hive.hcatalog.listener;
 
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Vector;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import javax.jms.Connection;
 import javax.jms.ConnectionFactory;
@@ -37,6 +39,7 @@ import javax.jms.Session;
 
 import org.apache.activemq.ActiveMQConnectionFactory;
 import org.apache.hadoop.hive.cli.CliSessionState;
+import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.conf.HiveConf.ConfVars;
 import org.apache.hadoop.hive.metastore.HiveMetaStoreClient;
 import org.apache.hadoop.hive.metastore.api.PartitionEventType;
@@ -44,7 +47,6 @@ import org.apache.hadoop.hive.ql.Driver;
 import org.apache.hadoop.hive.ql.session.SessionState;
 import org.apache.hive.hcatalog.common.HCatConstants;
 import org.apache.hive.hcatalog.mapreduce.HCatBaseTest;
-
 import org.apache.hive.hcatalog.messaging.AddPartitionMessage;
 import org.apache.hive.hcatalog.messaging.AlterPartitionMessage;
 import org.apache.hive.hcatalog.messaging.AlterTableMessage;
@@ -64,7 +66,19 @@ import org.junit.Test;
 
 public class TestNotificationListener extends HCatBaseTest implements MessageListener {
 
-  private List<String> actualMessages = new ArrayList<String>();
+  private List<String> actualMessages = new Vector<String>();
+  private static final int MSG_RECEIVED_TIMEOUT = 30;
+  private static final List<String> expectedMessages = Arrays.asList(
+      HCatConstants.HCAT_CREATE_DATABASE_EVENT,
+      HCatConstants.HCAT_CREATE_TABLE_EVENT,
+      HCatConstants.HCAT_ADD_PARTITION_EVENT,
+      HCatConstants.HCAT_ALTER_PARTITION_EVENT,
+      HCatConstants.HCAT_DROP_PARTITION_EVENT,
+      HCatConstants.HCAT_ALTER_TABLE_EVENT,
+      HCatConstants.HCAT_DROP_TABLE_EVENT,
+      HCatConstants.HCAT_DROP_DATABASE_EVENT);
+  private static final CountDownLatch messageReceivedSignal =
+      new CountDownLatch(expectedMessages.size());
 
   @Before
   public void setUp() throws Exception {
@@ -95,6 +109,9 @@ public class TestNotificationListener extends HCatBaseTest implements MessageLis
     setUpHiveConf();
     hiveConf.set(ConfVars.METASTORE_EVENT_LISTENERS.varname,
         NotificationListener.class.getName());
+    hiveConf
+    .setVar(HiveConf.ConfVars.HIVE_AUTHORIZATION_MANAGER,
+        "org.apache.hadoop.hive.ql.security.authorization.plugin.sqlstd.SQLStdHiveAuthorizerFactory");
     SessionState.start(new CliSessionState(hiveConf));
     driver = new Driver(hiveConf);
     client = new HiveMetaStoreClient(hiveConf);
@@ -102,15 +119,6 @@ public class TestNotificationListener extends HCatBaseTest implements MessageLis
 
   @After
   public void tearDown() throws Exception {
-    List<String> expectedMessages = Arrays.asList(
-        HCatConstants.HCAT_CREATE_DATABASE_EVENT,
-        HCatConstants.HCAT_CREATE_TABLE_EVENT,
-        HCatConstants.HCAT_ADD_PARTITION_EVENT,
-        HCatConstants.HCAT_ALTER_PARTITION_EVENT,
-        HCatConstants.HCAT_DROP_PARTITION_EVENT,
-        HCatConstants.HCAT_ALTER_TABLE_EVENT,
-        HCatConstants.HCAT_DROP_TABLE_EVENT,
-        HCatConstants.HCAT_DROP_DATABASE_EVENT);
     Assert.assertEquals(expectedMessages, actualMessages);
   }
 
@@ -129,6 +137,9 @@ public class TestNotificationListener extends HCatBaseTest implements MessageLis
     driver.run("alter table mytbl add columns (c int comment 'this is an int', d decimal(3,2))");
     driver.run("drop table mytbl");
     driver.run("drop database mydb");
+
+    // Wait until either all messages are processed or a maximum time limit is reached.
+    messageReceivedSignal.await(MSG_RECEIVED_TIMEOUT, TimeUnit.SECONDS);
   }
 
   @Override
@@ -244,6 +255,9 @@ public class TestNotificationListener extends HCatBaseTest implements MessageLis
     } catch (JMSException e) {
       e.printStackTrace(System.err);
       assert false;
+    }
+    finally {
+      messageReceivedSignal.countDown();
     }
   }
 }

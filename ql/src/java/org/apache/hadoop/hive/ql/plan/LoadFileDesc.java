@@ -36,21 +36,32 @@ public class LoadFileDesc extends LoadDesc implements Serializable {
   private String columnTypes;
   private String destinationCreateTable;
 
-  static {
-    PTFUtils.makeTransient(LoadFileDesc.class, "targetDir");
-  }
   public LoadFileDesc() {
   }
 
-  public LoadFileDesc(final CreateTableDesc createTableDesc, final Path sourcePath,
-      final Path targetDir,
-      final boolean isDfsDir, final String columns, final String columnTypes) {
+  public LoadFileDesc(final LoadFileDesc o) {
+    super(o.getSourcePath());
+
+    this.targetDir = o.targetDir;
+    this.isDfsDir = o.isDfsDir;
+    this.columns = o.columns;
+    this.columnTypes = o.columnTypes;
+    this.destinationCreateTable = o.destinationCreateTable;
+  }
+
+  public LoadFileDesc(final CreateTableDesc createTableDesc, final CreateViewDesc  createViewDesc,
+                      final Path sourcePath, final Path targetDir, final boolean isDfsDir,
+                      final String columns, final String columnTypes) {
     this(sourcePath, targetDir, isDfsDir, columns, columnTypes);
     if (createTableDesc != null && createTableDesc.getDatabaseName() != null
         && createTableDesc.getTableName() != null) {
       destinationCreateTable = (createTableDesc.getTableName().contains(".") ? "" : createTableDesc
           .getDatabaseName() + ".")
           + createTableDesc.getTableName();
+    } else if (createViewDesc != null) {
+      // The work is already done in analyzeCreateView to assure that the view name is fully
+      // qualified.
+      destinationCreateTable = createViewDesc.getViewName();
     }
   }
 

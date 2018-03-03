@@ -18,22 +18,29 @@
 
 package org.apache.hadoop.hive.ql.optimizer.ppr;
 
+import org.apache.hadoop.hive.metastore.api.FileMetadataExprType;
+
 import java.util.List;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.hive.metastore.FileFormatProxy;
 import org.apache.hadoop.hive.metastore.PartitionExpressionProxy;
 import org.apache.hadoop.hive.metastore.api.MetaException;
-import org.apache.hadoop.hive.ql.exec.Utilities;
+import org.apache.hadoop.hive.ql.exec.SerializationUtilities;
+import org.apache.hadoop.hive.ql.io.orc.OrcFileFormatProxy;
+import org.apache.hadoop.hive.ql.io.orc.OrcInputFormat;
+import org.apache.hadoop.hive.ql.io.sarg.ConvertAstToSearchArg;
+import org.apache.hadoop.hive.ql.io.sarg.SearchArgument;
 import org.apache.hadoop.hive.ql.metadata.HiveException;
 import org.apache.hadoop.hive.ql.plan.ExprNodeGenericFuncDesc;
 import org.apache.hadoop.hive.serde2.typeinfo.PrimitiveTypeInfo;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * The basic implementation of PartitionExpressionProxy that uses ql package classes.
  */
 public class PartitionExpressionForMetastore implements PartitionExpressionProxy {
-  private static final Log LOG = LogFactory.getLog(PartitionExpressionForMetastore.class);
+  private static final Logger LOG = LoggerFactory.getLogger(PartitionExpressionForMetastore.class);
 
   @Override
   public String convertExprToFilter(byte[] exprBytes) throws MetaException {
@@ -61,7 +68,7 @@ public class PartitionExpressionForMetastore implements PartitionExpressionProxy
   private ExprNodeGenericFuncDesc deserializeExpr(byte[] exprBytes) throws MetaException {
     ExprNodeGenericFuncDesc expr = null;
     try {
-      expr = Utilities.deserializeExpressionFromKryo(exprBytes);
+      expr = SerializationUtilities.deserializeExpressionFromKryo(exprBytes);
     } catch (Exception ex) {
       LOG.error("Failed to deserialize the expression", ex);
       throw new MetaException(ex.getMessage());
@@ -70,5 +77,32 @@ public class PartitionExpressionForMetastore implements PartitionExpressionProxy
       throw new MetaException("Failed to deserialize expression - ExprNodeDesc not present");
     }
     return expr;
+  }
+
+  @Override
+  public FileFormatProxy getFileFormatProxy(FileMetadataExprType type) {
+    switch (type) {
+    case ORC_SARG: return new OrcFileFormatProxy();
+    default: throw new RuntimeException("Unsupported format " + type);
+    }
+  }
+
+  @Override
+  public FileMetadataExprType getMetadataType(String inputFormat) {
+    try {
+      Class<?> ifClass = Class.forName(inputFormat);
+      if (OrcInputFormat.class.isAssignableFrom(ifClass)) {
+        return FileMetadataExprType.ORC_SARG;
+      }
+      return null;
+    } catch (Throwable t) {
+      LOG.warn("Can't create the class for input format " + inputFormat, t);
+      return null;
+    }
+  }
+
+  @Override
+  public SearchArgument createSarg(byte[] expr) {
+    return ConvertAstToSearchArg.create(expr);
   }
 }

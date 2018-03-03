@@ -34,7 +34,6 @@ import org.apache.hadoop.hive.ql.optimizer.calcite.HiveRelDistribution;
 import org.apache.hadoop.hive.ql.optimizer.calcite.reloperators.HiveJoin;
 import org.apache.hadoop.hive.ql.optimizer.calcite.reloperators.HiveJoin.MapJoinStreamingRelation;
 import org.apache.hadoop.hive.ql.optimizer.calcite.reloperators.HiveRelNode;
-import org.apache.hadoop.hive.ql.optimizer.calcite.reloperators.HiveTableScan;
 
 import com.google.common.collect.ImmutableList;
 
@@ -48,17 +47,17 @@ public class HiveAlgorithmsUtil {
   private final double hdfsRead;
 
   HiveAlgorithmsUtil(HiveConf conf) {
-    cpuCost = Double.valueOf(HiveConf.getVar(conf, HiveConf.ConfVars.HIVE_CBO_COST_MODEL_CPU));
+    cpuCost = Double.parseDouble(HiveConf.getVar(conf, HiveConf.ConfVars.HIVE_CBO_COST_MODEL_CPU));
     netCost = cpuCost
-        * Double.valueOf(HiveConf.getVar(conf, HiveConf.ConfVars.HIVE_CBO_COST_MODEL_NET));
+        * Double.parseDouble(HiveConf.getVar(conf, HiveConf.ConfVars.HIVE_CBO_COST_MODEL_NET));
     localFSWrite = netCost
-        * Double.valueOf(HiveConf.getVar(conf, HiveConf.ConfVars.HIVE_CBO_COST_MODEL_LFS_WRITE));
+        * Double.parseDouble(HiveConf.getVar(conf, HiveConf.ConfVars.HIVE_CBO_COST_MODEL_LFS_WRITE));
     localFSRead = netCost
-        * Double.valueOf(HiveConf.getVar(conf, HiveConf.ConfVars.HIVE_CBO_COST_MODEL_LFS_READ));
+        * Double.parseDouble(HiveConf.getVar(conf, HiveConf.ConfVars.HIVE_CBO_COST_MODEL_LFS_READ));
     hdfsWrite = localFSWrite
-        * Double.valueOf(HiveConf.getVar(conf, HiveConf.ConfVars.HIVE_CBO_COST_MODEL_HDFS_WRITE));
+        * Double.parseDouble(HiveConf.getVar(conf, HiveConf.ConfVars.HIVE_CBO_COST_MODEL_HDFS_WRITE));
     hdfsRead = localFSRead
-        * Double.valueOf(HiveConf.getVar(conf, HiveConf.ConfVars.HIVE_CBO_COST_MODEL_HDFS_READ));
+        * Double.parseDouble(HiveConf.getVar(conf, HiveConf.ConfVars.HIVE_CBO_COST_MODEL_HDFS_READ));
   }
 
   public static RelOptCost computeCardinalityBasedCost(HiveRelNode hr) {
@@ -200,7 +199,7 @@ public class HiveAlgorithmsUtil {
   }
 
   public static boolean isFittingIntoMemory(Double maxSize, RelNode input, int buckets) {
-    Double currentMemory = RelMetadataQuery.cumulativeMemoryWithinPhase(input);
+    Double currentMemory = RelMetadataQuery.instance().cumulativeMemoryWithinPhase(input);
     if (currentMemory != null) {
       if(currentMemory / buckets > maxSize) {
         return false;
@@ -311,11 +310,12 @@ public class HiveAlgorithmsUtil {
 
   public static Double getJoinMemory(HiveJoin join, MapJoinStreamingRelation streamingSide) {
     Double memory = 0.0;
+    RelMetadataQuery mq = RelMetadataQuery.instance();
     if (streamingSide == MapJoinStreamingRelation.NONE ||
             streamingSide == MapJoinStreamingRelation.RIGHT_RELATION) {
       // Left side
-      final Double leftAvgRowSize = RelMetadataQuery.getAverageRowSize(join.getLeft());
-      final Double leftRowCount = RelMetadataQuery.getRowCount(join.getLeft());
+      final Double leftAvgRowSize = mq.getAverageRowSize(join.getLeft());
+      final Double leftRowCount = mq.getRowCount(join.getLeft());
       if (leftAvgRowSize == null || leftRowCount == null) {
         return null;
       }
@@ -324,8 +324,8 @@ public class HiveAlgorithmsUtil {
     if (streamingSide == MapJoinStreamingRelation.NONE ||
             streamingSide == MapJoinStreamingRelation.LEFT_RELATION) {
       // Right side
-      final Double rightAvgRowSize = RelMetadataQuery.getAverageRowSize(join.getRight());
-      final Double rightRowCount = RelMetadataQuery.getRowCount(join.getRight());
+      final Double rightAvgRowSize = mq.getAverageRowSize(join.getRight());
+      final Double rightRowCount = mq.getRowCount(join.getRight());
       if (rightAvgRowSize == null || rightRowCount == null) {
         return null;
       }
@@ -338,8 +338,9 @@ public class HiveAlgorithmsUtil {
     final Double maxSplitSize = join.getCluster().getPlanner().getContext().
             unwrap(HiveAlgorithmsConf.class).getMaxSplitSize();
     // We repartition: new number of splits
-    final Double averageRowSize = RelMetadataQuery.getAverageRowSize(join);
-    final Double rowCount = RelMetadataQuery.getRowCount(join);
+    RelMetadataQuery mq = RelMetadataQuery.instance();
+    final Double averageRowSize = mq.getAverageRowSize(join);
+    final Double rowCount = mq.getRowCount(join);
     if (averageRowSize == null || rowCount == null) {
       return null;
     }
@@ -357,7 +358,7 @@ public class HiveAlgorithmsUtil {
     } else {
       return null;
     }
-    return RelMetadataQuery.splitCount(largeInput);
+    return RelMetadataQuery.instance().splitCount(largeInput);
   }
 
 }

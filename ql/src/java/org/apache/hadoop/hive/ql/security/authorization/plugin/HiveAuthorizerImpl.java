@@ -22,11 +22,8 @@ import java.util.List;
 import org.apache.hadoop.hive.common.classification.InterfaceAudience.LimitedPrivate;
 import org.apache.hadoop.hive.common.classification.InterfaceStability.Evolving;
 import org.apache.hadoop.hive.conf.HiveConf;
-import org.apache.hadoop.hive.ql.metadata.HiveException;
-import org.apache.hadoop.hive.ql.plan.PrincipalDesc;
-import org.apache.hadoop.hive.ql.plan.PrivilegeDesc;
-import org.apache.hadoop.hive.ql.plan.PrivilegeObjectDesc;
-import org.apache.hadoop.hive.ql.security.authorization.AuthorizationUtils;
+import org.apache.hadoop.hive.ql.parse.SemanticException;
+import org.apache.hadoop.hive.ql.security.HiveAuthenticationProvider;
 
 /**
  * Convenience implementation of HiveAuthorizer.
@@ -36,7 +33,7 @@ import org.apache.hadoop.hive.ql.security.authorization.AuthorizationUtils;
  */
 @LimitedPrivate(value = { "" })
 @Evolving
-public class HiveAuthorizerImpl implements HiveAuthorizer {
+public class HiveAuthorizerImpl extends AbstractHiveAuthorizer {
   HiveAccessController accessController;
   HiveAuthorizationValidator authValidator;
 
@@ -141,19 +138,14 @@ public class HiveAuthorizerImpl implements HiveAuthorizer {
   }
 
   @Override
-  public List<HivePrincipal> getHivePrincipals(
-      List<PrincipalDesc> principals) throws HiveException {
-    return AuthorizationUtils.getHivePrincipals(principals);
+  public boolean needTransform() {
+    return authValidator.needTransform();
   }
 
   @Override
-  public List<HivePrivilege> getHivePrivileges(List<PrivilegeDesc> privileges) {
-    return AuthorizationUtils.getHivePrivileges(privileges);
+  public List<HivePrivilegeObject> applyRowFilterAndColumnMasking(HiveAuthzContext context,
+      List<HivePrivilegeObject> privObjs) throws SemanticException {
+    return authValidator.applyRowFilterAndColumnMasking(context, privObjs);
   }
 
-  @Override
-  public HivePrivilegeObject getHivePrivilegeObject(
-      PrivilegeObjectDesc privSubjectDesc) throws HiveException {
-    return AuthorizationUtils.getHivePrivilegeObject(privSubjectDesc);
-  }
 }

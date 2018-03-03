@@ -19,8 +19,10 @@ package org.apache.hadoop.hive.ql.hooks;
 
 import java.util.List;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.hive.llap.counters.LlapIOCounters;
+import org.apache.tez.common.counters.FileSystemCounter;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.ql.QueryPlan;
 import org.apache.hadoop.hive.ql.exec.Utilities;
@@ -34,7 +36,7 @@ import org.apache.tez.common.counters.TezCounters;
  * Post execution hook to print hive tez counters to console error stream.
  */
 public class PostExecTezSummaryPrinter implements ExecuteWithHookContext {
-  private static final Log LOG = LogFactory.getLog(PostExecTezSummaryPrinter.class.getName());
+  private static final Logger LOG = LoggerFactory.getLogger(PostExecTezSummaryPrinter.class.getName());
 
   @Override
   public void run(HookContext hookContext) throws Exception {
@@ -57,11 +59,29 @@ public class PostExecTezSummaryPrinter implements ExecuteWithHookContext {
       LOG.info("Printing summary for tez task: " + tezTask.getName());
       TezCounters counters = tezTask.getTezCounters();
       if (counters != null) {
+        String hiveCountersGroup = HiveConf.getVar(conf, HiveConf.ConfVars.HIVECOUNTERGROUP);
         for (CounterGroup group : counters) {
-          if ("HIVE".equals(group.getDisplayName())) {
-            console.printError(tezTask.getId() + " HIVE COUNTERS:");
+          if (hiveCountersGroup.equals(group.getDisplayName())) {
+            console.printInfo(tezTask.getId() + " HIVE COUNTERS:", false);
             for (TezCounter counter : group) {
-              console.printError("   " + counter.getDisplayName() + ": " + counter.getValue());
+              console.printInfo("   " + counter.getDisplayName() + ": " + counter.getValue(), false);
+            }
+          } else if (group.getName().equals(FileSystemCounter.class.getName())) {
+            console.printInfo(tezTask.getId() + " FILE SYSTEM COUNTERS:", false);
+            for (TezCounter counter : group) {
+              // HDFS counters should be relatively consistent across test runs when compared to
+              // local file system counters
+              if (counter.getName().contains("HDFS")) {
+                console.printInfo("   " + counter.getDisplayName() + ": " + counter.getValue(), false);
+              }
+            }
+          } else if (group.getName().equals(LlapIOCounters.class.getName())) {
+            console.printInfo(tezTask.getId() + " LLAP IO COUNTERS:", false);
+            List<String> testSafeCounters = LlapIOCounters.testSafeCounterNames();
+            for (TezCounter counter : group) {
+              if (testSafeCounters.contains(counter.getDisplayName())) {
+                console.printInfo("   " + counter.getDisplayName() + ": " + counter.getValue(), false);
+              }
             }
           }
         }

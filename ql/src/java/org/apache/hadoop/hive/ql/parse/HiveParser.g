@@ -20,7 +20,7 @@ options
 {
 tokenVocab=HiveLexer;
 output=AST;
-ASTLabelType=CommonTree;
+ASTLabelType=ASTNode;
 backtrack=false;
 k=3;
 }
@@ -42,6 +42,7 @@ TOK_SUBQUERY;
 TOK_INSERT_INTO;
 TOK_DESTINATION;
 TOK_ALLCOLREF;
+TOK_SETCOLREF;
 TOK_TABLE_OR_COL;
 TOK_FUNCTION;
 TOK_FUNCTIONDI;
@@ -81,11 +82,17 @@ TOK_GROUPING_SETS;
 TOK_GROUPING_SETS_EXPRESSION;
 TOK_HAVING;
 TOK_ORDERBY;
+TOK_NULLS_FIRST;
+TOK_NULLS_LAST;
 TOK_CLUSTERBY;
 TOK_DISTRIBUTEBY;
 TOK_SORTBY;
 TOK_UNIONALL;
 TOK_UNIONDISTINCT;
+TOK_INTERSECTALL;
+TOK_INTERSECTDISTINCT;
+TOK_EXCEPTALL;
+TOK_EXCEPTDISTINCT;
 TOK_JOIN;
 TOK_LEFTOUTERJOIN;
 TOK_RIGHTOUTERJOIN;
@@ -100,6 +107,12 @@ TOK_METADATA;
 TOK_NULL;
 TOK_ISNULL;
 TOK_ISNOTNULL;
+TOK_PRIMARY_KEY;
+TOK_FOREIGN_KEY;
+TOK_VALIDATE;
+TOK_NOVALIDATE;
+TOK_RELY;
+TOK_NORELY;
 TOK_TINYINT;
 TOK_SMALLINT;
 TOK_INT;
@@ -158,6 +171,7 @@ TOK_ALTERTABLE_UNARCHIVE;
 TOK_ALTERTABLE_SERDEPROPERTIES;
 TOK_ALTERTABLE_SERIALIZER;
 TOK_ALTERTABLE_UPDATECOLSTATS;
+TOK_ALTERTABLE_UPDATESTATS;
 TOK_TABLE_PARTITION;
 TOK_ALTERTABLE_FILEFORMAT;
 TOK_ALTERTABLE_LOCATION;
@@ -170,6 +184,8 @@ TOK_ALTERTABLE_SKEWED_LOCATION;
 TOK_ALTERTABLE_BUCKETS;
 TOK_ALTERTABLE_CLUSTER_SORT;
 TOK_ALTERTABLE_COMPACT;
+TOK_ALTERTABLE_DROPCONSTRAINT;
+TOK_ALTERTABLE_ADDCONSTRAINT;
 TOK_ALTERINDEX_REBUILD;
 TOK_ALTERINDEX_PROPERTIES;
 TOK_MSCK;
@@ -178,6 +194,7 @@ TOK_SHOWTABLES;
 TOK_SHOWCOLUMNS;
 TOK_SHOWFUNCTIONS;
 TOK_SHOWPARTITIONS;
+TOK_SHOW_CREATEDATABASE;
 TOK_SHOW_CREATETABLE;
 TOK_SHOW_TABLESTATUS;
 TOK_SHOW_TBLPROPERTIES;
@@ -238,6 +255,10 @@ TOK_ALTERVIEW_DROPPROPERTIES;
 TOK_ALTERVIEW_ADDPARTS;
 TOK_ALTERVIEW_DROPPARTS;
 TOK_ALTERVIEW_RENAME;
+TOK_CREATE_MATERIALIZED_VIEW;
+TOK_DROP_MATERIALIZED_VIEW;
+TOK_REWRITE_ENABLED;
+TOK_REWRITE_DISABLED;
 TOK_VIEWPARTCOLS;
 TOK_EXPLAIN;
 TOK_EXPLAIN_SQ_REWRITE;
@@ -248,16 +269,11 @@ TOK_INDEXPROPERTIES;
 TOK_INDEXPROPLIST;
 TOK_TABTYPE;
 TOK_LIMIT;
+TOK_OFFSET;
 TOK_TABLEPROPERTY;
 TOK_IFEXISTS;
 TOK_IFNOTEXISTS;
 TOK_ORREPLACE;
-TOK_HINTLIST;
-TOK_HINT;
-TOK_MAPJOIN;
-TOK_STREAMTABLE;
-TOK_HOLD_DDLTIME;
-TOK_HINTARGLIST;
 TOK_USERSCRIPTCOLNAMES;
 TOK_USERSCRIPTCOLSCHEMA;
 TOK_RECORDREADER;
@@ -354,6 +370,7 @@ TOK_ANONYMOUS;
 TOK_COL_NAME;
 TOK_URI_TYPE;
 TOK_SERVER_TYPE;
+TOK_SHOWVIEWS;
 TOK_START_TRANSACTION;
 TOK_ISOLATION_LEVEL;
 TOK_ISOLATION_SNAPSHOT;
@@ -363,6 +380,23 @@ TOK_TXN_READ_WRITE;
 TOK_COMMIT;
 TOK_ROLLBACK;
 TOK_SET_AUTOCOMMIT;
+TOK_CACHE_METADATA;
+TOK_ABORT_TRANSACTIONS;
+TOK_MERGE;
+TOK_MATCHED;
+TOK_NOT_MATCHED;
+TOK_UPDATE;
+TOK_DELETE;
+TOK_REPL_DUMP;
+TOK_REPL_LOAD;
+TOK_REPL_STATUS;
+TOK_TO;
+TOK_ONLY;
+TOK_SUMMARY;
+TOK_OPERATOR;
+TOK_EXPRESSION;
+TOK_DETAIL;
+TOK_BLOCKING;
 }
 
 
@@ -399,6 +433,8 @@ import org.apache.hadoop.hive.conf.HiveConf;
 
     xlateMap.put("KW_ASC", "ASC");
     xlateMap.put("KW_DESC", "DESC");
+    xlateMap.put("KW_NULLS", "NULLS");
+    xlateMap.put("KW_LAST", "LAST");
     xlateMap.put("KW_ORDER", "ORDER");
     xlateMap.put("KW_BY", "BY");
     xlateMap.put("KW_GROUP", "GROUP");
@@ -430,6 +466,8 @@ import org.apache.hadoop.hive.conf.HiveConf;
     xlateMap.put("KW_DISTRIBUTE", "DISTRIBUTE");
     xlateMap.put("KW_SORT", "SORT");
     xlateMap.put("KW_UNION", "UNION");
+    xlateMap.put("KW_INTERSECT", "INTERSECT");
+    xlateMap.put("KW_EXCEPT", "EXCEPT");
     xlateMap.put("KW_LOAD", "LOAD");
     xlateMap.put("KW_DATA", "DATA");
     xlateMap.put("KW_INPATH", "INPATH");
@@ -450,6 +488,7 @@ import org.apache.hadoop.hive.conf.HiveConf;
     xlateMap.put("KW_BIGINT", "BIGINT");
     xlateMap.put("KW_FLOAT", "FLOAT");
     xlateMap.put("KW_DOUBLE", "DOUBLE");
+    xlateMap.put("KW_PRECISION", "PRECISION");
     xlateMap.put("KW_DATE", "DATE");
     xlateMap.put("KW_DATETIME", "DATETIME");
     xlateMap.put("KW_TIMESTAMP", "TIMESTAMP");
@@ -497,6 +536,7 @@ import org.apache.hadoop.hive.conf.HiveConf;
     xlateMap.put("KW_WITH", "WITH");
     xlateMap.put("KW_SERDEPROPERTIES", "SERDEPROPERTIES");
     xlateMap.put("KW_LIMIT", "LIMIT");
+    xlateMap.put("KW_OFFSET", "OFFSET");
     xlateMap.put("KW_SET", "SET");
     xlateMap.put("KW_PROPERTIES", "TBLPROPERTIES");
     xlateMap.put("KW_VALUE_TYPE", "\$VALUE\$");
@@ -507,7 +547,22 @@ import org.apache.hadoop.hive.conf.HiveConf;
     xlateMap.put("KW_UPDATE", "UPDATE");
     xlateMap.put("KW_VALUES", "VALUES");
     xlateMap.put("KW_PURGE", "PURGE");
-
+    xlateMap.put("KW_PRIMARY", "PRIMARY");
+    xlateMap.put("KW_FOREIGN", "FOREIGN");
+    xlateMap.put("KW_KEY", "KEY");
+    xlateMap.put("KW_REFERENCES", "REFERENCES");
+    xlateMap.put("KW_CONSTRAINT", "CONSTRAINT");
+    xlateMap.put("KW_ENABLE", "ENABLE");
+    xlateMap.put("KW_DISABLE", "DISABLE");
+    xlateMap.put("KW_VALIDATE", "VALIDATE");
+    xlateMap.put("KW_NOVALIDATE", "NOVALIDATE");
+    xlateMap.put("KW_RELY", "RELY");
+    xlateMap.put("KW_NORELY", "NORELY");
+    xlateMap.put("KW_ABORT", "ABORT");
+    xlateMap.put("KW_TRANSACTIONS", "TRANSACTIONS");
+    xlateMap.put("KW_COMPACTIONS", "COMPACTIONS");
+    xlateMap.put("KW_COMPACT", "COMPACT");
+    xlateMap.put("KW_WAIT", "WAIT");
 
     // Operators
     xlateMap.put("DOT", ".");
@@ -629,7 +684,7 @@ import org.apache.hadoop.hive.conf.HiveConf;
 
   public void popMsg(RecognizerSharedState state) {
     if (state.backtracking == 0) {
-      msgs.pop();
+      Object o = msgs.pop();
     }
   }
 
@@ -657,12 +712,6 @@ import org.apache.hadoop.hive.conf.HiveConf;
   public void setHiveConf(Configuration hiveConf) {
     this.hiveConf = hiveConf;
   }
-  protected boolean useSQL11ReservedKeywordsForIdentifier() {
-    if(hiveConf==null){
-      return false;
-    }
-    return !HiveConf.getBoolVar(hiveConf, HiveConf.ConfVars.HIVE_SUPPORT_SQL11_RESERVED_KEYWORDS);
-  }
 }
 
 @rulecatch {
@@ -684,26 +733,51 @@ explainStatement
 	: KW_EXPLAIN (
 	    explainOption* execStatement -> ^(TOK_EXPLAIN execStatement explainOption*)
         |
-        KW_REWRITE queryStatementExpression[true] -> ^(TOK_EXPLAIN_SQ_REWRITE queryStatementExpression))
+        KW_REWRITE queryStatementExpression -> ^(TOK_EXPLAIN_SQ_REWRITE queryStatementExpression))
 	;
 
 explainOption
 @init { msgs.push("explain option"); }
 @after { msgs.pop(); }
-    : KW_EXTENDED|KW_FORMATTED|KW_DEPENDENCY|KW_LOGICAL|KW_AUTHORIZATION
+    : KW_EXTENDED|KW_FORMATTED|KW_DEPENDENCY|KW_LOGICAL|KW_AUTHORIZATION|KW_ANALYZE|
+      (KW_VECTORIZATION vectorizationOnly? vectorizatonDetail?)
+    ;
+
+vectorizationOnly
+@init { pushMsg("vectorization's only clause", state); }
+@after { popMsg(state); }
+    : KW_ONLY
+    -> ^(TOK_ONLY)
+    ;
+
+vectorizatonDetail
+@init { pushMsg("vectorization's detail level clause", state); }
+@after { popMsg(state); }
+    : KW_SUMMARY
+    -> ^(TOK_SUMMARY)
+    | KW_OPERATOR
+    -> ^(TOK_OPERATOR)
+    | KW_EXPRESSION
+    -> ^(TOK_EXPRESSION)
+    | KW_DETAIL
+    -> ^(TOK_DETAIL)
     ;
 
 execStatement
 @init { pushMsg("statement", state); }
 @after { popMsg(state); }
-    : queryStatementExpression[true]
+    : queryStatementExpression
     | loadStatement
     | exportStatement
     | importStatement
+    | replDumpStatement
+    | replLoadStatement
+    | replStatusStatement
     | ddlStatement
     | deleteStatement
     | updateStatement
     | sqlTransactionStatement
+    | mergeStatement
     ;
 
 loadStatement
@@ -740,6 +814,35 @@ importStatement
     -> ^(TOK_IMPORT $path $tab? $ext? tableLocation?)
     ;
 
+replDumpStatement
+@init { pushMsg("replication dump statement", state); }
+@after { popMsg(state); }
+      : KW_REPL KW_DUMP
+        (dbName=identifier) (DOT tblName=identifier)?
+        (KW_FROM (eventId=Number)
+          (KW_TO (rangeEnd=Number))?
+          (KW_LIMIT (batchSize=Number))?
+        )?
+    -> ^(TOK_REPL_DUMP $dbName $tblName? ^(TOK_FROM $eventId (TOK_TO $rangeEnd)? (TOK_LIMIT $batchSize)?)? )
+    ;
+
+replLoadStatement
+@init { pushMsg("replication load statement", state); }
+@after { popMsg(state); }
+      : KW_REPL KW_LOAD
+        ((dbName=identifier) (DOT tblName=identifier)?)?
+        KW_FROM (path=StringLiteral)
+      -> ^(TOK_REPL_LOAD $path $dbName? $tblName?)
+      ;
+
+replStatusStatement
+@init { pushMsg("replication load statement", state); }
+@after { popMsg(state); }
+      : KW_REPL KW_STATUS
+        (dbName=identifier) (DOT tblName=identifier)?
+      -> ^(TOK_REPL_STATUS $dbName $tblName?)
+      ;
+
 ddlStatement
 @init { pushMsg("ddl statement", state); }
 @after { popMsg(state); }
@@ -754,7 +857,9 @@ ddlStatement
     | showStatement
     | metastoreCheck
     | createViewStatement
+    | createMaterializedViewStatement
     | dropViewStatement
+    | dropMaterializedViewStatement
     | createFunctionStatement
     | createMacroStatement
     | createIndexStatement
@@ -779,6 +884,7 @@ ddlStatement
     | revokeRole
     | setRole
     | showCurrentRole
+    | abortTransactionStatement
     ;
 
 ifExists
@@ -802,6 +908,20 @@ ifNotExists
 @after { popMsg(state); }
     : KW_IF KW_NOT KW_EXISTS
     -> ^(TOK_IFNOTEXISTS)
+    ;
+
+rewriteEnabled
+@init { pushMsg("rewrite enabled clause", state); }
+@after { popMsg(state); }
+    : KW_ENABLE KW_REWRITE
+    -> ^(TOK_REWRITE_ENABLED)
+    ;
+
+rewriteDisabled
+@init { pushMsg("rewrite disabled clause", state); }
+@after { popMsg(state); }
+    : KW_DISABLE KW_REWRITE
+    -> ^(TOK_REWRITE_DISABLED)
     ;
 
 storedAsDirs
@@ -882,7 +1002,7 @@ createTableStatement
          tableFileFormat?
          tableLocation?
          tablePropertiesPrefixed?
-       | (LPAREN columnNameTypeList RPAREN)?
+       | (LPAREN columnNameTypeOrPKOrFKList RPAREN)?
          tableComment?
          tablePartition?
          tableBuckets?
@@ -895,7 +1015,7 @@ createTableStatement
       )
     -> ^(TOK_CREATETABLE $name $temp? $ext? ifNotExists?
          ^(TOK_LIKETABLE $likeName?)
-         columnNameTypeList?
+         columnNameTypeOrPKOrFKList?
          tableComment?
          tablePartition?
          tableBuckets?
@@ -1016,6 +1136,8 @@ alterTableStatementSuffix
     | alterStatementSuffixSkewedby
     | alterStatementSuffixExchangePartition
     | alterStatementPartitionKeyType
+    | alterStatementSuffixDropConstraint
+    | alterStatementSuffixAddConstraint
     | partitionSpec? alterTblPartitionStatementSuffix -> alterTblPartitionStatementSuffix partitionSpec?
     ;
 
@@ -1032,6 +1154,7 @@ alterTblPartitionStatementSuffix
   | alterStatementSuffixClusterbySortby
   | alterStatementSuffixCompact
   | alterStatementSuffixUpdateStatsCol
+  | alterStatementSuffixUpdateStats
   | alterStatementSuffixRenameCol
   | alterStatementSuffixAddCol
   ;
@@ -1104,6 +1227,21 @@ alterStatementSuffixAddCol
     ->                 ^(TOK_ALTERTABLE_REPLACECOLS columnNameTypeList restrictOrCascade?)
     ;
 
+alterStatementSuffixAddConstraint
+@init { pushMsg("add constraint statement", state); }
+@after { popMsg(state); }
+   :  KW_ADD (fk=foreignKeyWithName | primaryKeyWithName)
+   -> {fk != null}? ^(TOK_ALTERTABLE_ADDCONSTRAINT foreignKeyWithName)
+   ->               ^(TOK_ALTERTABLE_ADDCONSTRAINT primaryKeyWithName)
+   ;
+
+alterStatementSuffixDropConstraint
+@init { pushMsg("drop constraint statement", state); }
+@after { popMsg(state); }
+   : KW_DROP KW_CONSTRAINT cName=identifier
+   ->^(TOK_ALTERTABLE_DROPCONSTRAINT $cName)
+   ;
+
 alterStatementSuffixRenameCol
 @init { pushMsg("rename column name", state); }
 @after { popMsg(state); }
@@ -1116,6 +1254,13 @@ alterStatementSuffixUpdateStatsCol
 @after { popMsg(state); }
     : KW_UPDATE KW_STATISTICS KW_FOR KW_COLUMN? colName=identifier KW_SET tableProperties (KW_COMMENT comment=StringLiteral)?
     ->^(TOK_ALTERTABLE_UPDATECOLSTATS $colName tableProperties $comment?)
+    ;
+
+alterStatementSuffixUpdateStats
+@init { pushMsg("update basic statistics", state); }
+@after { popMsg(state); }
+    : KW_UPDATE KW_STATISTICS KW_SET tableProperties
+    ->^(TOK_ALTERTABLE_UPDATESTATS tableProperties)
     ;
 
 alterStatementChangeColPosition
@@ -1305,11 +1450,16 @@ alterStatementSuffixBucketNum
     -> ^(TOK_ALTERTABLE_BUCKETS $num)
     ;
 
+blocking
+  : KW_AND KW_WAIT
+  -> TOK_BLOCKING
+  ;
+
 alterStatementSuffixCompact
 @init { msgs.push("compaction request"); }
 @after { msgs.pop(); }
-    : KW_COMPACT compactType=StringLiteral
-    -> ^(TOK_ALTERTABLE_COMPACT $compactType)
+    : KW_COMPACT compactType=StringLiteral blocking? (KW_WITH KW_OVERWRITE KW_TBLPROPERTIES tableProperties)?
+    -> ^(TOK_ALTERTABLE_COMPACT $compactType blocking? tableProperties?)
     ;
 
 
@@ -1324,7 +1474,8 @@ fileFormat
 tabTypeExpr
 @init { pushMsg("specifying table types", state); }
 @after { popMsg(state); }
-   : identifier (DOT^ 
+   : identifier (DOT^ identifier)?
+   (identifier (DOT^
    (
    (KW_ELEM_TYPE) => KW_ELEM_TYPE
    | 
@@ -1332,13 +1483,20 @@ tabTypeExpr
    | 
    (KW_VALUE_TYPE) => KW_VALUE_TYPE 
    | identifier
-   ))* identifier?
+   ))*
+   )?
    ;
 
 partTypeExpr
 @init { pushMsg("specifying table partitions", state); }
 @after { popMsg(state); }
     :  tabTypeExpr partitionSpec? -> ^(TOK_TABTYPE tabTypeExpr partitionSpec?)
+    ;
+
+tabPartColTypeExpr
+@init { pushMsg("specifying table partitions columnName", state); }
+@after { popMsg(state); }
+    :  tableName partitionSpec? extColumnName? -> ^(TOK_TABTYPE tableName partitionSpec? extColumnName?)
     ;
 
 descStatement
@@ -1351,18 +1509,23 @@ descStatement
     |
     (KW_FUNCTION) => KW_FUNCTION KW_EXTENDED? (name=descFuncNames) -> ^(TOK_DESCFUNCTION $name KW_EXTENDED?)
     |
-    (KW_FORMATTED|KW_EXTENDED|KW_PRETTY) => ((descOptions=KW_FORMATTED|descOptions=KW_EXTENDED|descOptions=KW_PRETTY) parttype=partTypeExpr) -> ^(TOK_DESCTABLE $parttype $descOptions)
+    (KW_FORMATTED|KW_EXTENDED|KW_PRETTY) => ((descOptions=KW_FORMATTED|descOptions=KW_EXTENDED|descOptions=KW_PRETTY) parttype=tabPartColTypeExpr) -> ^(TOK_DESCTABLE $parttype $descOptions)
     |
-    parttype=partTypeExpr -> ^(TOK_DESCTABLE $parttype)
+    parttype=tabPartColTypeExpr -> ^(TOK_DESCTABLE $parttype)
     )
     ;
 
 analyzeStatement
 @init { pushMsg("analyze statement", state); }
 @after { popMsg(state); }
-    : KW_ANALYZE KW_TABLE (parttype=tableOrPartition) KW_COMPUTE KW_STATISTICS ((noscan=KW_NOSCAN) | (partialscan=KW_PARTIALSCAN) 
+    : KW_ANALYZE KW_TABLE (parttype=tableOrPartition)
+      (
+      (KW_COMPUTE) => KW_COMPUTE KW_STATISTICS ((noscan=KW_NOSCAN) | (partialscan=KW_PARTIALSCAN)
                                                       | (KW_FOR KW_COLUMNS (statsColumnName=columnNameList)?))?
       -> ^(TOK_ANALYZE $parttype $noscan? $partialscan? KW_COLUMNS? $statsColumnName?)
+      |
+      (KW_CACHE) => KW_CACHE KW_METADATA -> ^(TOK_CACHE_METADATA $parttype)
+      )
     ;
 
 showStatement
@@ -1370,11 +1533,16 @@ showStatement
 @after { popMsg(state); }
     : KW_SHOW (KW_DATABASES|KW_SCHEMAS) (KW_LIKE showStmtIdentifier)? -> ^(TOK_SHOWDATABASES showStmtIdentifier?)
     | KW_SHOW KW_TABLES ((KW_FROM|KW_IN) db_name=identifier)? (KW_LIKE showStmtIdentifier|showStmtIdentifier)?  -> ^(TOK_SHOWTABLES (TOK_FROM $db_name)? showStmtIdentifier?)
+    | KW_SHOW KW_VIEWS ((KW_FROM|KW_IN) db_name=identifier)? (KW_LIKE showStmtIdentifier|showStmtIdentifier)?  -> ^(TOK_SHOWVIEWS (TOK_FROM $db_name)? showStmtIdentifier?)
     | KW_SHOW KW_COLUMNS (KW_FROM|KW_IN) tableName ((KW_FROM|KW_IN) db_name=identifier)?
     -> ^(TOK_SHOWCOLUMNS tableName $db_name?)
     | KW_SHOW KW_FUNCTIONS (KW_LIKE showFunctionIdentifier|showFunctionIdentifier)?  -> ^(TOK_SHOWFUNCTIONS KW_LIKE? showFunctionIdentifier?)
     | KW_SHOW KW_PARTITIONS tabName=tableName partitionSpec? -> ^(TOK_SHOWPARTITIONS $tabName partitionSpec?) 
-    | KW_SHOW KW_CREATE KW_TABLE tabName=tableName -> ^(TOK_SHOW_CREATETABLE $tabName)
+    | KW_SHOW KW_CREATE (
+        (KW_DATABASE|KW_SCHEMA) => (KW_DATABASE|KW_SCHEMA) db_name=identifier -> ^(TOK_SHOW_CREATEDATABASE $db_name)
+        |
+        KW_TABLE tabName=tableName -> ^(TOK_SHOW_CREATETABLE $tabName)
+      )
     | KW_SHOW KW_TABLE KW_EXTENDED ((KW_FROM|KW_IN) db_name=identifier)? KW_LIKE showStmtIdentifier partitionSpec?
     -> ^(TOK_SHOW_TABLESTATUS showStmtIdentifier $db_name? partitionSpec?)
     | KW_SHOW KW_TBLPROPERTIES tableName (LPAREN prptyName=StringLiteral RPAREN)? -> ^(TOK_SHOW_TBLPROPERTIES tableName $prptyName?)
@@ -1494,6 +1662,8 @@ setRole
     : KW_SET KW_ROLE 
     (
     (KW_ALL) => (all=KW_ALL) -> ^(TOK_SHOW_SET_ROLE Identifier[$all.text])
+    |
+    (KW_NONE) => (none=KW_NONE) -> ^(TOK_SHOW_SET_ROLE Identifier[$none.text])
     |
     identifier -> ^(TOK_SHOW_SET_ROLE identifier)
     )
@@ -1703,6 +1873,26 @@ createViewStatement
         )
     ;
 
+createMaterializedViewStatement
+@init {
+    pushMsg("create materialized view statement", state);
+}
+@after { popMsg(state); }
+    : KW_CREATE KW_MATERIALIZED KW_VIEW (ifNotExists)? name=tableName
+        rewriteEnabled? tableComment? tableRowFormat? tableFileFormat? tableLocation?
+        tablePropertiesPrefixed? KW_AS selectStatementWithCTE
+    -> ^(TOK_CREATE_MATERIALIZED_VIEW $name 
+         ifNotExists?
+         rewriteEnabled?
+         tableComment?
+         tableRowFormat?
+         tableFileFormat?
+         tableLocation?
+         tablePropertiesPrefixed?
+         selectStatementWithCTE
+        )
+    ;
+
 viewPartition
 @init { pushMsg("view partition specification", state); }
 @after { popMsg(state); }
@@ -1714,6 +1904,12 @@ dropViewStatement
 @init { pushMsg("drop view statement", state); }
 @after { popMsg(state); }
     : KW_DROP KW_VIEW ifExists? viewName -> ^(TOK_DROPVIEW viewName ifExists?)
+    ;
+
+dropMaterializedViewStatement
+@init { pushMsg("drop materialized view statement", state); }
+@after { popMsg(state); }
+    : KW_DROP KW_MATERIALIZED KW_VIEW ifExists? viewName -> ^(TOK_DROP_MATERIALIZED_VIEW viewName ifExists?)
     ;
 
 showFunctionIdentifier
@@ -1908,6 +2104,11 @@ columnNameTypeList
 @after { popMsg(state); }
     : columnNameType (COMMA columnNameType)* -> ^(TOK_TABCOLLIST columnNameType+)
     ;
+columnNameTypeOrPKOrFKList
+@init { pushMsg("column name type list with PK and FK", state); }
+@after { popMsg(state); }
+    : columnNameTypeOrPKOrFK (COMMA columnNameTypeOrPKOrFK)* -> ^(TOK_TABCOLLIST columnNameTypeOrPKOrFK+)
+    ;
 
 columnNameColonTypeList
 @init { pushMsg("column name type list", state); }
@@ -1928,10 +2129,72 @@ columnName
       identifier
     ;
 
+extColumnName
+@init { pushMsg("column name for complex types", state); }
+@after { popMsg(state); }
+    :
+      identifier (DOT^ ((KW_ELEM_TYPE) => KW_ELEM_TYPE | (KW_KEY_TYPE) => KW_KEY_TYPE | (KW_VALUE_TYPE) => KW_VALUE_TYPE | identifier))*
+    ;
+
 columnNameOrderList
 @init { pushMsg("column name order list", state); }
 @after { popMsg(state); }
     : columnNameOrder (COMMA columnNameOrder)* -> ^(TOK_TABCOLNAME columnNameOrder+)
+    ;
+
+columnParenthesesList
+@init { pushMsg("column parentheses list", state); }
+@after { popMsg(state); }
+    : LPAREN! columnNameList RPAREN!
+    ;
+
+enableSpecification
+@init { pushMsg("enable specification", state); }
+@after { popMsg(state); }
+    : KW_ENABLE -> ^(TOK_ENABLE)
+    | KW_DISABLE -> ^(TOK_DISABLE)
+    ;
+
+validateSpecification
+@init { pushMsg("validate specification", state); }
+@after { popMsg(state); }
+    : KW_VALIDATE -> ^(TOK_VALIDATE)
+    | KW_NOVALIDATE -> ^(TOK_NOVALIDATE)
+    ;
+
+relySpecification
+@init { pushMsg("rely specification", state); }
+@after { popMsg(state); }
+    :  KW_RELY -> ^(TOK_RELY)
+    |  (KW_NORELY)? -> ^(TOK_NORELY)
+    ;
+
+primaryKeyWithoutName
+@init { pushMsg("primary key without key name", state); }
+@after { popMsg(state); }
+    : KW_PRIMARY KW_KEY columnParenthesesList enableSpec=enableSpecification validateSpec=validateSpecification relySpec=relySpecification
+    -> ^(TOK_PRIMARY_KEY columnParenthesesList $relySpec $enableSpec $validateSpec)
+    ;
+
+primaryKeyWithName
+@init { pushMsg("primary key with key name", state); }
+@after { popMsg(state); }
+    : KW_CONSTRAINT idfr=identifier KW_PRIMARY KW_KEY pkCols=columnParenthesesList enableSpec=enableSpecification validateSpec=validateSpecification relySpec=relySpecification
+    -> ^(TOK_PRIMARY_KEY $pkCols $idfr $relySpec $enableSpec $validateSpec)
+    ;
+
+foreignKeyWithName
+@init { pushMsg("foreign key with key name", state); }
+@after { popMsg(state); }
+    : KW_CONSTRAINT idfr=identifier KW_FOREIGN KW_KEY fkCols=columnParenthesesList  KW_REFERENCES tabName=tableName parCols=columnParenthesesList enableSpec=enableSpecification validateSpec=validateSpecification relySpec=relySpecification
+    -> ^(TOK_FOREIGN_KEY $idfr $fkCols $tabName $parCols $relySpec $enableSpec $validateSpec)
+    ;
+
+foreignKeyWithoutName
+@init { pushMsg("foreign key without key name", state); }
+@after { popMsg(state); }
+    : KW_FOREIGN KW_KEY fkCols=columnParenthesesList  KW_REFERENCES tabName=tableName parCols=columnParenthesesList enableSpec=enableSpecification validateSpec=validateSpecification relySpec=relySpecification
+    -> ^(TOK_FOREIGN_KEY $fkCols  $tabName $parCols $relySpec $enableSpec $validateSpec)
     ;
 
 skewedValueElement
@@ -1976,13 +2239,34 @@ skewedValueLocationElement
       skewedColumnValue
      | skewedColumnValuePair
     ;
-    
+
+orderSpecification
+@init { pushMsg("order specification", state); }
+@after { popMsg(state); }
+    : KW_ASC | KW_DESC ;
+
+nullOrdering
+@init { pushMsg("nulls ordering", state); }
+@after { popMsg(state); }
+    : KW_NULLS KW_FIRST -> ^(TOK_NULLS_FIRST)
+    | KW_NULLS KW_LAST -> ^(TOK_NULLS_LAST)
+    ;
+
 columnNameOrder
 @init { pushMsg("column name order", state); }
 @after { popMsg(state); }
-    : identifier (asc=KW_ASC | desc=KW_DESC)?
-    -> {$desc == null}? ^(TOK_TABSORTCOLNAMEASC identifier)
-    ->                  ^(TOK_TABSORTCOLNAMEDESC identifier)
+    : identifier orderSpec=orderSpecification? nullSpec=nullOrdering?
+    -> {$orderSpec.tree == null && $nullSpec.tree == null}?
+            ^(TOK_TABSORTCOLNAMEASC ^(TOK_NULLS_FIRST identifier))
+    -> {$orderSpec.tree == null}?
+            ^(TOK_TABSORTCOLNAMEASC ^($nullSpec identifier))
+    -> {$nullSpec.tree == null && $orderSpec.tree.getType()==HiveParser.KW_ASC}?
+            ^(TOK_TABSORTCOLNAMEASC ^(TOK_NULLS_FIRST identifier))
+    -> {$nullSpec.tree == null && $orderSpec.tree.getType()==HiveParser.KW_DESC}?
+            ^(TOK_TABSORTCOLNAMEDESC ^(TOK_NULLS_LAST identifier))
+    -> {$orderSpec.tree.getType()==HiveParser.KW_ASC}?
+            ^(TOK_TABSORTCOLNAMEASC ^($nullSpec identifier))
+    -> ^(TOK_TABSORTCOLNAMEDESC ^($nullSpec identifier))
     ;
 
 columnNameCommentList
@@ -2001,9 +2285,18 @@ columnNameComment
 columnRefOrder
 @init { pushMsg("column order", state); }
 @after { popMsg(state); }
-    : expression (asc=KW_ASC | desc=KW_DESC)?
-    -> {$desc == null}? ^(TOK_TABSORTCOLNAMEASC expression)
-    ->                  ^(TOK_TABSORTCOLNAMEDESC expression)
+    : expression orderSpec=orderSpecification? nullSpec=nullOrdering?
+    -> {$orderSpec.tree == null && $nullSpec.tree == null}?
+            ^(TOK_TABSORTCOLNAMEASC ^(TOK_NULLS_FIRST expression))
+    -> {$orderSpec.tree == null}?
+            ^(TOK_TABSORTCOLNAMEASC ^($nullSpec expression))
+    -> {$nullSpec.tree == null && $orderSpec.tree.getType()==HiveParser.KW_ASC}?
+            ^(TOK_TABSORTCOLNAMEASC ^(TOK_NULLS_FIRST expression))
+    -> {$nullSpec.tree == null && $orderSpec.tree.getType()==HiveParser.KW_DESC}?
+            ^(TOK_TABSORTCOLNAMEDESC ^(TOK_NULLS_LAST expression))
+    -> {$orderSpec.tree.getType()==HiveParser.KW_ASC}?
+            ^(TOK_TABSORTCOLNAMEASC ^($nullSpec expression))
+    -> ^(TOK_TABSORTCOLNAMEDESC ^($nullSpec expression))
     ;
 
 columnNameType
@@ -2013,6 +2306,16 @@ columnNameType
     -> {containExcludedCharForCreateTableColumnName($colName.text)}? {throwColumnNameException()}
     -> {$comment == null}? ^(TOK_TABCOL $colName colType)
     ->                     ^(TOK_TABCOL $colName colType $comment)
+    ;
+
+columnNameTypeOrPKOrFK
+@init { pushMsg("column name or primary key or foreign key", state); }
+@after { popMsg(state); }
+    : ( foreignKeyWithName )
+    | ( primaryKeyWithName )
+    | ( primaryKeyWithoutName )
+    | ( foreignKeyWithoutName )
+    | ( columnNameType )
     ;
 
 columnNameColonType
@@ -2051,7 +2354,7 @@ primitiveType
     | KW_BIGINT        ->    TOK_BIGINT
     | KW_BOOLEAN       ->    TOK_BOOLEAN
     | KW_FLOAT         ->    TOK_FLOAT
-    | KW_DOUBLE        ->    TOK_DOUBLE
+    | KW_DOUBLE KW_PRECISION?       ->    TOK_DOUBLE
     | KW_DATE          ->    TOK_DATE
     | KW_DATETIME      ->    TOK_DATETIME
     | KW_TIMESTAMP     ->    TOK_TIMESTAMP
@@ -2095,16 +2398,22 @@ setOperator
 @after { popMsg(state); }
     : KW_UNION KW_ALL -> ^(TOK_UNIONALL)
     | KW_UNION KW_DISTINCT? -> ^(TOK_UNIONDISTINCT)
+    | KW_INTERSECT KW_ALL -> ^(TOK_INTERSECTALL)
+    | KW_INTERSECT KW_DISTINCT? -> ^(TOK_INTERSECTDISTINCT)
+    | KW_EXCEPT KW_ALL -> ^(TOK_EXCEPTALL)
+    | KW_EXCEPT KW_DISTINCT? -> ^(TOK_EXCEPTDISTINCT)
+    | KW_MINUS KW_ALL -> ^(TOK_EXCEPTALL)
+    | KW_MINUS KW_DISTINCT? -> ^(TOK_EXCEPTDISTINCT)
     ;
 
-queryStatementExpression[boolean topLevel]
+queryStatementExpression
     :
     /* Would be nice to do this as a gated semantic perdicate
        But the predicate gets pushed as a lookahead decision.
        Calling rule doesnot know about topLevel
     */
-    (w=withClause {topLevel}?)?
-    queryStatementExpressionBody[topLevel] {
+    (w=withClause)?
+    queryStatementExpressionBody {
       if ($w.tree != null) {
       $queryStatementExpressionBody.tree.insertChild(0, $w.tree);
       }
@@ -2112,10 +2421,10 @@ queryStatementExpression[boolean topLevel]
     ->  queryStatementExpressionBody
     ;
 
-queryStatementExpressionBody[boolean topLevel]
+queryStatementExpressionBody
     :
-    fromStatement[topLevel]
-    | regularBody[topLevel]
+    fromStatement
+    | regularBody
     ;
 
 withClause
@@ -2125,16 +2434,16 @@ withClause
 
 cteStatement
    :
-   identifier KW_AS LPAREN queryStatementExpression[false] RPAREN
+   identifier KW_AS LPAREN queryStatementExpression RPAREN
    -> ^(TOK_SUBQUERY queryStatementExpression identifier)
 ;
 
-fromStatement[boolean topLevel]
+fromStatement
 : (singleFromStatement  -> singleFromStatement)
 	(u=setOperator r=singleFromStatement
 	  -> ^($u {$fromStatement.tree} $r)
 	)*
-	 -> {u != null && topLevel}? ^(TOK_QUERY
+	 -> {u != null}? ^(TOK_QUERY
 	       ^(TOK_FROM
 	         ^(TOK_SUBQUERY
 	           {$fromStatement.tree}
@@ -2143,7 +2452,7 @@ fromStatement[boolean topLevel]
 	        )
 	       ^(TOK_INSERT 
 	          ^(TOK_DESTINATION ^(TOK_DIR TOK_TMP_FILE))
-	          ^(TOK_SELECT ^(TOK_SELEXPR TOK_ALLCOLREF))
+	          ^(TOK_SELECT ^(TOK_SELEXPR TOK_SETCOLREF))
 	        )
 	      )
     -> {$fromStatement.tree}
@@ -2163,12 +2472,12 @@ The valuesClause rule below ensures that the parse tree for
 very similar to the tree for "insert into table FOO select a,b from BAR".  Since virtual table name
 is implicit, it's represented as TOK_ANONYMOUS.
 */
-regularBody[boolean topLevel]
+regularBody
    :
    i=insertClause
    (
-   s=selectStatement[topLevel]
-     {$s.tree.getChild(1) !=null}? {$s.tree.getChild(1).replaceChildren(0, 0, $i.tree);} -> {$s.tree}
+   s=selectStatement
+     {$s.tree.getFirstChildWithType(TOK_INSERT).replaceChildren(0, 0, $i.tree);} -> {$s.tree}
      |
      valuesClause
       -> ^(TOK_QUERY
@@ -2179,39 +2488,64 @@ regularBody[boolean topLevel]
           )
    )
    |
-   selectStatement[topLevel]
+   selectStatement
    ;
 
-selectStatement[boolean topLevel]
+atomSelectStatement
    :
-   (
    s=selectClause
    f=fromClause?
    w=whereClause?
    g=groupByClause?
    h=havingClause?
+   win=window_clause?
+   -> ^(TOK_QUERY $f? ^(TOK_INSERT ^(TOK_DESTINATION ^(TOK_DIR TOK_TMP_FILE))
+                     $s $w? $g? $h? $win?))
+   |
+   LPAREN! selectStatement RPAREN!
+   ;
+
+selectStatement
+   :
+   a=atomSelectStatement
+   set=setOpSelectStatement[$atomSelectStatement.tree]?
    o=orderByClause?
    c=clusterByClause?
    d=distributeByClause?
    sort=sortByClause?
-   win=window_clause?
    l=limitClause?
-   -> ^(TOK_QUERY $f? ^(TOK_INSERT ^(TOK_DESTINATION ^(TOK_DIR TOK_TMP_FILE))
-                     $s $w? $g? $h? $o? $c?
-                     $d? $sort? $win? $l?))
-   )
-   (set=setOpSelectStatement[$selectStatement.tree, topLevel])?
+   {
+   if(set == null){
+   $a.tree.getFirstChildWithType(TOK_INSERT).addChild($o.tree);
+   $a.tree.getFirstChildWithType(TOK_INSERT).addChild($c.tree);
+   $a.tree.getFirstChildWithType(TOK_INSERT).addChild($d.tree);
+   $a.tree.getFirstChildWithType(TOK_INSERT).addChild($sort.tree);
+   $a.tree.getFirstChildWithType(TOK_INSERT).addChild($l.tree);
+   }
+   }
    -> {set == null}?
-      {$selectStatement.tree}
+      {$a.tree}
    -> {o==null && c==null && d==null && sort==null && l==null}?
       {$set.tree}
-   -> {throwSetOpException()}
+   -> ^(TOK_QUERY
+          ^(TOK_FROM
+            ^(TOK_SUBQUERY
+              {$set.tree}
+              {adaptor.create(Identifier, generateUnionAlias())}
+             )
+          )
+          ^(TOK_INSERT
+             ^(TOK_DESTINATION ^(TOK_DIR TOK_TMP_FILE))
+             ^(TOK_SELECT ^(TOK_SELEXPR TOK_SETCOLREF))
+             $o? $c? $d? $sort? $l?
+          )
+      )
    ;
 
-setOpSelectStatement[CommonTree t, boolean topLevel]
+setOpSelectStatement[CommonTree t]
    :
-   (u=setOperator b=simpleSelectStatement
-   -> {$setOpSelectStatement.tree != null && u.tree.getType()==HiveParser.TOK_UNIONDISTINCT}?
+   (u=setOperator b=atomSelectStatement
+   -> {$setOpSelectStatement.tree != null && ((CommonTree)u.getTree()).getType()==HiveParser.TOK_UNIONDISTINCT}?
       ^(TOK_QUERY
           ^(TOK_FROM
             ^(TOK_SUBQUERY
@@ -2221,12 +2555,12 @@ setOpSelectStatement[CommonTree t, boolean topLevel]
           )
           ^(TOK_INSERT
              ^(TOK_DESTINATION ^(TOK_DIR TOK_TMP_FILE))
-             ^(TOK_SELECTDI ^(TOK_SELEXPR TOK_ALLCOLREF))
+             ^(TOK_SELECTDI ^(TOK_SELEXPR TOK_SETCOLREF))
           )
        )
-   -> {$setOpSelectStatement.tree != null && u.tree.getType()!=HiveParser.TOK_UNIONDISTINCT}?
-      ^(TOK_UNIONALL {$setOpSelectStatement.tree} $b)
-   -> {$setOpSelectStatement.tree == null && u.tree.getType()==HiveParser.TOK_UNIONDISTINCT}?
+   -> {$setOpSelectStatement.tree != null && ((CommonTree)u.getTree()).getType()!=HiveParser.TOK_UNIONDISTINCT}?
+      ^($u {$setOpSelectStatement.tree} $b)
+   -> {$setOpSelectStatement.tree == null && ((CommonTree)u.getTree()).getType()==HiveParser.TOK_UNIONDISTINCT}?
       ^(TOK_QUERY
           ^(TOK_FROM
             ^(TOK_SUBQUERY
@@ -2236,20 +2570,17 @@ setOpSelectStatement[CommonTree t, boolean topLevel]
            )
           ^(TOK_INSERT
             ^(TOK_DESTINATION ^(TOK_DIR TOK_TMP_FILE))
-            ^(TOK_SELECTDI ^(TOK_SELEXPR TOK_ALLCOLREF))
+            ^(TOK_SELECTDI ^(TOK_SELEXPR TOK_SETCOLREF))
          )
        )
-   -> ^(TOK_UNIONALL {$t} $b)
+   -> ^($u {$t} $b)
    )+
-   o=orderByClause?
-   c=clusterByClause?
-   d=distributeByClause?
-   sort=sortByClause?
-   win=window_clause?
-   l=limitClause?
-   -> {o==null && c==null && d==null && sort==null && win==null && l==null && !topLevel}?
-      {$setOpSelectStatement.tree}
-   -> ^(TOK_QUERY
+   -> {$setOpSelectStatement.tree.getChild(0).getType()==HiveParser.TOK_UNIONALL
+   ||$setOpSelectStatement.tree.getChild(0).getType()==HiveParser.TOK_INTERSECTDISTINCT
+   ||$setOpSelectStatement.tree.getChild(0).getType()==HiveParser.TOK_INTERSECTALL
+   ||$setOpSelectStatement.tree.getChild(0).getType()==HiveParser.TOK_EXCEPTDISTINCT
+   ||$setOpSelectStatement.tree.getChild(0).getType()==HiveParser.TOK_EXCEPTALL}?
+      ^(TOK_QUERY
           ^(TOK_FROM
             ^(TOK_SUBQUERY
               {$setOpSelectStatement.tree}
@@ -2258,28 +2589,16 @@ setOpSelectStatement[CommonTree t, boolean topLevel]
           )
           ^(TOK_INSERT
              ^(TOK_DESTINATION ^(TOK_DIR TOK_TMP_FILE))
-             ^(TOK_SELECT ^(TOK_SELEXPR TOK_ALLCOLREF))
-             $o? $c? $d? $sort? $win? $l?
+             ^(TOK_SELECT ^(TOK_SELEXPR TOK_SETCOLREF))
           )
        )
-   ;
-
-simpleSelectStatement
-   :
-   selectClause
-   fromClause?
-   whereClause?
-   groupByClause?
-   havingClause?
-   ((window_clause) => window_clause)?
-   -> ^(TOK_QUERY fromClause? ^(TOK_INSERT ^(TOK_DESTINATION ^(TOK_DIR TOK_TMP_FILE))
-                     selectClause whereClause? groupByClause? havingClause? window_clause?))
+   -> {$setOpSelectStatement.tree}
    ;
 
 selectStatementWithCTE
     :
     (w=withClause)?
-    selectStatement[true] {
+    selectStatement {
       if ($w.tree != null) {
       $selectStatement.tree.insertChild(0, $w.tree);
       }
@@ -2295,11 +2614,11 @@ body
    whereClause?
    groupByClause?
    havingClause?
+   window_clause?
    orderByClause?
    clusterByClause?
    distributeByClause?
    sortByClause?
-   window_clause?
    limitClause? -> ^(TOK_INSERT insertClause
                      selectClause lateralView? whereClause? groupByClause? havingClause? orderByClause? clusterByClause?
                      distributeByClause? sortByClause? window_clause? limitClause?)
@@ -2309,11 +2628,11 @@ body
    whereClause?
    groupByClause?
    havingClause?
+   window_clause?
    orderByClause?
    clusterByClause?
    distributeByClause?
    sortByClause?
-   window_clause?
    limitClause? -> ^(TOK_INSERT ^(TOK_DESTINATION ^(TOK_DIR TOK_TMP_FILE))
                      selectClause lateralView? whereClause? groupByClause? havingClause? orderByClause? clusterByClause?
                      distributeByClause? sortByClause? window_clause? limitClause?)
@@ -2341,7 +2660,8 @@ limitClause
 @init { pushMsg("limit clause", state); }
 @after { popMsg(state); }
    :
-   KW_LIMIT num=Number -> ^(TOK_LIMIT $num)
+   KW_LIMIT ((offset=Number COMMA)? num=Number) -> ^(TOK_LIMIT ($offset)? $num)
+   | KW_LIMIT num=Number KW_OFFSET offset=Number -> ^(TOK_LIMIT ($offset)? $num)
    ;
 
 //DELETE FROM <tableName> WHERE ...;
@@ -2432,4 +2752,63 @@ setAutoCommitStatement
   ;
 /*
 END user defined transaction boundaries
+*/
+
+abortTransactionStatement
+@init { pushMsg("abort transactions statement", state); }
+@after { popMsg(state); }
+  :
+  KW_ABORT KW_TRANSACTIONS ( Number )+ -> ^(TOK_ABORT_TRANSACTIONS ( Number )+)
+  ;
+
+
+/*
+BEGIN SQL Merge statement
+*/
+mergeStatement
+@init { pushMsg("MERGE statement", state); }
+@after { popMsg(state); }
+   :
+   KW_MERGE KW_INTO tableName (KW_AS? identifier)? KW_USING joinSourcePart KW_ON expression whenClauses ->
+    ^(TOK_MERGE ^(TOK_TABREF tableName identifier?) joinSourcePart expression whenClauses)
+   ;
+/*
+Allow 0,1 or 2 WHEN MATCHED clauses and 0 or 1 WHEN NOT MATCHED
+Each WHEN clause may have AND <boolean predicate>.
+If 2 WHEN MATCHED clauses are present, 1 must be UPDATE the other DELETE and the 1st one
+must have AND <boolean predicate>
+*/
+whenClauses
+   :
+   (whenMatchedAndClause|whenMatchedThenClause)* whenNotMatchedClause?
+   ;
+whenNotMatchedClause
+@init { pushMsg("WHEN NOT MATCHED clause", state); }
+@after { popMsg(state); }
+   :
+  KW_WHEN KW_NOT KW_MATCHED (KW_AND expression)? KW_THEN KW_INSERT KW_VALUES valueRowConstructor ->
+    ^(TOK_NOT_MATCHED ^(TOK_INSERT valueRowConstructor) expression?)
+  ;
+whenMatchedAndClause
+@init { pushMsg("WHEN MATCHED AND clause", state); }
+@after { popMsg(state); }
+  :
+  KW_WHEN KW_MATCHED KW_AND expression KW_THEN updateOrDelete ->
+    ^(TOK_MATCHED updateOrDelete expression)
+  ;
+whenMatchedThenClause
+@init { pushMsg("WHEN MATCHED THEN clause", state); }
+@after { popMsg(state); }
+  :
+  KW_WHEN KW_MATCHED KW_THEN updateOrDelete ->
+     ^(TOK_MATCHED updateOrDelete)
+  ;
+updateOrDelete
+   :
+   KW_UPDATE setColumnsClause -> ^(TOK_UPDATE setColumnsClause)
+   |
+   KW_DELETE -> TOK_DELETE
+   ;
+/*
+END SQL Merge statement
 */

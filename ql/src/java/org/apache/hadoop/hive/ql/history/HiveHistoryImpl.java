@@ -28,8 +28,8 @@ import java.util.Random;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.ql.QueryPlan;
 import org.apache.hadoop.hive.ql.exec.Task;
@@ -46,12 +46,11 @@ import org.apache.hadoop.mapred.Counters.Group;
  * Each session uses a new object, which creates a new file.
  */
 public class HiveHistoryImpl implements HiveHistory{
+  private static final Logger LOG = LoggerFactory.getLogger("hive.ql.exec.HiveHistoryImpl");
 
   PrintWriter histStream; // History File stream
 
   String histFileName; // History file name
-
-  private static final Log LOG = LogFactory.getLog("hive.ql.exec.HiveHistoryImpl");
 
   private static final Random randGen = new Random();
 
@@ -266,13 +265,9 @@ public class HiveHistoryImpl implements HiveHistory{
   @Override
   public void startTask(String queryId, Task<? extends Serializable> task,
       String taskName) {
-    SessionState ss = SessionState.get();
-    if (ss == null) {
-      return;
-    }
     TaskInfo ti = new TaskInfo();
 
-    ti.hm.put(Keys.QUERY_ID.name(), ss.getQueryId());
+    ti.hm.put(Keys.QUERY_ID.name(), queryId);
     ti.hm.put(Keys.TASK_ID.name(), task.getId());
     ti.hm.put(Keys.TASK_NAME.name(), taskName);
 
@@ -309,7 +304,7 @@ public class HiveHistoryImpl implements HiveHistory{
   /**
    * write out counters.
    */
-  static ThreadLocal<Map<String,String>> ctrMapFactory =
+  static final ThreadLocal<Map<String,String>> ctrMapFactory =
       new ThreadLocal<Map<String, String>>() {
     @Override
     protected Map<String,String> initialValue() {
@@ -319,9 +314,11 @@ public class HiveHistoryImpl implements HiveHistory{
 
   @Override
   public void logPlanProgress(QueryPlan plan) throws IOException {
-    Map<String,String> ctrmap = ctrMapFactory.get();
-    ctrmap.put("plan", plan.toString());
-    log(RecordTypes.Counters, ctrmap);
+    if (plan != null) {
+      Map<String,String> ctrmap = ctrMapFactory.get();
+      ctrmap.put("plan", plan.toString());
+      log(RecordTypes.Counters, ctrmap);
+    }
   }
 
   @Override
@@ -355,7 +352,7 @@ public class HiveHistoryImpl implements HiveHistory{
 
   @Override
   public void closeStream() {
-    IOUtils.cleanup(LOG, histStream);
+    IOUtils.closeStream(histStream);
   }
 
   @Override

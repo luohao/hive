@@ -33,8 +33,9 @@ import java.util.TreeMap;
 import java.util.TreeSet;
 
 import com.google.common.collect.LinkedListMultimap;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.mapred.split.SplitLocationProvider;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.ql.exec.Utilities;
@@ -105,7 +106,7 @@ public class CustomPartitionVertex extends VertexManagerPlugin {
     }
   }
 
-  private static final Log LOG = LogFactory.getLog(CustomPartitionVertex.class.getName());
+  private static final Logger LOG = LoggerFactory.getLogger(CustomPartitionVertex.class.getName());
 
   VertexManagerPluginContext context;
 
@@ -271,25 +272,27 @@ public class CustomPartitionVertex extends VertexManagerPlugin {
           HashMultimap.<Integer, InputSplit> create();
       boolean secondLevelGroupingDone = false;
       if ((mainWorkName.isEmpty()) || (inputName.compareTo(mainWorkName) == 0)) {
+        SplitLocationProvider splitLocationProvider = Utils.getSplitLocationProvider(conf, LOG);
         for (Integer key : bucketToInitialSplitMap.keySet()) {
           InputSplit[] inputSplitArray =
               (bucketToInitialSplitMap.get(key).toArray(new InputSplit[0]));
           Multimap<Integer, InputSplit> groupedSplit =
               grouper.generateGroupedSplits(jobConf, conf, inputSplitArray, waves,
-                  availableSlots, inputName, mainWorkName.isEmpty());
+                  availableSlots, inputName, mainWorkName.isEmpty(), splitLocationProvider);
           if (mainWorkName.isEmpty() == false) {
             Multimap<Integer, InputSplit> singleBucketToGroupedSplit =
                 HashMultimap.<Integer, InputSplit> create();
             singleBucketToGroupedSplit.putAll(key, groupedSplit.values());
             groupedSplit =
                 grouper.group(jobConf, singleBucketToGroupedSplit, availableSlots,
-                    HiveConf.getFloatVar(conf, HiveConf.ConfVars.TEZ_SMB_NUMBER_WAVES));
+                    HiveConf.getFloatVar(conf, HiveConf.ConfVars.TEZ_SMB_NUMBER_WAVES), null);
             secondLevelGroupingDone = true;
           }
           bucketToGroupedSplitMap.putAll(key, groupedSplit.values());
         }
         processAllEvents(inputName, bucketToGroupedSplitMap, secondLevelGroupingDone);
       } else {
+        SplitLocationProvider splitLocationProvider = Utils.getSplitLocationProvider(conf, LOG);
         // do not group across files in case of side work because there is only 1 KV reader per
         // grouped split. This would affect SMB joins where we want to find the smallest key in
         // all the bucket files.
@@ -298,7 +301,7 @@ public class CustomPartitionVertex extends VertexManagerPlugin {
               (bucketToInitialSplitMap.get(key).toArray(new InputSplit[0]));
           Multimap<Integer, InputSplit> groupedSplit =
               grouper.generateGroupedSplits(jobConf, conf, inputSplitArray, waves,
-                    availableSlots, inputName, false);
+                    availableSlots, inputName, false, splitLocationProvider);
             bucketToGroupedSplitMap.putAll(key, groupedSplit.values());
         }
         /*
@@ -319,9 +322,9 @@ public class CustomPartitionVertex extends VertexManagerPlugin {
       Multimap<Integer, InputSplit> bucketToGroupedSplitMap) throws IOException {
     // the bucket to task map should have been setup by the big table.
     LOG.info("Processing events for input " + inputName);
-    if (bucketToTaskMap.isEmpty()) {
-      LOG.info("We don't have a routing table yet. Will need to wait for the main input"
-          + " initialization");
+    if (inputNameInputSpecMap.get(mainWorkName) == null) {
+      LOG.info("We don't have a routing table yet. Will need to wait for the main input "
+          + mainWorkName + " initialization");
       inputToGroupedSplitMap.put(inputName, bucketToGroupedSplitMap);
       return;
     }
@@ -336,6 +339,7 @@ public class CustomPartitionVertex extends VertexManagerPlugin {
         + " multi mr inputs. " + bucketToTaskMap);
 
     Integer[] numSplitsForTask = new Integer[taskCount];
+    Arrays.fill(numSplitsForTask, 0);
 
     Multimap<Integer, ByteBuffer> bucketToSerializedSplitMap = LinkedListMultimap.create();
 
@@ -350,6 +354,9 @@ public class CustomPartitionVertex extends VertexManagerPlugin {
 
     for (Entry<Integer, Collection<ByteBuffer>> entry : bucketToSerializedSplitMap.asMap().entrySet()) {
       Collection<Integer> destTasks = bucketToTaskMap.get(entry.getKey());
+      if ((destTasks == null) || (destTasks.isEmpty())) {
+        continue;
+      }
       for (Integer task : destTasks) {
         int count = 0;
         for (ByteBuffer buf : entry.getValue()) {
@@ -474,15 +481,19 @@ public class CustomPartitionVertex extends VertexManagerPlugin {
 
     LOG.info("Setting vertex parallelism since we have seen all inputs.");
 
+    boolean generateConsistentSplits =  HiveConf.getBoolVar(
+        conf, HiveConf.ConfVars.HIVE_TEZ_GENERATE_CONSISTENT_SPLITS);
+    LOG.info("GenerateConsistenSplitsInHive=" + generateConsistentSplits);
     context.setVertexParallelism(taskCount, VertexLocationHint.create(grouper
-        .createTaskLocationHints(finalSplits.toArray(new InputSplit[finalSplits.size()]))), emMap,
+            .createTaskLocationHints(finalSplits.toArray(new InputSplit[finalSplits.size()]),
+                generateConsistentSplits)), emMap,
         rootInputSpecUpdate);
     finalSplits.clear();
   }
 
   UserPayload getBytePayload(Multimap<Integer, Integer> routingTable) throws IOException {
     CustomEdgeConfiguration edgeConf =
-        new CustomEdgeConfiguration(routingTable.keySet().size(), routingTable);
+        new CustomEdgeConfiguration(numBuckets, routingTable);
     DataOutputBuffer dob = new DataOutputBuffer();
     edgeConf.write(dob);
     byte[] serialized = dob.getData();

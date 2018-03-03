@@ -22,6 +22,8 @@ import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.Serializable;
 import java.net.URI;
+import java.util.HashSet;
+import java.util.List;
 
 import org.antlr.runtime.tree.Tree;
 import org.apache.hadoop.fs.FileStatus;
@@ -29,15 +31,19 @@ import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hive.common.FileUtils;
 import org.apache.hadoop.hive.conf.HiveConf;
+import org.apache.hadoop.hive.ql.Context;
 import org.apache.hadoop.hive.ql.ErrorMsg;
+import org.apache.hadoop.hive.ql.QueryState;
+import org.apache.hadoop.hive.ql.exec.ReplCopyTask;
 import org.apache.hadoop.hive.ql.exec.Task;
-import org.apache.hadoop.hive.ql.exec.TaskFactory;
 import org.apache.hadoop.hive.ql.hooks.ReadEntity;
+import org.apache.hadoop.hive.ql.hooks.WriteEntity;
+import org.apache.hadoop.hive.ql.metadata.Hive;
 import org.apache.hadoop.hive.ql.metadata.InvalidTableException;
 import org.apache.hadoop.hive.ql.metadata.Partition;
 import org.apache.hadoop.hive.ql.metadata.PartitionIterable;
 import org.apache.hadoop.hive.ql.metadata.Table;
-import org.apache.hadoop.hive.ql.plan.CopyWork;
+import org.slf4j.Logger;
 
 /**
  * ExportSemanticAnalyzer.
@@ -47,8 +53,8 @@ public class ExportSemanticAnalyzer extends BaseSemanticAnalyzer {
 
   private ReplicationSpec replicationSpec;
 
-  public ExportSemanticAnalyzer(HiveConf conf) throws SemanticException {
-    super(conf);
+  public ExportSemanticAnalyzer(QueryState queryState) throws SemanticException {
+    super(queryState);
   }
 
   @Override
@@ -87,6 +93,18 @@ public class ExportSemanticAnalyzer extends BaseSemanticAnalyzer {
       }
     }
 
+    // All parsing is done, we're now good to start the export process.
+    prepareExport(ast, toURI, ts, replicationSpec, db, conf, ctx, rootTasks, inputs, outputs, LOG);
+
+  }
+
+  // FIXME : Move to EximUtil - it's okay for this to stay here for a little while more till we finalize the statics
+  public static void prepareExport(
+      ASTNode ast, URI toURI, TableSpec ts,
+      ReplicationSpec replicationSpec, Hive db, HiveConf conf,
+      Context ctx, List<Task<? extends Serializable>> rootTasks, HashSet<ReadEntity> inputs, HashSet<WriteEntity> outputs,
+      Logger LOG) throws SemanticException {
+
     if (ts != null) {
       try {
         EximUtil.validateTable(ts.tableHandle);
@@ -94,10 +112,12 @@ public class ExportSemanticAnalyzer extends BaseSemanticAnalyzer {
             && ts.tableHandle.isTemporary()){
           // No replication for temporary tables either
           ts = null;
+        } else if (ts.tableHandle.isView()) {
+          replicationSpec.setIsMetadataOnly(true);
         }
 
       } catch (SemanticException e) {
-        // table was a view, a non-native table or an offline table.
+        // table was a non-native table or an offline table.
         // ignore for replication, error if not.
         if (replicationSpec.isInReplicationScope()){
           ts = null; // null out ts so we can't use it.
@@ -108,6 +128,7 @@ public class ExportSemanticAnalyzer extends BaseSemanticAnalyzer {
     }
 
     try {
+
       FileSystem fs = FileSystem.get(toURI, conf);
       Path toPath = new Path(toURI.getScheme(), toURI.getAuthority(), toURI.getPath());
       try {
@@ -151,22 +172,22 @@ public class ExportSemanticAnalyzer extends BaseSemanticAnalyzer {
         partitions = null;
       }
 
-      Path path = new Path(ctx.getLocalTmpPath(), "_metadata");
+      Path path = new Path(ctx.getLocalTmpPath(), EximUtil.METADATA_NAME);
       EximUtil.createExportDump(
           FileSystem.getLocal(conf),
           path,
-          (ts != null ? ts.tableHandle: null),
+          (ts != null ? ts.tableHandle : null),
           partitions,
           replicationSpec);
 
-      Task<? extends Serializable> rTask = TaskFactory.get(new CopyWork(
-          path, new Path(toURI), false), conf);
+      Task<? extends Serializable> rTask = ReplCopyTask.getDumpCopyTask(replicationSpec, path, new Path(toURI), conf);
+
       rootTasks.add(rTask);
       LOG.debug("_metadata file written into " + path.toString()
           + " and then copied to " + toURI.toString());
     } catch (Exception e) {
       throw new SemanticException(
-          ErrorMsg.GENERIC_ERROR
+          ErrorMsg.IO_ERROR
               .getMsg("Exception while writing out the local file"), e);
     }
 
@@ -176,23 +197,22 @@ public class ExportSemanticAnalyzer extends BaseSemanticAnalyzer {
         for (Partition partition : partitions) {
           Path fromPath = partition.getDataLocation();
           Path toPartPath = new Path(parentPath, partition.getName());
-          Task<? extends Serializable> rTask = TaskFactory.get(
-              new CopyWork(fromPath, toPartPath, false),
-              conf);
+          Task<? extends Serializable> rTask =
+              ReplCopyTask.getDumpCopyTask(replicationSpec, fromPath, toPartPath, conf);
           rootTasks.add(rTask);
           inputs.add(new ReadEntity(partition));
         }
       } else {
         Path fromPath = ts.tableHandle.getDataLocation();
-        Path toDataPath = new Path(parentPath, "data");
-        Task<? extends Serializable> rTask = TaskFactory.get(new CopyWork(
-            fromPath, toDataPath, false), conf);
+        Path toDataPath = new Path(parentPath, EximUtil.DATA_PATH_NAME);
+        Task<? extends Serializable> rTask =
+                ReplCopyTask.getDumpCopyTask(replicationSpec, fromPath, toDataPath, conf);
         rootTasks.add(rTask);
         inputs.add(new ReadEntity(ts.tableHandle));
       }
-      outputs.add(toWriteEntity(parentPath));
+      outputs.add(toWriteEntity(parentPath, conf));
     }
-
   }
+
 
 }

@@ -18,16 +18,13 @@
 
 package org.apache.hive.service.cli.session;
 
-import java.util.Map;
+import java.io.File;
 
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.ql.session.SessionState;
 import org.apache.hive.service.cli.SessionHandle;
 import org.apache.hive.service.cli.operation.OperationManager;
-import org.apache.hive.service.cli.thrift.TProtocolVersion;
-
-import java.io.File;
-import java.util.Map;
+import org.apache.hive.service.rpc.thrift.TProtocolVersion;
 
 /**
  * Methods that don't need to be executed under a doAs
@@ -88,4 +85,8 @@ public interface HiveSessionBase {
   void setIpAddress(String ipAddress);
 
   long getLastAccessTime();
+
+  long getCreationTime();
+
+  int getOpenOperationCount();
 }

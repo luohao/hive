@@ -30,6 +30,7 @@ import org.apache.calcite.rel.core.Join;
 import org.apache.calcite.rel.core.JoinRelType;
 import org.apache.calcite.rel.core.Project;
 import org.apache.calcite.rel.core.SemiJoin;
+import org.apache.calcite.rel.core.Sort;
 import org.apache.calcite.rel.core.TableScan;
 import org.apache.calcite.rel.metadata.ReflectiveRelMetadataProvider;
 import org.apache.calcite.rel.metadata.RelMdRowCount;
@@ -38,19 +39,20 @@ import org.apache.calcite.rel.metadata.RelMetadataQuery;
 import org.apache.calcite.rex.RexBuilder;
 import org.apache.calcite.rex.RexCall;
 import org.apache.calcite.rex.RexInputRef;
+import org.apache.calcite.rex.RexLiteral;
 import org.apache.calcite.rex.RexNode;
 import org.apache.calcite.rex.RexUtil;
 import org.apache.calcite.sql.fun.SqlStdOperatorTable;
 import org.apache.calcite.util.BuiltInMethod;
 import org.apache.calcite.util.ImmutableBitSet;
 import org.apache.calcite.util.Pair;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.hive.ql.optimizer.calcite.reloperators.HiveTableScan;
 
 public class HiveRelMdRowCount extends RelMdRowCount {
 
-  protected static final Log LOG  = LogFactory.getLog(HiveRelMdRowCount.class.getName());
+  protected static final Logger LOG  = LoggerFactory.getLogger(HiveRelMdRowCount.class.getName());
 
 
   public static final RelMetadataProvider SOURCE = ReflectiveRelMetadataProvider
@@ -60,34 +62,47 @@ public class HiveRelMdRowCount extends RelMdRowCount {
     super();
   }
 
-  public Double getRowCount(Join join) {
-    PKFKRelationInfo pkfk = analyzeJoinForPKFK(join);
+  public Double getRowCount(Join join, RelMetadataQuery mq) {
+    PKFKRelationInfo pkfk = analyzeJoinForPKFK(join, mq);
     if (pkfk != null) {
       double selectivity = (pkfk.pkInfo.selectivity * pkfk.ndvScalingFactor);
       selectivity = Math.min(1.0, selectivity);
       if (LOG.isDebugEnabled()) {
-        LOG.debug("Identified Primary - Foreign Key relation:");
-        LOG.debug(RelOptUtil.toString(join));
-        LOG.debug(pkfk);
+        LOG.debug("Identified Primary - Foreign Key relation: {} {}",RelOptUtil.toString(join), pkfk);
       }
       return pkfk.fkInfo.rowCount * selectivity;
     }
     return join.getRows();
   }
 
-  public Double getRowCount(SemiJoin rel) {
-    PKFKRelationInfo pkfk = analyzeJoinForPKFK(rel);
+  @Override
+  public Double getRowCount(SemiJoin rel, RelMetadataQuery mq) {
+    PKFKRelationInfo pkfk = analyzeJoinForPKFK(rel, mq);
     if (pkfk != null) {
       double selectivity = (pkfk.pkInfo.selectivity * pkfk.ndvScalingFactor);
       selectivity = Math.min(1.0, selectivity);
       if (LOG.isDebugEnabled()) {
-        LOG.debug("Identified Primary - Foreign Key relation:");
-        LOG.debug(RelOptUtil.toString(rel));
-        LOG.debug(pkfk);
+        LOG.debug("Identified Primary - Foreign Key relation: {} {}", RelOptUtil.toString(rel), pkfk);
       }
       return pkfk.fkInfo.rowCount * selectivity;
     }
-    return super.getRowCount(rel);
+    return super.getRowCount(rel, mq);
+  }
+
+  @Override
+  public Double getRowCount(Sort rel, RelMetadataQuery mq) {
+    final Double rowCount = mq.getRowCount(rel.getInput());
+    if (rowCount != null && rel.fetch != null) {
+      final int offset = rel.offset == null ? 0 : RexLiteral.intValue(rel.offset);
+      final int limit = RexLiteral.intValue(rel.fetch);
+      final Double offsetLimit = new Double(offset + limit);
+      // offsetLimit is smaller than rowCount of the input operator
+      // thus, we return the offsetLimit
+      if (offsetLimit < rowCount) {
+        return offsetLimit;
+      }
+    }
+    return rowCount;
   }
 
   static class PKFKRelationInfo {
@@ -109,6 +124,7 @@ public class HiveRelMdRowCount extends RelMdRowCount {
       this.isPKSideSimple = isPKSideSimple;
     }
 
+    @Override
     public String toString() {
       return String.format(
           "Primary - Foreign Key join:\n\tfkSide = %d\n\tFKInfo:%s\n" +
@@ -129,6 +145,7 @@ public class HiveRelMdRowCount extends RelMdRowCount {
       this.distinctCount = distinctCount;
     }
 
+    @Override
     public String toString() {
       return String.format("FKInfo(rowCount=%.2f,ndv=%.2f)", rowCount, distinctCount);
     }
@@ -141,6 +158,7 @@ public class HiveRelMdRowCount extends RelMdRowCount {
       this.selectivity = selectivity;
     }
 
+    @Override
     public String toString() {
       return String.format("PKInfo(rowCount=%.2f,ndv=%.2f,selectivity=%.2f)", rowCount, distinctCount,selectivity);
     }
@@ -158,7 +176,7 @@ public class HiveRelMdRowCount extends RelMdRowCount {
    * or Fact roj Dim b) The selectivity factor applied on the Fact Table should
    * be 1.
    */
-  public static PKFKRelationInfo analyzeJoinForPKFK(Join joinRel) {
+  public static PKFKRelationInfo analyzeJoinForPKFK(Join joinRel, RelMetadataQuery mq) {
 
     RelNode left = joinRel.getInputs().get(0);
     RelNode right = joinRel.getInputs().get(1);
@@ -211,16 +229,16 @@ public class HiveRelMdRowCount extends RelMdRowCount {
      */
     boolean leftIsKey = (joinRel.getJoinType() == JoinRelType.INNER || joinRel
         .getJoinType() == JoinRelType.RIGHT)
-        && !(joinRel instanceof SemiJoin) && isKey(lBitSet, left);
+        && !(joinRel instanceof SemiJoin) && isKey(lBitSet, left, mq);
     boolean rightIsKey = (joinRel.getJoinType() == JoinRelType.INNER || joinRel
-        .getJoinType() == JoinRelType.LEFT) && isKey(rBitSet, right);
+        .getJoinType() == JoinRelType.LEFT) && isKey(rBitSet, right, mq);
 
     if (!leftIsKey && !rightIsKey) {
       return null;
     }
 
-    double leftRowCount = RelMetadataQuery.getRowCount(left);
-    double rightRowCount = RelMetadataQuery.getRowCount(right);
+    double leftRowCount = mq.getRowCount(left);
+    double rightRowCount = mq.getRowCount(right);
 
     if (leftIsKey && rightIsKey) {
       if (rightRowCount < leftRowCount) {
@@ -230,13 +248,13 @@ public class HiveRelMdRowCount extends RelMdRowCount {
 
     int pkSide = leftIsKey ? 0 : rightIsKey ? 1 : -1;
 
-    boolean isPKSideSimpleTree = pkSide != -1 ? 
+    boolean isPKSideSimpleTree = pkSide != -1 ?
         IsSimpleTreeOnJoinKey.check(
             pkSide == 0 ? left : right,
-            pkSide == 0 ? leftColIdx : rightColIdx) : false;
+            pkSide == 0 ? leftColIdx : rightColIdx, mq) : false;
 
-   double leftNDV = isPKSideSimpleTree ? RelMetadataQuery.getDistinctRowCount(left, lBitSet, leftPred) : -1;
-   double rightNDV = isPKSideSimpleTree ? RelMetadataQuery.getDistinctRowCount(right, rBitSet, rightPred) : -1;
+   double leftNDV = isPKSideSimpleTree ? mq.getDistinctRowCount(left, lBitSet, leftPred) : -1;
+   double rightNDV = isPKSideSimpleTree ? mq.getDistinctRowCount(right, rBitSet, rightPred) : -1;
 
    /*
     * If the ndv of the PK - FK side don't match, and the PK side is a filter
@@ -267,7 +285,7 @@ public class HiveRelMdRowCount extends RelMdRowCount {
     if (pkSide == 0) {
       FKSideInfo fkInfo = new FKSideInfo(rightRowCount,
           rightNDV);
-      double pkSelectivity = pkSelectivity(joinRel, true, left, leftRowCount);
+      double pkSelectivity = pkSelectivity(joinRel, mq, true, left, leftRowCount);
       PKSideInfo pkInfo = new PKSideInfo(leftRowCount,
           leftNDV,
           joinRel.getJoinType().generatesNullsOnRight() ? 1.0 :
@@ -279,7 +297,7 @@ public class HiveRelMdRowCount extends RelMdRowCount {
     if (pkSide == 1) {
       FKSideInfo fkInfo = new FKSideInfo(leftRowCount,
           leftNDV);
-      double pkSelectivity = pkSelectivity(joinRel, false, right, rightRowCount);
+      double pkSelectivity = pkSelectivity(joinRel, mq, false, right, rightRowCount);
       PKSideInfo pkInfo = new PKSideInfo(rightRowCount,
           rightNDV,
           joinRel.getJoinType().generatesNullsOnLeft() ? 1.0 :
@@ -291,7 +309,7 @@ public class HiveRelMdRowCount extends RelMdRowCount {
     return null;
   }
 
-  private static double pkSelectivity(Join joinRel, boolean leftChild,
+  private static double pkSelectivity(Join joinRel, RelMetadataQuery mq, boolean leftChild,
       RelNode child,
       double childRowCount) {
     if ((leftChild && joinRel.getJoinType().generatesNullsOnRight()) ||
@@ -300,7 +318,7 @@ public class HiveRelMdRowCount extends RelMdRowCount {
     } else {
       HiveTableScan tScan = HiveRelMdUniqueKeys.getTableScan(child, true);
       if (tScan != null) {
-        double tRowCount = RelMetadataQuery.getRowCount(tScan);
+        double tRowCount = mq.getRowCount(tScan);
         return childRowCount / tRowCount;
       } else {
         return 1.0;
@@ -308,9 +326,9 @@ public class HiveRelMdRowCount extends RelMdRowCount {
     }
   }
 
-  private static boolean isKey(ImmutableBitSet c, RelNode rel) {
+  private static boolean isKey(ImmutableBitSet c, RelNode rel, RelMetadataQuery mq) {
     boolean isKey = false;
-    Set<ImmutableBitSet> keys = RelMetadataQuery.getUniqueKeys(rel);
+    Set<ImmutableBitSet> keys = mq.getUniqueKeys(rel);
     if (keys != null) {
       for (ImmutableBitSet key : keys) {
         if (key.equals(c)) {
@@ -384,16 +402,18 @@ public class HiveRelMdRowCount extends RelMdRowCount {
 
     int joinKey;
     boolean simpleTree;
+    RelMetadataQuery mq;
 
-    static boolean check(RelNode r, int joinKey) {
-      IsSimpleTreeOnJoinKey v = new IsSimpleTreeOnJoinKey(joinKey);
+    static boolean check(RelNode r, int joinKey, RelMetadataQuery mq) {
+      IsSimpleTreeOnJoinKey v = new IsSimpleTreeOnJoinKey(joinKey, mq);
       v.go(r);
       return v.simpleTree;
     }
 
-    IsSimpleTreeOnJoinKey(int joinKey) {
+    IsSimpleTreeOnJoinKey(int joinKey, RelMetadataQuery mq) {
       super();
       this.joinKey = joinKey;
+      this.mq = mq;
       simpleTree = true;
     }
 
@@ -409,7 +429,7 @@ public class HiveRelMdRowCount extends RelMdRowCount {
       } else if (node instanceof Project) {
         simpleTree = isSimple((Project) node);
       } else if (node instanceof Filter) {
-        simpleTree = isSimple((Filter) node);
+        simpleTree = isSimple((Filter) node, mq);
       } else {
         simpleTree = false;
       }
@@ -428,9 +448,9 @@ public class HiveRelMdRowCount extends RelMdRowCount {
       return false;
     }
 
-    private boolean isSimple(Filter filter) {
+    private boolean isSimple(Filter filter, RelMetadataQuery mq) {
       ImmutableBitSet condBits = RelOptUtil.InputFinder.bits(filter.getCondition());
-      return isKey(condBits, filter);
+      return isKey(condBits, filter, mq);
     }
 
   }

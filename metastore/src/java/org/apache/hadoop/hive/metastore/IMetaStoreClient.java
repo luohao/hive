@@ -19,23 +19,37 @@
 package org.apache.hadoop.hive.metastore;
 
 
+import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.util.List;
+import java.util.Map;
+import java.util.Map.Entry;
+
 import org.apache.hadoop.hive.common.ObjectPair;
+import org.apache.hadoop.hive.common.StatsSetupConst;
 import org.apache.hadoop.hive.common.ValidTxnList;
 import org.apache.hadoop.hive.common.classification.InterfaceAudience;
 import org.apache.hadoop.hive.common.classification.InterfaceAudience.Public;
 import org.apache.hadoop.hive.common.classification.InterfaceStability.Evolving;
+import org.apache.hadoop.hive.common.classification.RetrySemantics;
 import org.apache.hadoop.hive.conf.HiveConf;
+import org.apache.hadoop.hive.metastore.TableType;
+import org.apache.hadoop.hive.metastore.annotation.NoReconnect;
 import org.apache.hadoop.hive.metastore.api.AggrStats;
 import org.apache.hadoop.hive.metastore.api.AlreadyExistsException;
 import org.apache.hadoop.hive.metastore.api.ColumnStatistics;
 import org.apache.hadoop.hive.metastore.api.ColumnStatisticsObj;
+import org.apache.hadoop.hive.metastore.api.CompactionResponse;
 import org.apache.hadoop.hive.metastore.api.CompactionType;
 import org.apache.hadoop.hive.metastore.api.ConfigValSecurityException;
 import org.apache.hadoop.hive.metastore.api.CurrentNotificationEventId;
+import org.apache.hadoop.hive.metastore.api.DataOperationType;
 import org.apache.hadoop.hive.metastore.api.Database;
+import org.apache.hadoop.hive.metastore.api.EnvironmentContext;
 import org.apache.hadoop.hive.metastore.api.FieldSchema;
 import org.apache.hadoop.hive.metastore.api.FireEventRequest;
 import org.apache.hadoop.hive.metastore.api.FireEventResponse;
+import org.apache.hadoop.hive.metastore.api.ForeignKeysRequest;
 import org.apache.hadoop.hive.metastore.api.Function;
 import org.apache.hadoop.hive.metastore.api.GetAllFunctionsResponse;
 import org.apache.hadoop.hive.metastore.api.GetOpenTxnsInfoResponse;
@@ -54,6 +68,7 @@ import org.apache.hadoop.hive.metastore.api.InvalidPartitionException;
 import org.apache.hadoop.hive.metastore.api.LockRequest;
 import org.apache.hadoop.hive.metastore.api.LockResponse;
 import org.apache.hadoop.hive.metastore.api.MetaException;
+import org.apache.hadoop.hive.metastore.api.MetadataPpdResult;
 import org.apache.hadoop.hive.metastore.api.NoSuchLockException;
 import org.apache.hadoop.hive.metastore.api.NoSuchObjectException;
 import org.apache.hadoop.hive.metastore.api.NoSuchTxnException;
@@ -62,14 +77,19 @@ import org.apache.hadoop.hive.metastore.api.NotificationEventResponse;
 import org.apache.hadoop.hive.metastore.api.OpenTxnsResponse;
 import org.apache.hadoop.hive.metastore.api.Partition;
 import org.apache.hadoop.hive.metastore.api.PartitionEventType;
+import org.apache.hadoop.hive.metastore.api.PrimaryKeysRequest;
 import org.apache.hadoop.hive.metastore.api.PrincipalPrivilegeSet;
 import org.apache.hadoop.hive.metastore.api.PrincipalType;
 import org.apache.hadoop.hive.metastore.api.PrivilegeBag;
 import org.apache.hadoop.hive.metastore.api.Role;
+import org.apache.hadoop.hive.metastore.api.SQLForeignKey;
+import org.apache.hadoop.hive.metastore.api.SQLPrimaryKey;
 import org.apache.hadoop.hive.metastore.api.SetPartitionsStatsRequest;
 import org.apache.hadoop.hive.metastore.api.ShowCompactResponse;
+import org.apache.hadoop.hive.metastore.api.ShowLocksRequest;
 import org.apache.hadoop.hive.metastore.api.ShowLocksResponse;
 import org.apache.hadoop.hive.metastore.api.Table;
+import org.apache.hadoop.hive.metastore.api.TableMeta;
 import org.apache.hadoop.hive.metastore.api.TxnAbortedException;
 import org.apache.hadoop.hive.metastore.api.TxnOpenException;
 import org.apache.hadoop.hive.metastore.api.UnknownDBException;
@@ -77,10 +97,6 @@ import org.apache.hadoop.hive.metastore.api.UnknownPartitionException;
 import org.apache.hadoop.hive.metastore.api.UnknownTableException;
 import org.apache.hadoop.hive.metastore.partition.spec.PartitionSpecProxy;
 import org.apache.thrift.TException;
-
-import java.io.IOException;
-import java.util.List;
-import java.util.Map;
 
 /**
  * Wrapper around hive metastore thrift api
@@ -102,6 +118,13 @@ public interface IMetaStoreClient {
   void setHiveAddedJars(String addedJars);
 
   /**
+   * Returns true if the current client is using an in process metastore (local metastore).
+   *
+   * @return
+   */
+  boolean isLocalMetaStore();
+
+  /**
    *  Tries to reconnect this MetaStoreClient to the MetaStore.
    */
   void reconnect() throws MetaException;
@@ -109,6 +132,7 @@ public interface IMetaStoreClient {
   /**
    * close connection to meta store
    */
+  @NoReconnect
   void close();
 
   /**
@@ -149,6 +173,26 @@ public interface IMetaStoreClient {
    * @throws UnknownDBException
    */
   List<String> getTables(String dbName, String tablePattern)
+      throws MetaException, TException, UnknownDBException;
+
+  /**
+   * Get the names of all tables in the specified database that satisfy the supplied
+   * table name pattern and table type (MANAGED_TABLE || EXTERNAL_TABLE || VIRTUAL_VIEW)
+   * @param dbName Name of the database to fetch tables in.
+   * @param tablePattern pattern to match for table names.
+   * @param tableType Type of the table in the HMS store. VIRTUAL_VIEW is for views.
+   * @return List of table names.
+   * @throws MetaException
+   * @throws TException
+   * @throws UnknownDBException
+   */
+  List<String> getTables(String dbName, String tablePattern, TableType tableType)
+      throws MetaException, TException, UnknownDBException;
+
+  /**
+   * For quick GetTablesOperation
+   */
+  List<TableMeta> getTableMeta(String dbPatterns, String tablePatterns, List<String> tableTypes)
       throws MetaException, TException, UnknownDBException;
 
   /**
@@ -444,6 +488,22 @@ public interface IMetaStoreClient {
       InvalidObjectException, TException;
 
   /**
+   * With the one partitionSpecs to exchange, multiple partitions could be exchanged.
+   * e.g., year=2015/month/day, exchanging partition year=2015 results to all the partitions
+   * belonging to it exchanged. This function returns the list of affected partitions.
+   * @param partitionSpecs
+   * @param sourceDb
+   * @param sourceTable
+   * @param destdb
+   * @param destTableName
+   * @return the list of the new partitions
+   */
+  List<Partition> exchange_partitions(Map<String, String> partitionSpecs,
+      String sourceDb, String sourceTable, String destdb,
+      String destTableName) throws MetaException, NoSuchObjectException,
+      InvalidObjectException, TException;
+
+  /**
    * @param dbName
    * @param tblName
    * @param name - partition name i.e. 'ds=2010-02-03/ts=2010-02-03 18%3A16%3A01'
@@ -498,6 +558,22 @@ public interface IMetaStoreClient {
       throws MetaException, TException, NoSuchObjectException;
 
   /**
+   * Get number of partitions matching specified filter
+   * @param dbName the database name
+   * @param tableName the table name
+   * @param filter the filter string,
+   *    for example "part1 = \"p1_abc\" and part2 <= "\p2_test\"". Filtering can
+   *    be done only on string partition keys.
+   * @return number of partitions
+   * @throws MetaException
+   * @throws NoSuchObjectException
+   * @throws TException
+   */
+  public int getNumPartitionsByFilter(String dbName, String tableName,
+                                      String filter) throws MetaException, NoSuchObjectException, TException;
+
+
+    /**
    * Get list of partitions matching specified filter
    * @param db_name the database name
    * @param tbl_name the table name
@@ -632,9 +708,18 @@ public interface IMetaStoreClient {
   void alter_table(String defaultDatabaseName, String tblName,
       Table table) throws InvalidOperationException, MetaException, TException;
 
-  //alter_table_with_cascade
+  /**
+   * Use alter_table_with_environmentContext instead of alter_table with cascade option
+   * passed in EnvironmentContext using {@code StatsSetupConst.CASCADE}
+   */
+  @Deprecated
   void alter_table(String defaultDatabaseName, String tblName, Table table,
       boolean cascade) throws InvalidOperationException, MetaException, TException;
+
+  //wrapper of alter_table_with_cascade
+  void alter_table_with_environmentContext(String defaultDatabaseName, String tblName, Table table,
+      EnvironmentContext environmentContext) throws InvalidOperationException, MetaException,
+      TException;
 
   void createDatabase(Database db)
       throws InvalidObjectException, AlreadyExistsException, MetaException, TException;
@@ -704,6 +789,7 @@ public interface IMetaStoreClient {
   boolean dropPartition(String db_name, String tbl_name,
       String name, boolean deleteData) throws NoSuchObjectException,
       MetaException, TException;
+
   /**
    * updates a partition to new partition
    *
@@ -724,6 +810,25 @@ public interface IMetaStoreClient {
       throws InvalidOperationException, MetaException, TException;
 
   /**
+   * updates a partition to new partition
+   *
+   * @param dbName
+   *          database of the old partition
+   * @param tblName
+   *          table name of the old partition
+   * @param newPart
+   *          new partition
+   * @throws InvalidOperationException
+   *           if the old partition does not exist
+   * @throws MetaException
+   *           if error in updating metadata
+   * @throws TException
+   *           if error in communicating with metastore server
+   */
+  void alter_partition(String dbName, String tblName, Partition newPart, EnvironmentContext environmentContext)
+      throws InvalidOperationException, MetaException, TException;
+
+  /**
    * updates a list of partitions
    *
    * @param dbName
@@ -740,6 +845,27 @@ public interface IMetaStoreClient {
    *           if error in communicating with metastore server
    */
   void alter_partitions(String dbName, String tblName, List<Partition> newParts)
+      throws InvalidOperationException, MetaException, TException;
+
+  /**
+   * updates a list of partitions
+   *
+   * @param dbName
+   *          database of the old partition
+   * @param tblName
+   *          table name of the old partition
+   * @param newParts
+   *          list of partitions
+   * @param environmentContext 
+   * @throws InvalidOperationException
+   *           if the old partition does not exist
+   * @throws MetaException
+   *           if error in updating metadata
+   * @throws TException
+   *           if error in communicating with metastore server
+   */
+  void alter_partitions(String dbName, String tblName, List<Partition> newParts,
+      EnvironmentContext environmentContext)
       throws InvalidOperationException, MetaException, TException;
 
   /**
@@ -1114,7 +1240,24 @@ public interface IMetaStoreClient {
    */
   void cancelDelegationToken(String tokenStrForm) throws MetaException, TException;
 
-  public String getTokenStrForm() throws IOException;
+  String getTokenStrForm() throws IOException;
+
+  boolean addToken(String tokenIdentifier, String delegationToken) throws TException;
+
+  boolean removeToken(String tokenIdentifier) throws TException;
+
+  String getToken(String tokenIdentifier) throws TException;
+
+  List<String> getAllTokenIdentifiers() throws TException;
+
+  int addMasterKey(String key) throws MetaException, TException;
+
+  void updateMasterKey(Integer seqNo, String key)
+      throws NoSuchObjectException, MetaException, TException;
+
+  boolean removeMasterKey(Integer keySeq) throws TException;
+
+  String[] getMasterKeys() throws TException;
 
   void createFunction(Function func)
       throws InvalidObjectException, MetaException, TException;
@@ -1213,6 +1356,12 @@ public interface IMetaStoreClient {
       throws NoSuchTxnException, TxnAbortedException, TException;
 
   /**
+   * Abort a list of transactions. This is for use by "ABORT TRANSACTIONS" in the grammar.
+   * @throws TException
+   */
+  void abortTxns(List<Long> txnids) throws TException;
+
+  /**
    * Show the list of currently open transactions.  This is for use by "show transactions" in the
    * grammar, not for applications that want to find a list of current transactions to work with.
    * Those wishing the latter should call {@link #getValidTxns()}.
@@ -1249,6 +1398,7 @@ public interface IMetaStoreClient {
    * aborted.  This can result from the transaction timing out.
    * @throws TException
    */
+  @RetrySemantics.CannotRetry
   LockResponse lock(LockRequest request)
       throws NoSuchTxnException, TxnAbortedException, TException;
 
@@ -1296,7 +1446,16 @@ public interface IMetaStoreClient {
    * @return List of currently held and waiting locks.
    * @throws TException
    */
+  @Deprecated
   ShowLocksResponse showLocks() throws TException;
+
+  /**
+   * Show all currently held and waiting locks.
+   * @param showLocksRequest SHOW LOCK request
+   * @return List of currently held and waiting locks.
+   * @throws TException
+   */
+  ShowLocksResponse showLocks(ShowLocksRequest showLocksRequest) throws TException;
 
   /**
    * Send a heartbeat to indicate that the client holding these locks (if
@@ -1347,17 +1506,45 @@ public interface IMetaStoreClient {
    * @param type Whether this is a major or minor compaction.
    * @throws TException
    */
+  @Deprecated
   void compact(String dbname, String tableName, String partitionName,  CompactionType type)
       throws TException;
+  @Deprecated
+  void compact(String dbname, String tableName, String partitionName, CompactionType type,
+               Map<String, String> tblproperties) throws TException;
+  /**
+   * Send a request to compact a table or partition.  This will not block until the compaction is
+   * complete.  It will instead put a request on the queue for that table or partition to be
+   * compacted.  No checking is done on the dbname, tableName, or partitionName to make sure they
+   * refer to valid objects.  It is assumed this has already been done by the caller.  At most one
+   * Compaction can be scheduled/running for any given resource at a time.
+   * @param dbname Name of the database the table is in.  If null, this will be assumed to be
+   *               'default'.
+   * @param tableName Name of the table to be compacted.  This cannot be null.  If partitionName
+   *                  is null, this must be a non-partitioned table.
+   * @param partitionName Name of the partition to be compacted
+   * @param type Whether this is a major or minor compaction.
+   * @param tblproperties the list of tblproperties to override for this compact. Can be null.
+   * @return id of newly scheduled compaction or id/state of one which is already scheduled/running
+   * @throws TException
+   */
+  CompactionResponse compact2(String dbname, String tableName, String partitionName, CompactionType type,
+                              Map<String, String> tblproperties) throws TException;
 
   /**
-   * Get a list of all current compactions.
+   * Get a list of all compactions.
    * @return List of all current compactions.  This includes compactions waiting to happen,
    * in progress, and finished but waiting to clean the existing files.
    * @throws TException
    */
   ShowCompactResponse showCompactions() throws TException;
 
+  /**
+   * @deprecated in Hive 1.3.0/2.1.0 - will be removed in 2 releases
+   */
+  @Deprecated
+  void addDynamicPartitions(long txnId, String dbName, String tableName, List<String> partNames)
+    throws TException;
   /**
    * Send a list of partitions to the metastore to indicate which partitions were loaded
    * dynamically.
@@ -1367,8 +1554,18 @@ public interface IMetaStoreClient {
    * @param partNames partition name, as constructed by Warehouse.makePartName
    * @throws TException
    */
-  void addDynamicPartitions(long txnId, String dbName, String tableName, List<String> partNames)
+  void addDynamicPartitions(long txnId, String dbName, String tableName, List<String> partNames,
+                            DataOperationType operationType)
     throws TException;
+
+  /**
+   * Performs the commit/rollback to the metadata storage for insert operator from external storage handler.
+   * @param table table name
+   * @param overwrite true if the insert is overwrite
+   *
+   * @throws MetaException
+   */
+  void insertTable(Table table, boolean overwrite) throws MetaException;
 
   /**
    * A filter provided by the client that determines if a given notification event should be
@@ -1453,4 +1650,54 @@ public interface IMetaStoreClient {
       List<String> colNames, List<String> partName)  throws NoSuchObjectException, MetaException, TException;
 
   boolean setPartitionColumnStatistics(SetPartitionsStatsRequest request) throws NoSuchObjectException, InvalidObjectException, MetaException, TException, InvalidInputException;
+
+  /**
+   * Flush any catalog objects held by the metastore implementation.  Note that this does not
+   * flush statistics objects.  This should be called at the beginning of each query.
+   */
+  void flushCache();
+
+  /**
+   * Gets file metadata, as cached by metastore, for respective file IDs.
+   * The metadata that is not cached in metastore may be missing.
+   */
+  Iterable<Entry<Long, ByteBuffer>> getFileMetadata(List<Long> fileIds) throws TException;
+
+  Iterable<Entry<Long, MetadataPpdResult>> getFileMetadataBySarg(
+      List<Long> fileIds, ByteBuffer sarg, boolean doGetFooters) throws TException;
+
+  /**
+   * Cleares the file metadata cache for respective file IDs.
+   */
+  void clearFileMetadata(List<Long> fileIds) throws TException;
+
+  /**
+   * Adds file metadata for respective file IDs to metadata cache in metastore.
+   */
+  void putFileMetadata(List<Long> fileIds, List<ByteBuffer> metadata) throws TException;
+
+  boolean isSameConfObj(HiveConf c);
+
+  boolean cacheFileMetadata(String dbName, String tableName, String partName,
+      boolean allParts) throws TException;
+
+  List<SQLPrimaryKey> getPrimaryKeys(PrimaryKeysRequest request)
+    throws MetaException, NoSuchObjectException, TException;
+
+  List<SQLForeignKey> getForeignKeys(ForeignKeysRequest request) throws MetaException,
+    NoSuchObjectException, TException;
+
+  void createTableWithConstraints(
+    org.apache.hadoop.hive.metastore.api.Table tTbl,
+    List<SQLPrimaryKey> primaryKeys, List<SQLForeignKey> foreignKeys)
+    throws AlreadyExistsException, InvalidObjectException, MetaException, NoSuchObjectException, TException;
+
+  void dropConstraint(String dbName, String tableName, String constraintName) throws
+    MetaException, NoSuchObjectException, TException;
+
+  void addPrimaryKey(List<SQLPrimaryKey> primaryKeyCols) throws
+  MetaException, NoSuchObjectException, TException;
+
+  void addForeignKey(List<SQLForeignKey> foreignKeyCols) throws
+  MetaException, NoSuchObjectException, TException;
 }

@@ -1,11 +1,7 @@
-PREHOOK: query: -- SORT_AND_HASH_QUERY_RESULTS
-
-show partitions srcpart
+PREHOOK: query: show partitions srcpart
 PREHOOK: type: SHOWPARTITIONS
 PREHOOK: Input: default@srcpart
-POSTHOOK: query: -- SORT_AND_HASH_QUERY_RESULTS
-
-show partitions srcpart
+POSTHOOK: query: show partitions srcpart
 POSTHOOK: type: SHOWPARTITIONS
 POSTHOOK: Input: default@srcpart
 ds=2008-04-08/hr=11
@@ -2309,7 +2305,7 @@ Database:           	default
 Table:              	nzhang_part1        	 
 #### A masked pattern was here ####
 Partition Parameters:	 	 
-	COLUMN_STATS_ACCURATE	true                
+	COLUMN_STATS_ACCURATE	{\"BASIC_STATS\":\"true\"}
 	numFiles            	1                   
 	numRows             	500                 
 	rawDataSize         	5312                
@@ -2349,7 +2345,7 @@ Database:           	default
 Table:              	nzhang_part1        	 
 #### A masked pattern was here ####
 Partition Parameters:	 	 
-	COLUMN_STATS_ACCURATE	true                
+	COLUMN_STATS_ACCURATE	{\"BASIC_STATS\":\"true\"}
 	numFiles            	1                   
 	numRows             	500                 
 	rawDataSize         	5312                
@@ -2389,7 +2385,7 @@ Database:           	default
 Table:              	nzhang_part2        	 
 #### A masked pattern was here ####
 Partition Parameters:	 	 
-	COLUMN_STATS_ACCURATE	true                
+	COLUMN_STATS_ACCURATE	{\"BASIC_STATS\":\"true\"}
 	numFiles            	1                   
 	numRows             	500                 
 	rawDataSize         	5312                
@@ -2429,7 +2425,7 @@ Database:           	default
 Table:              	nzhang_part2        	 
 #### A masked pattern was here ####
 Partition Parameters:	 	 
-	COLUMN_STATS_ACCURATE	true                
+	COLUMN_STATS_ACCURATE	{\"BASIC_STATS\":\"true\"}
 	numFiles            	1                   
 	numRows             	500                 
 	rawDataSize         	5312                
@@ -2470,6 +2466,12 @@ Retention:          	0
 #### A masked pattern was here ####
 Table Type:         	MANAGED_TABLE       	 
 Table Parameters:	 	 
+	COLUMN_STATS_ACCURATE	{\"BASIC_STATS\":\"true\"}
+	numFiles            	2                   
+	numPartitions       	2                   
+	numRows             	1000                
+	rawDataSize         	10624               
+	totalSize           	11624               
 #### A masked pattern was here ####
 	 	 
 # Storage Information	 	 
@@ -2506,6 +2508,12 @@ Retention:          	0
 #### A masked pattern was here ####
 Table Type:         	MANAGED_TABLE       	 
 Table Parameters:	 	 
+	COLUMN_STATS_ACCURATE	{\"BASIC_STATS\":\"true\"}
+	numFiles            	2                   
+	numPartitions       	2                   
+	numRows             	1000                
+	rawDataSize         	10624               
+	totalSize           	11624               
 #### A masked pattern was here ####
 	 	 
 # Storage Information	 	 

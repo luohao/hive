@@ -17,8 +17,10 @@
  */
 package org.apache.hadoop.hive.ql.txn.compactor;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.mapred.JobConf;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.hive.common.ValidTxnList;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.metastore.Warehouse;
@@ -27,7 +29,7 @@ import org.apache.hadoop.hive.metastore.api.Partition;
 import org.apache.hadoop.hive.metastore.api.StorageDescriptor;
 import org.apache.hadoop.hive.metastore.api.Table;
 import org.apache.hadoop.hive.metastore.txn.CompactionInfo;
-import org.apache.hadoop.hive.metastore.txn.CompactionTxnHandler;
+import org.apache.hadoop.hive.metastore.txn.TxnUtils;
 import org.apache.hadoop.hive.ql.CommandNeedRetryException;
 import org.apache.hadoop.hive.ql.Driver;
 import org.apache.hadoop.hive.ql.processors.CommandProcessorResponse;
@@ -50,11 +52,12 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 public class Worker extends CompactorThread {
   static final private String CLASS_NAME = Worker.class.getName();
-  static final private Log LOG = LogFactory.getLog(CLASS_NAME);
+  static final private Logger LOG = LoggerFactory.getLogger(CLASS_NAME);
   static final private long SLEEP_TIME = 5000;
   static final private int baseThreadNum = 10002;
 
   private String name;
+  private JobConf mrJob; // the MR job for compaction
 
   /**
    * Get the hostname that this worker is run on.  Made static and public so that other classes
@@ -69,7 +72,8 @@ public class Worker extends CompactorThread {
       throw new RuntimeException(e);
     }
   }
-
+//todo: this doesn;t check if compaction is already running (even though Initiator does but we
+// don't go  through Initiator for user initiated compactions)
   @Override
   public void run() {
     do {
@@ -77,7 +81,7 @@ public class Worker extends CompactorThread {
       // Make sure nothing escapes this run method and kills the metastore at large,
       // so wrap it in a big catch Throwable statement.
       try {
-        CompactionInfo ci = txnHandler.findNextToCompact(name);
+        final CompactionInfo ci = txnHandler.findNextToCompact(name);
 
         if (ci == null && !stop.get()) {
           try {
@@ -134,8 +138,9 @@ public class Worker extends CompactorThread {
 
         final boolean isMajor = ci.isMajorCompaction();
         final ValidTxnList txns =
-            CompactionTxnHandler.createValidCompactTxnList(txnHandler.getOpenTxnsInfo());
+            TxnUtils.createValidCompactTxnList(txnHandler.getOpenTxnsInfo());
         LOG.debug("ValidCompactTxnList: " + txns.writeToString());
+        txnHandler.setCompactionHighestTxnId(ci, txns.getHighWatermark());
         final StringBuilder jobName = new StringBuilder(name);
         jobName.append("-compactor-");
         jobName.append(ci.getFullPartitionName());
@@ -158,23 +163,32 @@ public class Worker extends CompactorThread {
         launchedJob = true;
         try {
           if (runJobAsSelf(runAs)) {
-            mr.run(conf, jobName.toString(), t, sd, txns, isMajor, su);
+            mr.run(conf, jobName.toString(), t, sd, txns, ci, su, txnHandler);
           } else {
             UserGroupInformation ugi = UserGroupInformation.createProxyUser(t.getOwner(),
               UserGroupInformation.getLoginUser());
             ugi.doAs(new PrivilegedExceptionAction<Object>() {
               @Override
               public Object run() throws Exception {
-                mr.run(conf, jobName.toString(), t, sd, txns, isMajor, su);
+                mr.run(conf, jobName.toString(), t, sd, txns, ci, su, txnHandler);
                 return null;
               }
             });
+            try {
+              FileSystem.closeAllForUGI(ugi);
+            } catch (IOException exception) {
+              LOG.error("Could not clean up file-system handles for UGI: " + ugi + " for " +
+                  ci.getFullPartitionName(), exception);
+            }
           }
           txnHandler.markCompacted(ci);
+          if (conf.getBoolVar(HiveConf.ConfVars.HIVE_IN_TEST)) {
+            mrJob = mr.getMrJob();
+          }
         } catch (Exception e) {
-          LOG.error("Caught exception while trying to compact " + ci.getFullPartitionName() +
-              ".  Marking clean to avoid repeated failures, " + StringUtils.stringifyException(e));
-          txnHandler.markCleaned(ci);
+          LOG.error("Caught exception while trying to compact " + ci +
+              ".  Marking failed to avoid repeated failures, " + StringUtils.stringifyException(e));
+          txnHandler.markFailed(ci);
         }
       } catch (Throwable t) {
         LOG.error("Caught an exception in the main loop of compactor worker " + name + ", " +
@@ -204,8 +218,12 @@ public class Worker extends CompactorThread {
     setName(name.toString());
   }
 
+  public JobConf getMrJob() {
+    return mrJob;
+  }
+
   static final class StatsUpdater {
-    static final private Log LOG = LogFactory.getLog(StatsUpdater.class);
+    static final private Logger LOG = LoggerFactory.getLogger(StatsUpdater.class);
 
     public static StatsUpdater init(CompactionInfo ci, List<String> columnListForStats,
                                      HiveConf conf, String userName) {

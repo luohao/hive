@@ -41,6 +41,34 @@ struct FieldSchema {
   3: string comment
 }
 
+struct SQLPrimaryKey {
+  1: string table_db,    // table schema
+  2: string table_name,  // table name
+  3: string column_name, // column name
+  4: i32 key_seq,        // sequence number within primary key
+  5: string pk_name,     // primary key name
+  6: bool enable_cstr,   // Enable/Disable
+  7: bool validate_cstr,  // Validate/No validate
+  8: bool rely_cstr      // Rely/No Rely
+}
+
+struct SQLForeignKey {
+  1: string pktable_db,    // primary key table schema
+  2: string pktable_name,  // primary key table name
+  3: string pkcolumn_name, // primary key column name
+  4: string fktable_db,    // foreign key table schema
+  5: string fktable_name,  // foreign key table name
+  6: string fkcolumn_name, // foreign key column name
+  7: i32 key_seq,          // sequence within foreign key
+  8: i32 update_rule,      // what happens to foreign key when parent key is updated
+  9: i32 delete_rule,      // what happens to foreign key when parent key is deleted
+  10: string fk_name,      // foreign key name
+  11: string pk_name,      // primary key name
+  12: bool enable_cstr,    // Enable/Disable
+  13: bool validate_cstr,  // Validate/No validate
+  14: bool rely_cstr       // Rely/No Rely
+}
+
 struct Type {
   1: string          name,             // one of the types in PrimitiveTypes or CollectionTypes or User defined types
   2: optional string type1,            // object type if the name is 'list' (LIST_TYPE), key type if the name is 'map' (MAP_TYPE)
@@ -106,6 +134,15 @@ enum GrantRevokeType {
     REVOKE = 2,
 }
 
+enum DataOperationType {
+    SELECT = 1,
+    INSERT = 2
+    UPDATE = 3,
+    DELETE = 4,
+    UNSET = 5,//this is the default to distinguish from NULL from old clients
+    NO_TXN = 6,//drop table, insert overwrite, etc - something non-transactional
+}
+
 // Types of events the client can request that the metastore fire.  For now just support DML operations, as the metastore knows
 // about DDL operations and there's no reason for the client to request such an event.
 enum EventRequestType {
@@ -113,7 +150,6 @@ enum EventRequestType {
     UPDATE = 2,
     DELETE = 3,
 }
-
 
 struct HiveObjectRef{
   1: HiveObjectType objectType,
@@ -226,8 +262,8 @@ struct SerDeInfo {
 
 // sort order of a column (column name along with asc(1)/desc(0))
 struct Order {
-  1: string col,  // sort column name
-  2: i32    order // asc(1) or desc(0)
+  1: string col,      // sort column name
+  2: i32    order     // asc(1) or desc(0)
 }
 
 // this object holds all the information about skewed table
@@ -266,9 +302,10 @@ struct Table {
   9: map<string, string> parameters,   // to store comments or any other user level parameters
   10: string viewOriginalText,         // original view text, null for non-view
   11: string viewExpandedText,         // expanded view text, null for non-view
-  12: string tableType,                 // table type enum, e.g. EXTERNAL_TABLE
+  12: string tableType,                // table type enum, e.g. EXTERNAL_TABLE
   13: optional PrincipalPrivilegeSet privileges,
-  14: optional bool temporary=false
+  14: optional bool temporary=false,
+  15: optional bool rewriteEnabled     // rewrite enabled or not
 }
 
 struct Partition {
@@ -325,34 +362,39 @@ struct Index {
 struct BooleanColumnStatsData {
 1: required i64 numTrues,
 2: required i64 numFalses,
-3: required i64 numNulls
+3: required i64 numNulls,
+4: optional string bitVectors
 }
 
 struct DoubleColumnStatsData {
 1: optional double lowValue,
 2: optional double highValue,
 3: required i64 numNulls,
-4: required i64 numDVs
+4: required i64 numDVs,
+5: optional string bitVectors
 }
 
 struct LongColumnStatsData {
 1: optional i64 lowValue,
 2: optional i64 highValue,
 3: required i64 numNulls,
-4: required i64 numDVs
+4: required i64 numDVs,
+5: optional string bitVectors
 }
 
 struct StringColumnStatsData {
 1: required i64 maxColLen,
 2: required double avgColLen,
 3: required i64 numNulls,
-4: required i64 numDVs
+4: required i64 numDVs,
+5: optional string bitVectors
 }
 
 struct BinaryColumnStatsData {
 1: required i64 maxColLen,
 2: required double avgColLen,
-3: required i64 numNulls
+3: required i64 numNulls,
+4: optional string bitVectors
 }
 
 
@@ -365,7 +407,8 @@ struct DecimalColumnStatsData {
 1: optional Decimal lowValue,
 2: optional Decimal highValue,
 3: required i64 numNulls,
-4: required i64 numDVs
+4: required i64 numDVs,
+5: optional string bitVectors
 }
 
 struct Date {
@@ -376,7 +419,8 @@ struct DateColumnStatsData {
 1: optional Date lowValue,
 2: optional Date highValue,
 3: required i64 numNulls,
-4: required i64 numDVs
+4: required i64 numDVs,
+5: optional string bitVectors
 }
 
 union ColumnStatisticsData {
@@ -414,7 +458,8 @@ struct AggrStats {
 }
 
 struct SetPartitionsStatsRequest {
-1: required list<ColumnStatistics> colStats
+1: required list<ColumnStatistics> colStats,
+2: optional bool needMerge //stats need to be merged with the existing stats
 }
 
 // schema of the table/query results etc.
@@ -430,6 +475,40 @@ struct Schema {
 // accessed in hooks.
 struct EnvironmentContext {
   1: map<string, string> properties
+}
+
+struct PrimaryKeysRequest {
+  1: required string db_name,
+  2: required string tbl_name
+}
+
+struct PrimaryKeysResponse {
+  1: required list<SQLPrimaryKey> primaryKeys
+}
+
+struct ForeignKeysRequest {
+  1: string parent_db_name,
+  2: string parent_tbl_name,
+  3: string foreign_db_name,
+  4: string foreign_tbl_name
+}
+
+struct ForeignKeysResponse {
+  1: required list<SQLForeignKey> foreignKeys
+}
+
+struct DropConstraintRequest {
+  1: required string dbname, 
+  2: required string tablename,
+  3: required string constraintname
+}
+
+struct AddPrimaryKeyRequest {
+  1: required list<SQLPrimaryKey> primaryKeyCols
+}
+
+struct AddForeignKeyRequest {
+  1: required list<SQLForeignKey> foreignKeyCols
 }
 
 // Return type for get_partitions_by_expr
@@ -543,6 +622,11 @@ struct TxnInfo {
     2: required TxnState state,
     3: required string user,        // used in 'show transactions' to help admins find who has open transactions
     4: required string hostname,    // used in 'show transactions' to help admins find who has open transactions
+    5: optional string agentInfo = "Unknown",
+    6: optional i32 heartbeatCount=0,
+    7: optional string metaInfo,
+    8: optional i64 startedTime,
+    9: optional i64 lastHeartbeatTime,
 }
 
 struct GetOpenTxnsInfoResponse {
@@ -553,12 +637,14 @@ struct GetOpenTxnsInfoResponse {
 struct GetOpenTxnsResponse {
     1: required i64 txn_high_water_mark,
     2: required set<i64> open_txns,
+    3: optional i64 min_open_txn, //since 1.3,2.2
 }
 
 struct OpenTxnRequest {
     1: required i32 num_txns,
     2: required string user,
     3: required string hostname,
+    4: optional string agentInfo = "Unknown",
 }
 
 struct OpenTxnsResponse {
@@ -567,6 +653,10 @@ struct OpenTxnsResponse {
 
 struct AbortTxnRequest {
     1: required i64 txnid,
+}
+
+struct AbortTxnsRequest {
+    1: required list<i64> txn_ids,
 }
 
 struct CommitTxnRequest {
@@ -579,6 +669,9 @@ struct LockComponent {
     3: required string dbname,
     4: optional string tablename,
     5: optional string partitionname,
+    6: optional DataOperationType operationType = DataOperationType.UNSET,
+    7: optional bool isAcid = false,
+    8: optional bool isDynamicPartitionWrite = false
 }
 
 struct LockRequest {
@@ -586,6 +679,7 @@ struct LockRequest {
     2: optional i64 txnid,
     3: required string user,     // used in 'show locks' to help admins find who has open locks
     4: required string hostname, // used in 'show locks' to help admins find who has open locks
+    5: optional string agentInfo = "Unknown",
 }
 
 struct LockResponse {
@@ -595,6 +689,8 @@ struct LockResponse {
 
 struct CheckLockRequest {
     1: required i64 lockid,
+    2: optional i64 txnid,
+    3: optional i64 elapsed_ms,
 }
 
 struct UnlockRequest {
@@ -602,6 +698,10 @@ struct UnlockRequest {
 }
 
 struct ShowLocksRequest {
+    1: optional string dbname,
+    2: optional string tablename,
+    3: optional string partname,
+    4: optional bool isExtended=false,
 }
 
 struct ShowLocksResponseElement {
@@ -616,6 +716,11 @@ struct ShowLocksResponseElement {
     9: optional i64 acquiredat,
     10: required string user,
     11: required string hostname,
+    12: optional i32 heartbeatCount = 0,
+    13: optional string agentInfo,
+    14: optional i64 blockedByExtId,
+    15: optional i64 blockedByIntId,
+    16: optional i64 lockIdInternal,
 }
 
 struct ShowLocksResponse {
@@ -643,6 +748,13 @@ struct CompactionRequest {
     3: optional string partitionname,
     4: required CompactionType type,
     5: optional string runas,
+    6: optional map<string, string> properties
+}
+
+struct CompactionResponse {
+    1: required i64 id,
+    2: required string state,
+    3: required bool accepted
 }
 
 struct ShowCompactRequest {
@@ -657,6 +769,11 @@ struct ShowCompactResponseElement {
     6: optional string workerid,
     7: optional i64 start,
     8: optional string runAs,
+    9: optional i64 hightestTxnId, // Highest Txn ID handled by this compaction
+    10: optional string metaInfo,
+    11: optional i64 endTime,
+    12: optional string hadoopJobId = "None",
+    13: optional i64 id,
 }
 
 struct ShowCompactResponse {
@@ -668,6 +785,7 @@ struct AddDynamicPartitions {
     2: required string dbname,
     3: required string tablename,
     4: required list<string> partitionnames,
+    5: optional DataOperationType operationType = DataOperationType.UNSET
 }
 
 struct NotificationEventRequest {
@@ -682,6 +800,7 @@ struct NotificationEvent {
     4: optional string dbName,
     5: optional string tableName,
     6: required string message,
+    7: optional string messageFormat,
 }
 
 struct NotificationEventResponse {
@@ -693,7 +812,9 @@ struct CurrentNotificationEventId {
 }
 
 struct InsertEventRequestData {
-    1: required list<string> filesAdded
+    1: required list<string> filesAdded,
+    // Checksum of files (hex string of checksum byte payload)
+    2: optional list<string> filesAddedChecksum,
 }
 
 union FireEventRequestData {
@@ -714,9 +835,112 @@ struct FireEventResponse {
     // NOP for now, this is just a place holder for future responses
 }
     
+struct MetadataPpdResult {
+  1: optional binary metadata,
+  2: optional binary includeBitset
+}
+
+// Return type for get_file_metadata_by_expr
+struct GetFileMetadataByExprResult {
+  1: required map<i64, MetadataPpdResult> metadata,
+  2: required bool isSupported
+}
+
+enum FileMetadataExprType {
+  ORC_SARG = 1
+}
+
+
+// Request type for get_file_metadata_by_expr
+struct GetFileMetadataByExprRequest {
+  1: required list<i64> fileIds,
+  2: required binary expr,
+  3: optional bool doGetFooters,
+  4: optional FileMetadataExprType type
+}
+
+// Return type for get_file_metadata
+struct GetFileMetadataResult {
+  1: required map<i64, binary> metadata,
+  2: required bool isSupported
+}
+
+// Request type for get_file_metadata
+struct GetFileMetadataRequest {
+  1: required list<i64> fileIds
+}
+
+// Return type for put_file_metadata
+struct PutFileMetadataResult {
+}
+
+// Request type for put_file_metadata
+struct PutFileMetadataRequest {
+  1: required list<i64> fileIds,
+  2: required list<binary> metadata,
+  3: optional FileMetadataExprType type
+}
+
+// Return type for clear_file_metadata
+struct ClearFileMetadataResult {
+}
+
+// Request type for clear_file_metadata
+struct ClearFileMetadataRequest {
+  1: required list<i64> fileIds
+}
+
+// Return type for cache_file_metadata
+struct CacheFileMetadataResult {
+  1: required bool isSupported
+}
+
+// Request type for cache_file_metadata
+struct CacheFileMetadataRequest {
+  1: required string dbName,
+  2: required string tblName,
+  3: optional string partName,
+  4: optional bool isAllParts
+}
 
 struct GetAllFunctionsResponse {
   1: optional list<Function> functions
+}
+
+enum ClientCapability {
+  TEST_CAPABILITY = 1
+}
+
+
+struct ClientCapabilities {
+  1: required list<ClientCapability> values
+}
+
+struct GetTableRequest {
+  1: required string dbName,
+  2: required string tblName,
+  3: optional ClientCapabilities capabilities
+}
+
+struct GetTableResult {
+  1: required Table table
+}
+
+struct GetTablesRequest {
+  1: required string dbName,
+  2: optional list<string> tblNames,
+  3: optional ClientCapabilities capabilities
+}
+
+struct GetTablesResult {
+  1: required list<Table> tables
+}
+
+struct TableMeta {
+  1: required string dbName;
+  2: required string tableName;
+  3: required string tableType;
+  4: optional string comments;
 }
 
 exception MetaException {
@@ -829,6 +1053,17 @@ service ThriftHiveMetastore extends fb303.FacebookService
       throws (1:AlreadyExistsException o1,
               2:InvalidObjectException o2, 3:MetaException o3,
               4:NoSuchObjectException o4)
+  void create_table_with_constraints(1:Table tbl, 2: list<SQLPrimaryKey> primaryKeys, 3: list<SQLForeignKey> foreignKeys)
+      throws (1:AlreadyExistsException o1,
+              2:InvalidObjectException o2, 3:MetaException o3,
+              4:NoSuchObjectException o4)
+  void drop_constraint(1:DropConstraintRequest req)
+      throws(1:NoSuchObjectException o1, 2:MetaException o3)
+  void add_primary_key(1:AddPrimaryKeyRequest req)
+      throws(1:NoSuchObjectException o1, 2:MetaException o2)
+  void add_foreign_key(1:AddForeignKeyRequest req)
+      throws(1:NoSuchObjectException o1, 2:MetaException o2)  
+
   // drops the table and all the partitions associated with it if the table has partitions
   // delete data (including partitions) if deleteData is set to true
   void drop_table(1:string dbname, 2:string name, 3:bool deleteData)
@@ -837,11 +1072,19 @@ service ThriftHiveMetastore extends fb303.FacebookService
       4:EnvironmentContext environment_context)
                        throws(1:NoSuchObjectException o1, 2:MetaException o3)
   list<string> get_tables(1: string db_name, 2: string pattern) throws (1: MetaException o1)
+  list<string> get_tables_by_type(1: string db_name, 2: string pattern, 3: string tableType) throws (1: MetaException o1)
+  list<TableMeta> get_table_meta(1: string db_patterns, 2: string tbl_patterns, 3: list<string> tbl_types)
+                       throws (1: MetaException o1)
   list<string> get_all_tables(1: string db_name) throws (1: MetaException o1)
 
   Table get_table(1:string dbname, 2:string tbl_name)
                        throws (1:MetaException o1, 2:NoSuchObjectException o2)
   list<Table> get_table_objects_by_name(1:string dbname, 2:list<string> tbl_names)
+  GetTableResult get_table_req(1:GetTableRequest req)
+                       throws (1:MetaException o1, 2:NoSuchObjectException o2)
+  GetTablesResult get_table_objects_by_name_req(1:GetTablesRequest req)
+
+
 				   throws (1:MetaException o1, 2:InvalidOperationException o2, 3:UnknownDBException o3)
 
   // Get a list of table names that match a filter.
@@ -935,6 +1178,11 @@ service ThriftHiveMetastore extends fb303.FacebookService
       throws(1:MetaException o1, 2:NoSuchObjectException o2, 3:InvalidObjectException o3,
       4:InvalidInputException o4)
 
+  list<Partition> exchange_partitions(1:map<string, string> partitionSpecs, 2:string source_db,
+      3:string source_table_name, 4:string dest_db, 5:string dest_table_name)
+      throws(1:MetaException o1, 2:NoSuchObjectException o2, 3:InvalidObjectException o3,
+      4:InvalidInputException o4)
+
   Partition get_partition_with_auth(1:string db_name, 2:string tbl_name, 3:list<string> part_vals,
       4: string user_name, 5: list<string> group_names) throws(1:MetaException o1, 2:NoSuchObjectException o2)
 
@@ -986,6 +1234,10 @@ service ThriftHiveMetastore extends fb303.FacebookService
   PartitionsByExprResult get_partitions_by_expr(1:PartitionsByExprRequest req)
                        throws(1:MetaException o1, 2:NoSuchObjectException o2)
 
+  // get the partitions matching the given partition filter
+  i32 get_num_partitions_by_filter(1:string db_name 2:string tbl_name 3:string filter)
+                       throws(1:MetaException o1, 2:NoSuchObjectException o2)
+
   // get partitions give a list of partition names
   list<Partition> get_partitions_by_names(1:string db_name 2:string tbl_name 3:list<string> names)
                        throws(1:MetaException o1, 2:NoSuchObjectException o2)
@@ -1000,6 +1252,7 @@ service ThriftHiveMetastore extends fb303.FacebookService
   // prehooks are fired together followed by all post hooks
   void alter_partitions(1:string db_name, 2:string tbl_name, 3:list<Partition> new_parts)
                        throws (1:InvalidOperationException o1, 2:MetaException o2)
+  void alter_partitions_with_environment_context(1:string db_name, 2:string tbl_name, 3:list<Partition> new_parts, 4:EnvironmentContext environment_context) throws (1:InvalidOperationException o1, 2:MetaException o2)
 
   void alter_partition_with_environment_context(1:string db_name,
       2:string tbl_name, 3:Partition new_part,
@@ -1055,6 +1308,12 @@ service ThriftHiveMetastore extends fb303.FacebookService
                        throws(1:NoSuchObjectException o1, 2:MetaException o2)
   list<string> get_index_names(1:string db_name, 2:string tbl_name, 3:i16 max_indexes=-1)
                        throws(1:MetaException o2)
+
+ //primary keys and foreign keys
+  PrimaryKeysResponse get_primary_keys(1:PrimaryKeysRequest request)
+                       throws(1:MetaException o1, 2:NoSuchObjectException o2)
+  ForeignKeysResponse get_foreign_keys(1:ForeignKeysRequest request)
+                       throws(1:MetaException o1, 2:NoSuchObjectException o2)
 
   // column statistics interfaces
 
@@ -1171,6 +1430,30 @@ service ThriftHiveMetastore extends fb303.FacebookService
   // method to cancel delegation token obtained from metastore server
   void cancel_delegation_token(1:string token_str_form) throws (1:MetaException o1)
 
+  // add a delegation token
+  bool add_token(1:string token_identifier, 2:string delegation_token)
+
+  // remove a delegation token
+  bool remove_token(1:string token_identifier)
+
+  // get a delegation token by identifier
+  string get_token(1:string token_identifier)
+
+  // get all delegation token identifiers
+  list<string> get_all_token_identifiers()
+
+  // add master key
+  i32 add_master_key(1:string key) throws (1:MetaException o1)
+
+  // update master key
+  void update_master_key(1:i32 seq_number, 2:string key) throws (1:NoSuchObjectException o1, 2:MetaException o2)
+
+  // remove master key
+  bool remove_master_key(1:i32 key_seq)
+
+  // get master keys
+  list<string> get_master_keys()
+
   // Transaction and lock management calls
   // Get just list of open transactions
   GetOpenTxnsResponse get_open_txns()
@@ -1178,6 +1461,7 @@ service ThriftHiveMetastore extends fb303.FacebookService
   GetOpenTxnsInfoResponse get_open_txns_info()
   OpenTxnsResponse open_txns(1:OpenTxnRequest rqst)
   void abort_txn(1:AbortTxnRequest rqst) throws (1:NoSuchTxnException o1)
+  void abort_txns(1:AbortTxnsRequest rqst) throws (1:NoSuchTxnException o1)
   void commit_txn(1:CommitTxnRequest rqst) throws (1:NoSuchTxnException o1, 2:TxnAbortedException o2)
   LockResponse lock(1:LockRequest rqst) throws (1:NoSuchTxnException o1, 2:TxnAbortedException o2)
   LockResponse check_lock(1:CheckLockRequest rqst)
@@ -1187,6 +1471,7 @@ service ThriftHiveMetastore extends fb303.FacebookService
   void heartbeat(1:HeartbeatRequest ids) throws (1:NoSuchLockException o1, 2:NoSuchTxnException o2, 3:TxnAbortedException o3)
   HeartbeatTxnRangeResponse heartbeat_txn_range(1:HeartbeatTxnRangeRequest txns)
   void compact(1:CompactionRequest rqst) 
+  CompactionResponse compact2(1:CompactionRequest rqst) 
   ShowCompactResponse show_compact(1:ShowCompactRequest rqst)
   void add_dynamic_partitions(1:AddDynamicPartitions rqst) throws (1:NoSuchTxnException o1, 2:TxnAbortedException o2)
 
@@ -1194,6 +1479,14 @@ service ThriftHiveMetastore extends fb303.FacebookService
   NotificationEventResponse get_next_notification(1:NotificationEventRequest rqst) 
   CurrentNotificationEventId get_current_notificationEventId()
   FireEventResponse fire_listener_event(1:FireEventRequest rqst)
+  void flushCache()
+
+  GetFileMetadataByExprResult get_file_metadata_by_expr(1:GetFileMetadataByExprRequest req)
+  GetFileMetadataResult get_file_metadata(1:GetFileMetadataRequest req)
+  PutFileMetadataResult put_file_metadata(1:PutFileMetadataRequest req)
+  ClearFileMetadataResult clear_file_metadata(1:ClearFileMetadataRequest req)
+  CacheFileMetadataResult cache_file_metadata(1:CacheFileMetadataRequest req)
+
 }
 
 // * Note about the DDL_TIME: When creating or altering a table or a partition,
@@ -1231,5 +1524,6 @@ const string FILE_OUTPUT_FORMAT   = "file.outputformat",
 const string META_TABLE_STORAGE   = "storage_handler",
 const string TABLE_IS_TRANSACTIONAL = "transactional",
 const string TABLE_NO_AUTO_COMPACT = "no_auto_compaction",
+const string TABLE_TRANSACTIONAL_PROPERTIES = "transactional_properties",
 
 

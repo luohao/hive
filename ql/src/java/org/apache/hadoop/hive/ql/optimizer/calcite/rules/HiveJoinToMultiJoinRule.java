@@ -35,15 +35,15 @@ import org.apache.calcite.rex.RexNode;
 import org.apache.calcite.rex.RexUtil;
 import org.apache.calcite.util.ImmutableBitSet;
 import org.apache.calcite.util.Pair;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.hive.ql.optimizer.calcite.CalciteSemanticException;
 import org.apache.hadoop.hive.ql.optimizer.calcite.HiveCalciteUtil;
 import org.apache.hadoop.hive.ql.optimizer.calcite.HiveCalciteUtil.JoinPredicateInfo;
+import org.apache.hadoop.hive.ql.optimizer.calcite.HiveRelFactories;
 import org.apache.hadoop.hive.ql.optimizer.calcite.HiveRelOptUtil;
 import org.apache.hadoop.hive.ql.optimizer.calcite.reloperators.HiveJoin;
 import org.apache.hadoop.hive.ql.optimizer.calcite.reloperators.HiveMultiJoin;
-import org.apache.hadoop.hive.ql.optimizer.calcite.reloperators.HiveProject;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Lists;
@@ -55,11 +55,11 @@ import com.google.common.collect.Lists;
 public class HiveJoinToMultiJoinRule extends RelOptRule {
 
   public static final HiveJoinToMultiJoinRule INSTANCE =
-      new HiveJoinToMultiJoinRule(HiveJoin.class, HiveProject.DEFAULT_PROJECT_FACTORY);
+      new HiveJoinToMultiJoinRule(HiveJoin.class, HiveRelFactories.HIVE_PROJECT_FACTORY);
 
   private final ProjectFactory projectFactory;
 
-  private static transient final Log LOG = LogFactory.getLog(HiveJoinToMultiJoinRule.class);
+  private static transient final Logger LOG = LoggerFactory.getLogger(HiveJoinToMultiJoinRule.class);
 
   //~ Constructors -----------------------------------------------------------
 
@@ -239,14 +239,49 @@ public class HiveJoinToMultiJoinRule extends RelOptRule {
     // We can now create a multijoin operator
     RexNode newCondition = RexUtil.flatten(rexBuilder,
             RexUtil.composeConjunction(rexBuilder, newJoinCondition, false));
+    List<RelNode> newInputsArray = Lists.newArrayList(newInputs);
+    JoinPredicateInfo joinPredInfo = null;
+    try {
+      joinPredInfo = HiveCalciteUtil.JoinPredicateInfo.constructJoinPredicateInfo(newInputsArray, systemFieldList, newCondition);
+    } catch (CalciteSemanticException e) {
+      throw new RuntimeException(e);
+    }
+
+    // If the number of joins < number of input tables-1, this is not a star join.
+    if (joinPredInfo.getEquiJoinPredicateElements().size() < newInputs.size()-1) {
+      return null;
+    }
+    // Validate that the multi-join is a valid star join before returning it.
+    for (int i=0; i<newInputs.size(); i++) {
+      List<RexNode> joinKeys = null;
+      for (int j = 0; j < joinPredInfo.getEquiJoinPredicateElements().size(); j++) {
+        List<RexNode> currJoinKeys = joinPredInfo.
+          getEquiJoinPredicateElements().get(j).getJoinExprs(i);
+        if (currJoinKeys.isEmpty()) {
+          continue;
+        }
+        if (joinKeys == null) {
+          joinKeys = currJoinKeys;
+        } else {
+          // If we join on different keys on different tables, we can no longer apply
+          // multi-join conversion as this is no longer a valid star join.
+          // Bail out if this is the case.
+          if (!joinKeys.containsAll(currJoinKeys) || !currJoinKeys.containsAll(joinKeys)) {
+            return null;
+          }
+        }
+      }
+    }
+
     return new HiveMultiJoin(
             join.getCluster(),
-            newInputs,
+            newInputsArray,
             newCondition,
             join.getRowType(),
             joinInputs,
             joinTypes,
-            joinFilters);
+            joinFilters,
+            joinPredInfo);
   }
 
   /*

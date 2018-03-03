@@ -24,6 +24,7 @@ import org.apache.avro.generic.GenericData;
 import org.apache.avro.generic.GenericRecord;
 import org.apache.avro.generic.GenericEnumSymbol;
 import org.apache.hadoop.hive.common.type.HiveDecimal;
+import org.apache.hadoop.hive.common.type.HiveDecimalV1;
 import org.apache.hadoop.hive.serde2.SerDeException;
 import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspector;
 import org.apache.hadoop.hive.serde2.typeinfo.TypeInfo;
@@ -121,7 +122,7 @@ public class TestAvroSerializer {
 
   @Test
   public void canSerializeDecimals() throws SerDeException, IOException {
-    ByteBuffer bb = ByteBuffer.wrap(HiveDecimal.create("3.1416").unscaledValue().toByteArray());
+    ByteBuffer bb = ByteBuffer.wrap(HiveDecimal.create("3.1416").bigIntegerBytes());
     singleFieldTest("dec1", bb.rewind(),
         "{\"type\":\"bytes\", \"logicalType\":\"decimal\", \"precision\":5, \"scale\":4}");
   }
@@ -229,7 +230,10 @@ public class TestAvroSerializer {
     HiveDecimal dec = HiveDecimal.create("3.1415926");
     r = serializeAndDeserialize(field, "union1", AvroSerdeUtils.getBufferFromDecimal(dec, 4));
     HiveDecimal dec1 = AvroSerdeUtils.getHiveDecimalFromByteBuffer((ByteBuffer) r.get("union1"), 4);
-    assertEquals(dec.setScale(4), dec1);
+
+    // For now, old class.
+    HiveDecimalV1 oldDec = HiveDecimalV1.create(dec.bigDecimalValue());
+    assertEquals(oldDec.setScale(4).toString(), dec1.toString());
   }
 
   private enum enum1 {BLUE, RED , GREEN};
@@ -490,49 +494,5 @@ public class TestAvroSerializer {
     GenericRecord r = serializeAndDeserialize(field, "fixed1", fixed);
 
     assertArrayEquals(fixed.bytes(), ((GenericData.Fixed) r.get("fixed1")).bytes());
-  }
-
-  @Test
-  public void canSerializeCyclesInSchema() throws SerDeException, IOException {
-    // Create parent-child avro-record and avro-schema
-    AvroCycleParent parent = new AvroCycleParent();
-    AvroCycleChild child = new AvroCycleChild();
-    parent.setChild (child);
-    Schema parentS = ReflectData.AllowNull.get().getSchema(AvroCycleParent.class);
-    GenericData.Record parentRec = new GenericData.Record(parentS);
-    Schema childS = ReflectData.AllowNull.get().getSchema(AvroCycleChild.class);
-    GenericData.Record childRec  = new GenericData.Record(childS);
-    parentRec.put("child", childRec);
-
-    // Initialize Avro SerDe
-    AvroSerializer as = new AvroSerializer();
-    AvroDeserializer ad = new AvroDeserializer();
-    AvroObjectInspectorGenerator aoig = new AvroObjectInspectorGenerator(parentS);
-    ObjectInspector oi = aoig.getObjectInspector();
-    List<String> columnNames = aoig.getColumnNames();
-    List<TypeInfo> columnTypes = aoig.getColumnTypes();
-
-    // Check serialization and deserialization
-    AvroGenericRecordWritable agrw = Utils.serializeAndDeserializeRecord(parentRec);
-    Object obj = ad.deserialize(columnNames, columnTypes, agrw, parentS);
-
-    Writable result = as.serialize(obj, oi, columnNames, columnTypes, parentS);
-    assertTrue(result instanceof AvroGenericRecordWritable);
-    GenericRecord r2 = ((AvroGenericRecordWritable) result).getRecord();
-    assertEquals(parentS, r2.getSchema());
-  }
-
-  private static class AvroCycleParent {
-    AvroCycleChild child;
-    public AvroCycleChild getChild () {return child;}
-    public void setChild (AvroCycleChild child) {this.child = child;}
-  }
-
-  private static class AvroCycleChild {
-    AvroCycleParent parent;
-    AvroCycleChild next;
-    Map <String, AvroCycleParent> map;
-    public AvroCycleParent getParent () {return parent;}
-    public void setParent (AvroCycleParent parent) {this.parent = parent;}
   }
 }

@@ -1,12 +1,8 @@
-PREHOOK: query: -- INCLUDE_HADOOP_MAJOR_VERSIONS(0.23)
-
-CREATE TABLE fact_daily(x int) PARTITIONED BY (ds STRING)
+PREHOOK: query: CREATE TABLE fact_daily(x int) PARTITIONED BY (ds STRING)
 PREHOOK: type: CREATETABLE
 PREHOOK: Output: database:default
 PREHOOK: Output: default@fact_daily
-POSTHOOK: query: -- INCLUDE_HADOOP_MAJOR_VERSIONS(0.23)
-
-CREATE TABLE fact_daily(x int) PARTITIONED BY (ds STRING)
+POSTHOOK: query: CREATE TABLE fact_daily(x int) PARTITIONED BY (ds STRING)
 POSTHOOK: type: CREATETABLE
 POSTHOOK: Output: database:default
 POSTHOOK: Output: default@fact_daily
@@ -32,7 +28,7 @@ SELECT key+11 FROM src WHERE key=484
 POSTHOOK: type: QUERY
 POSTHOOK: Input: default@src
 POSTHOOK: Output: default@fact_tz@ds=1/hr=1
-POSTHOOK: Lineage: fact_tz PARTITION(ds=1,hr=1).x EXPRESSION [(src)src.FieldSchema(name:key, type:string, comment:default), ]
+POSTHOOK: Lineage: fact_tz PARTITION(ds=1,hr=1).x EXPRESSION []
 PREHOOK: query: ALTER TABLE fact_daily SET TBLPROPERTIES('EXTERNAL'='TRUE')
 PREHOOK: type: ALTERTABLE_PROPERTIES
 PREHOOK: Input: default@fact_daily

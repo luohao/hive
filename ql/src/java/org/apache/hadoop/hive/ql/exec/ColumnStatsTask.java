@@ -24,8 +24,8 @@ import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.hive.common.type.HiveDecimal;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.conf.HiveConf.ConfVars;
@@ -46,10 +46,14 @@ import org.apache.hadoop.hive.metastore.api.LongColumnStatsData;
 import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.hadoop.hive.metastore.api.SetPartitionsStatsRequest;
 import org.apache.hadoop.hive.metastore.api.StringColumnStatsData;
+import org.apache.hadoop.hive.ql.CompilationOpContext;
 import org.apache.hadoop.hive.ql.DriverContext;
 import org.apache.hadoop.hive.ql.QueryPlan;
+import org.apache.hadoop.hive.ql.QueryState;
+import org.apache.hadoop.hive.ql.metadata.Hive;
 import org.apache.hadoop.hive.ql.metadata.HiveException;
 import org.apache.hadoop.hive.ql.metadata.Table;
+import org.apache.hadoop.hive.ql.parse.ExplainConfiguration.AnalyzeState;
 import org.apache.hadoop.hive.ql.plan.ColumnStatsWork;
 import org.apache.hadoop.hive.ql.plan.api.StageType;
 import org.apache.hadoop.hive.ql.session.SessionState;
@@ -74,16 +78,17 @@ import org.apache.hadoop.util.StringUtils;
 public class ColumnStatsTask extends Task<ColumnStatsWork> implements Serializable {
   private static final long serialVersionUID = 1L;
   private FetchOperator ftOp;
-  private static transient final Log LOG = LogFactory.getLog(ColumnStatsTask.class);
+  private static transient final Logger LOG = LoggerFactory.getLogger(ColumnStatsTask.class);
 
   public ColumnStatsTask() {
     super();
   }
 
   @Override
-  public void initialize(HiveConf conf, QueryPlan queryPlan, DriverContext ctx) {
-    super.initialize(conf, queryPlan, ctx);
-    work.initializeForFetch();
+  public void initialize(QueryState queryState, QueryPlan queryPlan, DriverContext ctx,
+      CompilationOpContext opContext) {
+    super.initialize(queryState, queryPlan, ctx, opContext);
+    work.initializeForFetch(opContext);
     try {
       JobConf job = new JobConf(conf);
       ftOp = new FetchOperator(work.getfWork(), job);
@@ -105,8 +110,12 @@ public class ColumnStatsTask extends Task<ColumnStatsWork> implements Serializab
     }
   }
 
+  @SuppressWarnings("serial")
+  class UnsupportedDoubleException extends Exception {
+  }
+
   private void unpackDoubleStats(ObjectInspector oi, Object o, String fName,
-      ColumnStatisticsObj statsObj) {
+      ColumnStatisticsObj statsObj) throws UnsupportedDoubleException {
     if (fName.equals("countnulls")) {
       long v = ((LongObjectInspector) oi).get(o);
       statsObj.getStatsData().getDoubleStats().setNumNulls(v);
@@ -115,10 +124,20 @@ public class ColumnStatsTask extends Task<ColumnStatsWork> implements Serializab
       statsObj.getStatsData().getDoubleStats().setNumDVs(v);
     } else if (fName.equals("max")) {
       double d = ((DoubleObjectInspector) oi).get(o);
+      if (Double.isInfinite(d) || Double.isNaN(d)) {
+        throw new UnsupportedDoubleException();
+      }
       statsObj.getStatsData().getDoubleStats().setHighValue(d);
     } else if (fName.equals("min")) {
       double d = ((DoubleObjectInspector) oi).get(o);
+      if (Double.isInfinite(d) || Double.isNaN(d)) {
+        throw new UnsupportedDoubleException();
+      }
       statsObj.getStatsData().getDoubleStats().setLowValue(d);
+    } else if (fName.equals("ndvbitvector")) {
+      PrimitiveObjectInspector poi = (PrimitiveObjectInspector) oi;
+      String v = ((StringObjectInspector) poi).getPrimitiveJavaObject(o);
+      statsObj.getStatsData().getDoubleStats().setBitVectors(v);;
     }
   }
 
@@ -136,6 +155,10 @@ public class ColumnStatsTask extends Task<ColumnStatsWork> implements Serializab
     } else if (fName.equals("min")) {
       HiveDecimal d = ((HiveDecimalObjectInspector) oi).getPrimitiveJavaObject(o);
       statsObj.getStatsData().getDecimalStats().setLowValue(convertToThriftDecimal(d));
+    } else if (fName.equals("ndvbitvector")) {
+      PrimitiveObjectInspector poi = (PrimitiveObjectInspector) oi;
+      String v = ((StringObjectInspector) poi).getPrimitiveJavaObject(o);
+      statsObj.getStatsData().getDecimalStats().setBitVectors(v);;
     }
   }
 
@@ -157,6 +180,10 @@ public class ColumnStatsTask extends Task<ColumnStatsWork> implements Serializab
     } else if (fName.equals("min")) {
       long  v = ((LongObjectInspector) oi).get(o);
       statsObj.getStatsData().getLongStats().setLowValue(v);
+    } else if (fName.equals("ndvbitvector")) {
+      PrimitiveObjectInspector poi = (PrimitiveObjectInspector) oi;
+      String v = ((StringObjectInspector) poi).getPrimitiveJavaObject(o);
+      statsObj.getStatsData().getLongStats().setBitVectors(v);;
     }
   }
 
@@ -174,6 +201,10 @@ public class ColumnStatsTask extends Task<ColumnStatsWork> implements Serializab
     } else if (fName.equals("maxlength")) {
       long v = ((LongObjectInspector) oi).get(o);
       statsObj.getStatsData().getStringStats().setMaxColLen(v);
+    } else if (fName.equals("ndvbitvector")) {
+      PrimitiveObjectInspector poi = (PrimitiveObjectInspector) oi;
+      String v = ((StringObjectInspector) poi).getPrimitiveJavaObject(o);
+      statsObj.getStatsData().getStringStats().setBitVectors(v);;
     }
   }
 
@@ -205,11 +236,15 @@ public class ColumnStatsTask extends Task<ColumnStatsWork> implements Serializab
     } else if (fName.equals("min")) {
       DateWritable v = ((DateObjectInspector) oi).getPrimitiveWritableObject(o);
       statsObj.getStatsData().getDateStats().setLowValue(new Date(v.getDays()));
+    } else if (fName.equals("ndvbitvector")) {
+      PrimitiveObjectInspector poi = (PrimitiveObjectInspector) oi;
+      String v = ((StringObjectInspector) poi).getPrimitiveJavaObject(o);
+      statsObj.getStatsData().getDateStats().setBitVectors(v);;
     }
   }
 
   private void unpackPrimitiveObject (ObjectInspector oi, Object o, String fieldName,
-      ColumnStatisticsObj statsObj) {
+      ColumnStatisticsObj statsObj) throws UnsupportedDoubleException {
     if (o == null) {
       return;
     }
@@ -269,7 +304,7 @@ public class ColumnStatsTask extends Task<ColumnStatsWork> implements Serializab
   }
 
   private void unpackStructObject(ObjectInspector oi, Object o, String fName,
-      ColumnStatisticsObj cStatsObj) {
+      ColumnStatisticsObj cStatsObj) throws UnsupportedDoubleException {
     if (oi.getCategory() != ObjectInspector.Category.STRUCT) {
       throw new RuntimeException("Invalid object datatype : " + oi.getCategory().toString());
     }
@@ -292,7 +327,8 @@ public class ColumnStatsTask extends Task<ColumnStatsWork> implements Serializab
     }
   }
 
-  private List<ColumnStatistics> constructColumnStatsFromPackedRows() throws HiveException, MetaException, IOException {
+  private List<ColumnStatistics> constructColumnStatsFromPackedRows(
+      Hive db) throws HiveException, MetaException, IOException {
 
     String currentDb = SessionState.get().getCurrentDatabase();
     String tableName = work.getColStats().getTableName();
@@ -303,6 +339,7 @@ public class ColumnStatsTask extends Task<ColumnStatsWork> implements Serializab
 
     List<ColumnStatistics> stats = new ArrayList<ColumnStatistics>();
     InspectableObject packedRow;
+    Table tbl = db.getTable(currentDb, tableName);
     while ((packedRow = ftOp.getNextRow()) != null) {
       if (packedRow.oi.getCategory() != ObjectInspector.Category.STRUCT) {
         throw new HiveException("Unexpected object type encountered while unpacking row");
@@ -313,7 +350,6 @@ public class ColumnStatsTask extends Task<ColumnStatsWork> implements Serializab
       List<? extends StructField> fields = soi.getAllStructFieldRefs();
       List<Object> list = soi.getStructFieldsDataAsList(packedRow.o);
 
-      Table tbl = db.getTable(currentDb,tableName);
       List<FieldSchema> partColSchema = tbl.getPartCols();
       // Partition columns are appended at end, we only care about stats column
       int numOfStatCols = isTblLevel ? fields.size() : fields.size() - partColSchema.size();
@@ -325,8 +361,13 @@ public class ColumnStatsTask extends Task<ColumnStatsWork> implements Serializab
         ColumnStatisticsObj statsObj = new ColumnStatisticsObj();
         statsObj.setColName(colName.get(i));
         statsObj.setColType(colType.get(i));
-        unpackStructObject(foi, f, fieldName, statsObj);
-        statsObjs.add(statsObj);
+        try {
+          unpackStructObject(foi, f, fieldName, statsObj);
+          statsObjs.add(statsObj);
+        } catch (UnsupportedDoubleException e) {
+          // due to infinity or nan.
+          LOG.info("Because " + colName.get(i) + " is infinite or NaN, we skip stats.");
+        }
       }
 
       if (!isTblLevel) {
@@ -367,33 +408,27 @@ public class ColumnStatsTask extends Task<ColumnStatsWork> implements Serializab
     return statsDesc;
   }
 
-  private int persistPartitionStats() throws HiveException, MetaException, IOException {
-
-    // Fetch result of the analyze table partition (p1=c1).. compute statistics for columns ..
+  private int persistColumnStats(Hive db) throws HiveException, MetaException, IOException {
     // Construct a column statistics object from the result
-    List<ColumnStatistics> colStats = constructColumnStatsFromPackedRows();
+    List<ColumnStatistics> colStats = constructColumnStatsFromPackedRows(db);
     // Persist the column statistics object to the metastore
-    db.setPartitionColumnStatistics(new SetPartitionsStatsRequest(colStats));
-    return 0;
-  }
-
-  private int persistTableStats() throws HiveException, MetaException, IOException {
-    // Fetch result of the analyze table .. compute statistics for columns ..
-    // Construct a column statistics object from the result
-    ColumnStatistics colStats = constructColumnStatsFromPackedRows().get(0);
-    // Persist the column statistics object to the metastore
-    db.updateTableColumnStatistics(colStats);
+    // Note, this function is shared for both table and partition column stats.
+    SetPartitionsStatsRequest request = new SetPartitionsStatsRequest(colStats);
+    if (work.getColStats() != null && work.getColStats().getNumBitVector() > 0) {
+      request.setNeedMerge(true);
+    }
+    db.setPartitionColumnStatistics(request);
     return 0;
   }
 
   @Override
   public int execute(DriverContext driverContext) {
+    if (driverContext.getCtx().getExplainAnalyze() == AnalyzeState.RUNNING) {
+      return 0;
+    }
     try {
-      if (work.getColStats().isTblLevel()) {
-        return persistTableStats();
-      } else {
-        return persistPartitionStats();
-      }
+      Hive db = getHive();
+      return persistColumnStats(db);
     } catch (Exception e) {
       LOG.error("Failed to run column stats task", e);
     }

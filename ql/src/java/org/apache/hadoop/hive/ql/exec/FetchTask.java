@@ -22,13 +22,15 @@ import java.io.IOException;
 import java.io.Serializable;
 import java.util.List;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
-import org.apache.hadoop.hive.conf.HiveConf;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.hive.ql.CommandNeedRetryException;
+import org.apache.hadoop.hive.ql.CompilationOpContext;
 import org.apache.hadoop.hive.ql.DriverContext;
 import org.apache.hadoop.hive.ql.QueryPlan;
+import org.apache.hadoop.hive.ql.QueryState;
 import org.apache.hadoop.hive.ql.exec.mr.ExecMapper;
+import org.apache.hadoop.hive.ql.io.AcidUtils;
 import org.apache.hadoop.hive.ql.io.HiveInputFormat;
 import org.apache.hadoop.hive.ql.metadata.HiveException;
 import org.apache.hadoop.hive.ql.metadata.VirtualColumn;
@@ -46,22 +48,24 @@ import org.apache.hadoop.util.StringUtils;
  **/
 public class FetchTask extends Task<FetchWork> implements Serializable {
   private static final long serialVersionUID = 1L;
-
   private int maxRows = 100;
   private FetchOperator fetch;
   private ListSinkOperator sink;
   private int totalRows;
-
-  private static transient final Log LOG = LogFactory.getLog(FetchTask.class);
+  private static transient final Logger LOG = LoggerFactory.getLogger(FetchTask.class);
 
   public FetchTask() {
     super();
   }
 
+  public void setValidTxnList(String txnStr) {
+    fetch.setValidTxnList(txnStr);
+  }
   @Override
-  public void initialize(HiveConf conf, QueryPlan queryPlan, DriverContext ctx) {
-    super.initialize(conf, queryPlan, ctx);
-    work.initializeForFetch();
+  public void initialize(QueryState queryState, QueryPlan queryPlan, DriverContext ctx,
+      CompilationOpContext opContext) {
+    super.initialize(queryState, queryPlan, ctx, opContext);
+    work.initializeForFetch(opContext);
 
     try {
       // Create a file system handle
@@ -72,9 +76,12 @@ public class FetchTask extends Task<FetchWork> implements Serializable {
         TableScanOperator ts = (TableScanOperator) source;
         // push down projections
         ColumnProjectionUtils.appendReadColumns(
-            job, ts.getNeededColumnIDs(), ts.getNeededColumns());
+            job, ts.getNeededColumnIDs(), ts.getNeededColumns(), ts.getNeededNestedColumnPaths());
         // push down filters
         HiveInputFormat.pushFilters(job, ts);
+
+        AcidUtils.setTransactionalTableScan(job, ts.getConf().isAcidTable());
+        AcidUtils.setAcidOperationalProperties(job, ts.getConf().getAcidOperationalProperties());
       }
       sink = work.getSink();
       fetch = new FetchOperator(work, job, source, getVirtualColumns(source));
@@ -141,6 +148,10 @@ public class FetchTask extends Task<FetchWork> implements Serializable {
           if (work.getLeastNumRows() > 0) {
             throw new CommandNeedRetryException();
           }
+
+          // Closing the operator can sometimes yield more rows (HIVE-11892)
+          fetch.closeOperator();
+
           return fetched;
         }
         fetched = true;
@@ -181,4 +192,5 @@ public class FetchTask extends Task<FetchWork> implements Serializable {
       fetch.clearFetchContext();
     }
   }
+
 }

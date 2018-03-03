@@ -20,8 +20,9 @@ package org.apache.hadoop.hive.ql.exec.vector.mapjoin;
 
 import java.io.IOException;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.apache.hadoop.hive.ql.CompilationOpContext;
 import org.apache.hadoop.hive.ql.exec.JoinUtil;
 import org.apache.hadoop.hive.ql.exec.vector.ColumnVector;
 import org.apache.hadoop.hive.ql.exec.vector.VectorizationContext;
@@ -50,7 +51,7 @@ public abstract class VectorMapJoinInnerGenerateResultOperator
         extends VectorMapJoinGenerateResultOperator {
 
   private static final long serialVersionUID = 1L;
-  private static final Log LOG = LogFactory.getLog(VectorMapJoinInnerGenerateResultOperator.class.getName());
+  private static final Logger LOG = LoggerFactory.getLogger(VectorMapJoinInnerGenerateResultOperator.class.getName());
 
   //---------------------------------------------------------------------------
   // Inner join specific members.
@@ -89,13 +90,18 @@ public abstract class VectorMapJoinInnerGenerateResultOperator
   // Pre-allocated member for storing index into the hashMapResults for each spilled row.
   protected transient int[] spillHashMapResultIndices;
 
-  public VectorMapJoinInnerGenerateResultOperator() {
+  /** Kryo ctor. */
+  protected VectorMapJoinInnerGenerateResultOperator() {
     super();
   }
 
-  public VectorMapJoinInnerGenerateResultOperator(VectorizationContext vContext, OperatorDesc conf)
-              throws HiveException {
-    super(vContext, conf);
+  public VectorMapJoinInnerGenerateResultOperator(CompilationOpContext ctx) {
+    super(ctx);
+  }
+
+  public VectorMapJoinInnerGenerateResultOperator(CompilationOpContext ctx,
+      VectorizationContext vContext, OperatorDesc conf) throws HiveException {
+    super(ctx, vContext, conf);
   }
 
   /*

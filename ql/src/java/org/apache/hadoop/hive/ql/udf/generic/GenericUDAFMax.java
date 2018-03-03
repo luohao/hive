@@ -20,8 +20,8 @@ package org.apache.hadoop.hive.ql.udf.generic;
 import java.util.ArrayDeque;
 import java.util.Deque;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.hive.ql.exec.Description;
 import org.apache.hadoop.hive.ql.exec.UDFArgumentTypeException;
 import org.apache.hadoop.hive.ql.metadata.HiveException;
@@ -31,6 +31,7 @@ import org.apache.hadoop.hive.ql.plan.ptf.BoundaryDef;
 import org.apache.hadoop.hive.ql.plan.ptf.WindowFrameDef;
 import org.apache.hadoop.hive.ql.udf.UDFType;
 import org.apache.hadoop.hive.ql.udf.generic.GenericUDAFEvaluator.AggregationBuffer;
+import org.apache.hadoop.hive.ql.udf.generic.GenericUDAFEvaluator.AggregationType;
 import org.apache.hadoop.hive.ql.util.JavaDataModel;
 import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspector;
 import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspectorUtils;
@@ -41,7 +42,7 @@ import org.apache.hadoop.hive.serde2.typeinfo.TypeInfoUtils;
 @Description(name = "max", value = "_FUNC_(expr) - Returns the maximum value of expr")
 public class GenericUDAFMax extends AbstractGenericUDAFResolver {
 
-  static final Log LOG = LogFactory.getLog(GenericUDAFMax.class.getName());
+  static final Logger LOG = LoggerFactory.getLogger(GenericUDAFMax.class.getName());
 
   @Override
   public GenericUDAFEvaluator getEvaluator(TypeInfo[] parameters)
@@ -79,8 +80,13 @@ public class GenericUDAFMax extends AbstractGenericUDAFResolver {
     }
 
     /** class for storing the current max value */
+    @AggregationType(estimable = true)
     static class MaxAgg extends AbstractAggregationBuffer {
       Object o;
+      @Override
+      public int estimate() {
+        return JavaDataModel.PRIMITIVES2;
+      }
     }
 
     @Override
@@ -138,7 +144,7 @@ public class GenericUDAFMax extends AbstractGenericUDAFResolver {
   /*
    * Based on the Paper by Daniel Lemire: Streaming Max-Min filter using no more
    * than 3 comparisons per elem.
-   * 
+   *
    * 1. His algorithm works on fixed size windows up to the current row. For row
    * 'i' and window 'w' it computes the min/max for window (i-w, i). 2. The core
    * idea is to keep a queue of (max, idx) tuples. A tuple in the queue
@@ -150,7 +156,7 @@ public class GenericUDAFMax extends AbstractGenericUDAFResolver {
    * element at the front of the queue has reached its max range of influence;
    * i.e. frontTuple.idx + w > i. If yes we can remove it from the queue. - on
    * the ith step o/p the front of the queue as the max for the ith entry.
-   * 
+   *
    * Here we modify the algorithm: 1. to handle window's that are of the form
    * (i-p, i+f), where p is numPreceding,f = numFollowing - we start outputing
    * rows only after receiving f rows. - the formula for 'influence range' of an
@@ -192,6 +198,7 @@ public class GenericUDAFMax extends AbstractGenericUDAFResolver {
             + (3 * JavaDataModel.PRIMITIVES1);
       }
 
+      @Override
       protected void reset() {
         maxChain.clear();
         super.reset();
@@ -251,7 +258,7 @@ public class GenericUDAFMax extends AbstractGenericUDAFResolver {
         s.maxChain.addLast(new Object[] { o, s.numRows });
       }
 
-      if (s.numRows >= wFrameDef.getEnd().getRelativeOffset()) {
+      if (s.hasResultReady()) {
         s.results.add(s.maxChain.getFirst()[0]);
       }
       s.numRows++;
@@ -287,18 +294,24 @@ public class GenericUDAFMax extends AbstractGenericUDAFResolver {
       // For the case: X following and Y following, process first Y-X results and then insert X nulls.
       // For the case X preceding and Y following, process Y results.
       for (int i = Math.max(0, wFrameDef.getStart().getRelativeOffset()); i < wFrameDef.getEnd().getRelativeOffset(); i++) {
-        s.results.add(r[0]);
+        if (s.hasResultReady()) {
+          s.results.add(r == null ? null : r[0]);
+        }
         s.numRows++;
-        int fIdx = (Integer) r[1];
-        if (!wFrameDef.isStartUnbounded()
-            && s.numRows + i >= fIdx + wFrameDef.getWindowSize()
-            && !s.maxChain.isEmpty()) {
-          s.maxChain.removeFirst();
-          r = !s.maxChain.isEmpty() ? s.maxChain.getFirst() : r;
+        if (r != null) {
+          int fIdx = (Integer) r[1];
+          if (!wFrameDef.isStartUnbounded()
+              && s.numRows >= fIdx + wFrameDef.getWindowSize()
+              && !s.maxChain.isEmpty()) {
+            s.maxChain.removeFirst();
+            r = !s.maxChain.isEmpty() ? s.maxChain.getFirst() : null;
+          }
         }
       }
       for (int i = 0; i < wFrameDef.getStart().getRelativeOffset(); i++) {
-        s.results.add(null);
+        if (s.hasResultReady()) {
+          s.results.add(null);
+        }
         s.numRows++;
       }
 

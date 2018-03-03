@@ -1,14 +1,8 @@
-PREHOOK: query: -- This test verifies that the output of a sort merge join on 1 big partition with multiple small partitions is bucketed and sorted
-
--- Create two bucketed and sorted tables
-CREATE TABLE test_table1 (key INT, value STRING) PARTITIONED BY (ds STRING) CLUSTERED BY (key) SORTED BY (key) INTO 16 BUCKETS
+PREHOOK: query: CREATE TABLE test_table1 (key INT, value STRING) PARTITIONED BY (ds STRING) CLUSTERED BY (key) SORTED BY (key) INTO 16 BUCKETS
 PREHOOK: type: CREATETABLE
 PREHOOK: Output: database:default
 PREHOOK: Output: default@test_table1
-POSTHOOK: query: -- This test verifies that the output of a sort merge join on 1 big partition with multiple small partitions is bucketed and sorted
-
--- Create two bucketed and sorted tables
-CREATE TABLE test_table1 (key INT, value STRING) PARTITIONED BY (ds STRING) CLUSTERED BY (key) SORTED BY (key) INTO 16 BUCKETS
+POSTHOOK: query: CREATE TABLE test_table1 (key INT, value STRING) PARTITIONED BY (ds STRING) CLUSTERED BY (key) SORTED BY (key) INTO 16 BUCKETS
 POSTHOOK: type: CREATETABLE
 POSTHOOK: Output: database:default
 POSTHOOK: Output: default@test_table1
@@ -50,87 +44,20 @@ POSTHOOK: Lineage: test_table2 PARTITION(ds=2).key EXPRESSION [(src)src.FieldSch
 POSTHOOK: Lineage: test_table2 PARTITION(ds=2).value SIMPLE [(src)src.FieldSchema(name:value, type:string, comment:default), ]
 POSTHOOK: Lineage: test_table2 PARTITION(ds=3).key EXPRESSION [(src)src.FieldSchema(name:key, type:string, comment:default), ]
 POSTHOOK: Lineage: test_table2 PARTITION(ds=3).value SIMPLE [(src)src.FieldSchema(name:value, type:string, comment:default), ]
-PREHOOK: query: -- Create a bucketed table
-CREATE TABLE test_table3 (key INT, value STRING) PARTITIONED BY (ds STRING) CLUSTERED BY (key) SORTED BY (key) INTO 16 BUCKETS
+PREHOOK: query: CREATE TABLE test_table3 (key INT, value STRING) PARTITIONED BY (ds STRING) CLUSTERED BY (key) SORTED BY (key) INTO 16 BUCKETS
 PREHOOK: type: CREATETABLE
 PREHOOK: Output: database:default
 PREHOOK: Output: default@test_table3
-POSTHOOK: query: -- Create a bucketed table
-CREATE TABLE test_table3 (key INT, value STRING) PARTITIONED BY (ds STRING) CLUSTERED BY (key) SORTED BY (key) INTO 16 BUCKETS
+POSTHOOK: query: CREATE TABLE test_table3 (key INT, value STRING) PARTITIONED BY (ds STRING) CLUSTERED BY (key) SORTED BY (key) INTO 16 BUCKETS
 POSTHOOK: type: CREATETABLE
 POSTHOOK: Output: database:default
 POSTHOOK: Output: default@test_table3
-PREHOOK: query: -- Insert data into the bucketed table by joining the two bucketed and sorted tables, bucketing is not enforced
-EXPLAIN EXTENDED
+PREHOOK: query: EXPLAIN EXTENDED
 INSERT OVERWRITE TABLE test_table3 PARTITION (ds = '1') SELECT /*+ MAPJOIN(b) */ a.key, b.value FROM test_table1 a JOIN test_table2 b ON a.key = b.key AND a.ds = '1' AND b.ds >= '1'
 PREHOOK: type: QUERY
-POSTHOOK: query: -- Insert data into the bucketed table by joining the two bucketed and sorted tables, bucketing is not enforced
-EXPLAIN EXTENDED
+POSTHOOK: query: EXPLAIN EXTENDED
 INSERT OVERWRITE TABLE test_table3 PARTITION (ds = '1') SELECT /*+ MAPJOIN(b) */ a.key, b.value FROM test_table1 a JOIN test_table2 b ON a.key = b.key AND a.ds = '1' AND b.ds >= '1'
 POSTHOOK: type: QUERY
-ABSTRACT SYNTAX TREE:
-  
-TOK_QUERY
-   TOK_FROM
-      TOK_JOIN
-         TOK_TABREF
-            TOK_TABNAME
-               test_table1
-            a
-         TOK_TABREF
-            TOK_TABNAME
-               test_table2
-            b
-         AND
-            AND
-               =
-                  .
-                     TOK_TABLE_OR_COL
-                        a
-                     key
-                  .
-                     TOK_TABLE_OR_COL
-                        b
-                     key
-               =
-                  .
-                     TOK_TABLE_OR_COL
-                        a
-                     ds
-                  '1'
-            >=
-               .
-                  TOK_TABLE_OR_COL
-                     b
-                  ds
-               '1'
-   TOK_INSERT
-      TOK_DESTINATION
-         TOK_TAB
-            TOK_TABNAME
-               test_table3
-            TOK_PARTSPEC
-               TOK_PARTVAL
-                  ds
-                  '1'
-      TOK_SELECT
-         TOK_HINTLIST
-            TOK_HINT
-               TOK_MAPJOIN
-               TOK_HINTARGLIST
-                  b
-         TOK_SELEXPR
-            .
-               TOK_TABLE_OR_COL
-                  a
-               key
-         TOK_SELEXPR
-            .
-               TOK_TABLE_OR_COL
-                  b
-               value
-
-
 STAGE DEPENDENCIES:
   Stage-1 is a root stage
   Stage-0 depends on stages: Stage-1
@@ -147,7 +74,7 @@ STAGE PLANS:
             Filter Operator
               isSamplingPred: false
               predicate: key is not null (type: boolean)
-              Statistics: Num rows: 250 Data size: 2656 Basic stats: COMPLETE Column stats: NONE
+              Statistics: Num rows: 500 Data size: 5312 Basic stats: COMPLETE Column stats: NONE
               Sorted Merge Bucket Map Join Operator
                 condition map:
                      Inner Join 0 to 1
@@ -174,6 +101,7 @@ STAGE PLANS:
                           SORTBUCKETCOLSPREFIX TRUE
                           bucket_count 16
                           bucket_field_name key
+                          column.name.delimiter ,
                           columns key,value
                           columns.comments 
                           columns.types int:string
@@ -201,9 +129,10 @@ STAGE PLANS:
             partition values:
               ds 1
             properties:
-              COLUMN_STATS_ACCURATE true
+              COLUMN_STATS_ACCURATE {"BASIC_STATS":"true"}
               bucket_count 16
               bucket_field_name key
+              column.name.delimiter ,
               columns key,value
               columns.comments 
               columns.types int:string
@@ -227,6 +156,7 @@ STAGE PLANS:
                 SORTBUCKETCOLSPREFIX TRUE
                 bucket_count 16
                 bucket_field_name key
+                column.name.delimiter ,
                 columns key,value
                 columns.comments 
                 columns.types int:string
@@ -258,6 +188,7 @@ STAGE PLANS:
                 SORTBUCKETCOLSPREFIX TRUE
                 bucket_count 16
                 bucket_field_name key
+                column.name.delimiter ,
                 columns key,value
                 columns.comments 
                 columns.types int:string
@@ -296,16 +227,14 @@ POSTHOOK: Input: default@test_table2@ds=3
 POSTHOOK: Output: default@test_table3@ds=1
 POSTHOOK: Lineage: test_table3 PARTITION(ds=1).key SIMPLE [(test_table1)a.FieldSchema(name:key, type:int, comment:null), ]
 POSTHOOK: Lineage: test_table3 PARTITION(ds=1).value SIMPLE [(test_table2)b.FieldSchema(name:value, type:string, comment:null), ]
-PREHOOK: query: -- Join data from a sampled bucket to verify the data is bucketed
-SELECT COUNT(*) FROM test_table3 TABLESAMPLE(BUCKET 2 OUT OF 16) a JOIN test_table1 TABLESAMPLE(BUCKET 2 OUT OF 16) b ON a.key = b.key AND a.ds = '1' AND b.ds='1'
+PREHOOK: query: SELECT COUNT(*) FROM test_table3 TABLESAMPLE(BUCKET 2 OUT OF 16) a JOIN test_table1 TABLESAMPLE(BUCKET 2 OUT OF 16) b ON a.key = b.key AND a.ds = '1' AND b.ds='1'
 PREHOOK: type: QUERY
 PREHOOK: Input: default@test_table1
 PREHOOK: Input: default@test_table1@ds=1
 PREHOOK: Input: default@test_table3
 PREHOOK: Input: default@test_table3@ds=1
 #### A masked pattern was here ####
-POSTHOOK: query: -- Join data from a sampled bucket to verify the data is bucketed
-SELECT COUNT(*) FROM test_table3 TABLESAMPLE(BUCKET 2 OUT OF 16) a JOIN test_table1 TABLESAMPLE(BUCKET 2 OUT OF 16) b ON a.key = b.key AND a.ds = '1' AND b.ds='1'
+POSTHOOK: query: SELECT COUNT(*) FROM test_table3 TABLESAMPLE(BUCKET 2 OUT OF 16) a JOIN test_table1 TABLESAMPLE(BUCKET 2 OUT OF 16) b ON a.key = b.key AND a.ds = '1' AND b.ds='1'
 POSTHOOK: type: QUERY
 POSTHOOK: Input: default@test_table1
 POSTHOOK: Input: default@test_table1@ds=1
@@ -313,85 +242,14 @@ POSTHOOK: Input: default@test_table3
 POSTHOOK: Input: default@test_table3@ds=1
 #### A masked pattern was here ####
 879
-PREHOOK: query: -- Join data from the sampled buckets of 2 tables to verify the data is bucketed and sorted
-explain extended
+PREHOOK: query: explain extended
 INSERT OVERWRITE TABLE test_table3 PARTITION (ds = '2') 
 SELECT /*+mapjoin(b)*/ a.key, concat(a.value, b.value) FROM test_table3 a JOIN test_table1 b ON a.key = b.key AND a.ds = '1' AND b.ds='1'
 PREHOOK: type: QUERY
-POSTHOOK: query: -- Join data from the sampled buckets of 2 tables to verify the data is bucketed and sorted
-explain extended
+POSTHOOK: query: explain extended
 INSERT OVERWRITE TABLE test_table3 PARTITION (ds = '2') 
 SELECT /*+mapjoin(b)*/ a.key, concat(a.value, b.value) FROM test_table3 a JOIN test_table1 b ON a.key = b.key AND a.ds = '1' AND b.ds='1'
 POSTHOOK: type: QUERY
-ABSTRACT SYNTAX TREE:
-  
-TOK_QUERY
-   TOK_FROM
-      TOK_JOIN
-         TOK_TABREF
-            TOK_TABNAME
-               test_table3
-            a
-         TOK_TABREF
-            TOK_TABNAME
-               test_table1
-            b
-         AND
-            AND
-               =
-                  .
-                     TOK_TABLE_OR_COL
-                        a
-                     key
-                  .
-                     TOK_TABLE_OR_COL
-                        b
-                     key
-               =
-                  .
-                     TOK_TABLE_OR_COL
-                        a
-                     ds
-                  '1'
-            =
-               .
-                  TOK_TABLE_OR_COL
-                     b
-                  ds
-               '1'
-   TOK_INSERT
-      TOK_DESTINATION
-         TOK_TAB
-            TOK_TABNAME
-               test_table3
-            TOK_PARTSPEC
-               TOK_PARTVAL
-                  ds
-                  '2'
-      TOK_SELECT
-         TOK_HINTLIST
-            TOK_HINT
-               TOK_MAPJOIN
-               TOK_HINTARGLIST
-                  b
-         TOK_SELEXPR
-            .
-               TOK_TABLE_OR_COL
-                  a
-               key
-         TOK_SELEXPR
-            TOK_FUNCTION
-               concat
-               .
-                  TOK_TABLE_OR_COL
-                     a
-                  value
-               .
-                  TOK_TABLE_OR_COL
-                     b
-                  value
-
-
 STAGE DEPENDENCIES:
   Stage-1 is a root stage
   Stage-0 depends on stages: Stage-1
@@ -408,7 +266,7 @@ STAGE PLANS:
             Filter Operator
               isSamplingPred: false
               predicate: key is not null (type: boolean)
-              Statistics: Num rows: 1542 Data size: 16452 Basic stats: COMPLETE Column stats: NONE
+              Statistics: Num rows: 3084 Data size: 32904 Basic stats: COMPLETE Column stats: NONE
               Sorted Merge Bucket Map Join Operator
                 condition map:
                      Inner Join 0 to 1
@@ -435,6 +293,7 @@ STAGE PLANS:
                           SORTBUCKETCOLSPREFIX TRUE
                           bucket_count 16
                           bucket_field_name key
+                          column.name.delimiter ,
                           columns key,value
                           columns.comments 
                           columns.types int:string
@@ -462,9 +321,10 @@ STAGE PLANS:
             partition values:
               ds 1
             properties:
-              COLUMN_STATS_ACCURATE true
+              COLUMN_STATS_ACCURATE {"BASIC_STATS":"true"}
               bucket_count 16
               bucket_field_name key
+              column.name.delimiter ,
               columns key,value
               columns.comments 
               columns.types int:string
@@ -488,6 +348,7 @@ STAGE PLANS:
                 SORTBUCKETCOLSPREFIX TRUE
                 bucket_count 16
                 bucket_field_name key
+                column.name.delimiter ,
                 columns key,value
                 columns.comments 
                 columns.types int:string
@@ -519,6 +380,7 @@ STAGE PLANS:
                 SORTBUCKETCOLSPREFIX TRUE
                 bucket_count 16
                 bucket_field_name key
+                column.name.delimiter ,
                 columns key,value
                 columns.comments 
                 columns.types int:string

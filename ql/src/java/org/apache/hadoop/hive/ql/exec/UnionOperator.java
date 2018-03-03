@@ -20,11 +20,10 @@ package org.apache.hadoop.hive.ql.exec;
 
 import java.io.Serializable;
 import java.util.ArrayList;
-import java.util.Collection;
 import java.util.List;
-import java.util.concurrent.Future;
 
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hive.ql.CompilationOpContext;
 import org.apache.hadoop.hive.ql.metadata.HiveException;
 import org.apache.hadoop.hive.ql.plan.UnionDesc;
 import org.apache.hadoop.hive.ql.plan.api.OperatorType;
@@ -48,6 +47,15 @@ public class UnionOperator extends Operator<UnionDesc> implements Serializable {
 
   ArrayList<Object> outputRow;
 
+  /** Kryo ctor. */
+  protected UnionOperator() {
+    super();
+  }
+
+  public UnionOperator(CompilationOpContext ctx) {
+    super(ctx);
+  }
+
   /**
    * UnionOperator will transform the input rows if the inputObjInspectors from
    * different parents are different. If one parent has exactly the same
@@ -56,19 +64,22 @@ public class UnionOperator extends Operator<UnionDesc> implements Serializable {
    * needsTransform[].
    */
   @Override
-  protected Collection<Future<?>> initializeOp(Configuration hconf) throws HiveException {
-    Collection<Future<?>> result = super.initializeOp(hconf);
+  protected void initializeOp(Configuration hconf) throws HiveException {
+    super.initializeOp(hconf);
 
     int parents = parentOperators.size();
     parentObjInspectors = new StructObjectInspector[parents];
     parentFields = new List[parents];
+    int columns = 0;
     for (int p = 0; p < parents; p++) {
       parentObjInspectors[p] = (StructObjectInspector) inputObjInspectors[p];
       parentFields[p] = parentObjInspectors[p].getAllStructFieldRefs();
+      if (p == 0 || parentFields[p].size() < columns) {
+        columns = parentFields[p].size();
+      }
     }
 
     // Get columnNames from the first parent
-    int columns = parentFields[0].size();
     ArrayList<String> columnNames = new ArrayList<String>(columns);
     for (int c = 0; c < columns; c++) {
       columnNames.add(parentFields[0].get(c).getFieldName());
@@ -81,7 +92,8 @@ public class UnionOperator extends Operator<UnionDesc> implements Serializable {
     }
 
     for (int p = 0; p < parents; p++) {
-      assert (parentFields[p].size() == columns);
+      //When columns is 0, the union operator is empty.
+      assert (columns == 0 || parentFields[p].size() == columns);
       for (int c = 0; c < columns; c++) {
         if (!columnTypeResolvers[c].updateForUnionAll(parentFields[p].get(c)
             .getFieldObjectInspector())) {
@@ -119,7 +131,6 @@ public class UnionOperator extends Operator<UnionDesc> implements Serializable {
             + "] from " + inputObjInspectors[p] + " to " + outputObjInspector);
       }
     }
-    return result;
   }
 
   @Override
@@ -128,7 +139,7 @@ public class UnionOperator extends Operator<UnionDesc> implements Serializable {
     StructObjectInspector soi = parentObjInspectors[tag];
     List<? extends StructField> fields = parentFields[tag];
 
-    if (needsTransform[tag]) {
+    if (needsTransform[tag] && outputRow.size() > 0) {
       for (int c = 0; c < fields.size(); c++) {
         outputRow.set(c, columnTypeResolvers[c].convertIfNecessary(soi
             .getStructFieldData(row, fields.get(c)), fields.get(c)
@@ -145,7 +156,7 @@ public class UnionOperator extends Operator<UnionDesc> implements Serializable {
    */
   @Override
   public String getName() {
-    return getOperatorName();
+    return UnionOperator.getOperatorName();
   }
 
   static public String getOperatorName() {

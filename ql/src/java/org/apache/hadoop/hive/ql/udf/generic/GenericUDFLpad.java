@@ -19,7 +19,6 @@
 package org.apache.hadoop.hive.ql.udf.generic;
 
 import org.apache.hadoop.hive.ql.exec.Description;
-import org.apache.hadoop.io.Text;
 
 /**
  * UDFLpad.
@@ -29,31 +28,31 @@ import org.apache.hadoop.io.Text;
     value = "_FUNC_(str, len, pad) - Returns str, left-padded with pad to a length of len",
     extended = "If str is longer than len, the return value is shortened to "
     + "len characters.\n"
+    + "In case of empty pad string, the return value is null.\n"
     + "Example:\n"
     + "  > SELECT _FUNC_('hi', 5, '??') FROM src LIMIT 1;\n"
-    + "  '???hi'"
-    + "  > SELECT _FUNC_('hi', 1, '??') FROM src LIMIT 1;\n" + "  'h'")
+    + "  '???hi'\n"
+    + "  > SELECT _FUNC_('hi', 1, '??') FROM src LIMIT 1;\n"
+    + "  'h'\n"
+    + "  > SELECT _FUNC_('hi', 5, '') FROM src LIMIT 1;\n"
+    + "  null")
 public class GenericUDFLpad extends GenericUDFBasePad {
   public GenericUDFLpad() {
     super("lpad");
   }
 
   @Override
-  protected void performOp(byte[] data, byte[] txt, byte[] padTxt, int len, Text str, Text pad) {
-    // The length of the padding needed
-    int pos = Math.max(len - str.getLength(), 0);
+  protected void performOp(
+      StringBuilder builder, int len, String str, String pad) {
+    int pos = Math.max(len - str.length(), 0);
 
-    // Copy the padding
-    for (int i = 0; i < pos; i += pad.getLength()) {
-      for (int j = 0; j < pad.getLength() && j < pos - i; j++) {
-        data[i + j] = padTxt[j];
-      }
+    for (int i = 0; i < pos; i += pad.length()) {
+      builder.append(pad);
     }
+    builder.setLength(pos);
 
     // Copy the text
-    for (int i = 0; pos + i < len && i < str.getLength(); i++) {
-      data[pos + i] = txt[i];
-    }
+    builder.append(str, 0, str.length());
+    builder.setLength(len);
   }
-
 }

@@ -30,14 +30,15 @@ import org.apache.calcite.rel.RelNode;
 import org.apache.calcite.rel.core.Exchange;
 import org.apache.calcite.rel.core.Join;
 import org.apache.calcite.rex.RexNode;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.hive.ql.optimizer.calcite.CalciteSemanticException;
 import org.apache.hadoop.hive.ql.optimizer.calcite.HiveCalciteUtil;
 import org.apache.hadoop.hive.ql.optimizer.calcite.HiveCalciteUtil.JoinLeafPredicateInfo;
 import org.apache.hadoop.hive.ql.optimizer.calcite.HiveCalciteUtil.JoinPredicateInfo;
 import org.apache.hadoop.hive.ql.optimizer.calcite.HiveRelCollation;
 import org.apache.hadoop.hive.ql.optimizer.calcite.HiveRelDistribution;
+import org.apache.hadoop.hive.ql.optimizer.calcite.reloperators.HiveJoin;
 import org.apache.hadoop.hive.ql.optimizer.calcite.reloperators.HiveMultiJoin;
 import org.apache.hadoop.hive.ql.optimizer.calcite.reloperators.HiveSortExchange;
 
@@ -55,8 +56,8 @@ import com.google.common.collect.Sets;
  */
 public class HiveInsertExchange4JoinRule extends RelOptRule {
 
-  protected static transient final Log LOG = LogFactory
-      .getLog(HiveInsertExchange4JoinRule.class);
+  protected static transient final Logger LOG = LoggerFactory
+      .getLogger(HiveInsertExchange4JoinRule.class);
 
   /** Rule that creates Exchange operators under a MultiJoin operator. */
   public static final HiveInsertExchange4JoinRule EXCHANGE_BELOW_MULTIJOIN =
@@ -76,11 +77,10 @@ public class HiveInsertExchange4JoinRule extends RelOptRule {
     JoinPredicateInfo joinPredInfo;
     if (call.rel(0) instanceof HiveMultiJoin) {
       HiveMultiJoin multiJoin = call.rel(0);
-      try {
-        joinPredInfo =  HiveCalciteUtil.JoinPredicateInfo.constructJoinPredicateInfo(multiJoin);
-      } catch (CalciteSemanticException e) {
-        throw new RuntimeException(e);
-      }
+      joinPredInfo = multiJoin.getJoinPredicateInfo();
+    } else if (call.rel(0) instanceof HiveJoin) {
+      HiveJoin hiveJoin = call.rel(0);
+      joinPredInfo = hiveJoin.getJoinPredicateInfo();
     } else if (call.rel(0) instanceof Join) {
       Join join = call.rel(0);
       try {

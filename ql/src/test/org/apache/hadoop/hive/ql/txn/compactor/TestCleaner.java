@@ -17,14 +17,31 @@
  */
 package org.apache.hadoop.hive.ql.txn.compactor;
 
-import org.junit.Assert;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hive.conf.HiveConf;
-import org.apache.hadoop.hive.metastore.api.*;
+import org.apache.hadoop.hive.metastore.api.CompactionRequest;
+import org.apache.hadoop.hive.metastore.api.CompactionType;
+import org.apache.hadoop.hive.metastore.api.DataOperationType;
+import org.apache.hadoop.hive.metastore.api.LockComponent;
+import org.apache.hadoop.hive.metastore.api.LockLevel;
+import org.apache.hadoop.hive.metastore.api.LockRequest;
+import org.apache.hadoop.hive.metastore.api.LockResponse;
+import org.apache.hadoop.hive.metastore.api.LockType;
+import org.apache.hadoop.hive.metastore.api.OpenTxnRequest;
+import org.apache.hadoop.hive.metastore.api.OpenTxnsResponse;
+import org.apache.hadoop.hive.metastore.api.Partition;
+import org.apache.hadoop.hive.metastore.api.ShowCompactRequest;
+import org.apache.hadoop.hive.metastore.api.ShowCompactResponse;
+import org.apache.hadoop.hive.metastore.api.ShowCompactResponseElement;
+import org.apache.hadoop.hive.metastore.api.Table;
+import org.apache.hadoop.hive.metastore.api.UnlockRequest;
 import org.apache.hadoop.hive.metastore.txn.CompactionInfo;
+import org.apache.hadoop.hive.metastore.txn.TxnStore;
+import org.junit.After;
+import org.junit.Assert;
 import org.junit.Test;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -37,7 +54,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 public class TestCleaner extends CompactorTest {
 
-  static final private Log LOG = LogFactory.getLog(TestCleaner.class.getName());
+  static final private Logger LOG = LoggerFactory.getLogger(TestCleaner.class.getName());
 
   public TestCleaner() throws Exception {
     super();
@@ -71,7 +88,8 @@ public class TestCleaner extends CompactorTest {
 
     // Check there are no compactions requests left.
     ShowCompactResponse rsp = txnHandler.showCompact(new ShowCompactRequest());
-    Assert.assertEquals(0, rsp.getCompactsSize());
+    Assert.assertEquals(1, rsp.getCompactsSize());
+    Assert.assertTrue(TxnStore.SUCCEEDED_RESPONSE.equals(rsp.getCompacts().get(0).getState()));
 
     // Check that the files are removed
     List<Path> paths = getDirectories(conf, t, null);
@@ -102,7 +120,8 @@ public class TestCleaner extends CompactorTest {
 
     // Check there are no compactions requests left.
     ShowCompactResponse rsp = txnHandler.showCompact(new ShowCompactRequest());
-    Assert.assertEquals(0, rsp.getCompactsSize());
+    Assert.assertEquals(1, rsp.getCompactsSize());
+    Assert.assertTrue(TxnStore.SUCCEEDED_RESPONSE.equals(rsp.getCompacts().get(0).getState()));
 
     // Check that the files are removed
     List<Path> paths = getDirectories(conf, t, p);
@@ -131,7 +150,8 @@ public class TestCleaner extends CompactorTest {
 
     // Check there are no compactions requests left.
     ShowCompactResponse rsp = txnHandler.showCompact(new ShowCompactRequest());
-    Assert.assertEquals(0, rsp.getCompactsSize());
+    Assert.assertEquals(1, rsp.getCompactsSize());
+    Assert.assertTrue(TxnStore.SUCCEEDED_RESPONSE.equals(rsp.getCompacts().get(0).getState()));
 
     // Check that the files are removed
     List<Path> paths = getDirectories(conf, t, null);
@@ -169,7 +189,8 @@ public class TestCleaner extends CompactorTest {
 
     // Check there are no compactions requests left.
     ShowCompactResponse rsp = txnHandler.showCompact(new ShowCompactRequest());
-    Assert.assertEquals(0, rsp.getCompactsSize());
+    Assert.assertEquals(1, rsp.getCompactsSize());
+    Assert.assertTrue(TxnStore.SUCCEEDED_RESPONSE.equals(rsp.getCompacts().get(0).getState()));
 
     // Check that the files are removed
     List<Path> paths = getDirectories(conf, t, p);
@@ -203,6 +224,7 @@ public class TestCleaner extends CompactorTest {
 
     LockComponent comp = new LockComponent(LockType.SHARED_READ, LockLevel.TABLE, "default");
     comp.setTablename("bblt");
+    comp.setOperationType(DataOperationType.SELECT);
     List<LockComponent> components = new ArrayList<LockComponent>(1);
     components.add(comp);
     LockRequest req = new LockRequest(components, "me", "localhost");
@@ -241,9 +263,12 @@ public class TestCleaner extends CompactorTest {
     LockComponent comp = new LockComponent(LockType.SHARED_WRITE, LockLevel.PARTITION, "default");
     comp.setTablename("bblp");
     comp.setPartitionname("ds=today");
+    comp.setOperationType(DataOperationType.DELETE);
     List<LockComponent> components = new ArrayList<LockComponent>(1);
     components.add(comp);
     LockRequest req = new LockRequest(components, "me", "localhost");
+    OpenTxnsResponse resp = txnHandler.openTxns(new OpenTxnRequest(1, "Dracula", "Transylvania"));
+    req.setTxnid(resp.getTxn_ids().get(0));
     LockResponse res = txnHandler.lock(req);
 
     startCleaner();
@@ -281,6 +306,7 @@ public class TestCleaner extends CompactorTest {
 
     LockComponent comp = new LockComponent(LockType.SHARED_READ, LockLevel.TABLE, "default");
     comp.setTablename("bblt");
+    comp.setOperationType(DataOperationType.INSERT);
     List<LockComponent> components = new ArrayList<LockComponent>(1);
     components.add(comp);
     LockRequest req = new LockRequest(components, "me", "localhost");
@@ -304,6 +330,7 @@ public class TestCleaner extends CompactorTest {
     // clean request
     LockComponent comp2 = new LockComponent(LockType.SHARED_READ, LockLevel.TABLE, "default");
     comp2.setTablename("bblt");
+    comp.setOperationType(DataOperationType.SELECT);
     List<LockComponent> components2 = new ArrayList<LockComponent>(1);
     components2.add(comp2);
     LockRequest req2 = new LockRequest(components, "me", "localhost");
@@ -323,7 +350,8 @@ public class TestCleaner extends CompactorTest {
     // Check there are no compactions requests left.
     rsp = txnHandler.showCompact(new ShowCompactRequest());
     compacts = rsp.getCompacts();
-    Assert.assertEquals(0, compacts.size());
+    Assert.assertEquals(1, compacts.size());
+    Assert.assertTrue(TxnStore.SUCCEEDED_RESPONSE.equals(rsp.getCompacts().get(0).getState()));
   }
 
   @Test
@@ -352,6 +380,7 @@ public class TestCleaner extends CompactorTest {
     LockComponent comp = new LockComponent(LockType.SHARED_READ, LockLevel.PARTITION, "default");
     comp.setTablename("bblt");
     comp.setPartitionname("ds=today");
+    comp.setOperationType(DataOperationType.INSERT);
     List<LockComponent> components = new ArrayList<LockComponent>(1);
     components.add(comp);
     LockRequest req = new LockRequest(components, "me", "localhost");
@@ -377,6 +406,7 @@ public class TestCleaner extends CompactorTest {
     LockComponent comp2 = new LockComponent(LockType.SHARED_READ, LockLevel.PARTITION, "default");
     comp2.setTablename("bblt");
     comp2.setPartitionname("ds=today");
+    comp.setOperationType(DataOperationType.SELECT);
     List<LockComponent> components2 = new ArrayList<LockComponent>(1);
     components2.add(comp2);
     LockRequest req2 = new LockRequest(components, "me", "localhost");
@@ -396,7 +426,8 @@ public class TestCleaner extends CompactorTest {
     // Check there are no compactions requests left.
     rsp = txnHandler.showCompact(new ShowCompactRequest());
     compacts = rsp.getCompacts();
-    Assert.assertEquals(0, compacts.size());
+    Assert.assertEquals(1, compacts.size());
+    Assert.assertTrue(TxnStore.SUCCEEDED_RESPONSE.equals(rsp.getCompacts().get(0).getState()));
   }
 
   @Test
@@ -421,7 +452,8 @@ public class TestCleaner extends CompactorTest {
 
     // Check there are no compactions requests left.
     ShowCompactResponse rsp = txnHandler.showCompact(new ShowCompactRequest());
-    Assert.assertEquals(0, rsp.getCompactsSize());
+    Assert.assertEquals(1, rsp.getCompactsSize());
+    Assert.assertTrue(TxnStore.SUCCEEDED_RESPONSE.equals(rsp.getCompacts().get(0).getState()));
 
     // Check that the files are removed
     List<Path> paths = getDirectories(conf, t, p);
@@ -451,7 +483,8 @@ public class TestCleaner extends CompactorTest {
 
     // Check there are no compactions requests left.
     ShowCompactResponse rsp = txnHandler.showCompact(new ShowCompactRequest());
-    Assert.assertEquals(0, rsp.getCompactsSize());
+    Assert.assertEquals(1, rsp.getCompactsSize());
+    Assert.assertTrue(TxnStore.SUCCEEDED_RESPONSE.equals(rsp.getCompacts().get(0).getState()));
   }
 
   @Test
@@ -478,10 +511,16 @@ public class TestCleaner extends CompactorTest {
 
     // Check there are no compactions requests left.
     ShowCompactResponse rsp = txnHandler.showCompact(new ShowCompactRequest());
-    Assert.assertEquals(0, rsp.getCompactsSize());
+    Assert.assertEquals(1, rsp.getCompactsSize());
+    Assert.assertTrue(TxnStore.SUCCEEDED_RESPONSE.equals(rsp.getCompacts().get(0).getState()));
   }
   @Override
   boolean useHive130DeltaDirName() {
     return false;
+  }
+
+  @After
+  public void tearDown() throws Exception {
+    compactorTestCleanup();
   }
 }

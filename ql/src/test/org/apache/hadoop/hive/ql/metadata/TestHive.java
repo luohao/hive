@@ -78,6 +78,9 @@ public class TestHive extends TestCase {
   protected void setUp() throws Exception {
     super.setUp();
     hiveConf = new HiveConf(this.getClass());
+    hiveConf
+    .setVar(HiveConf.ConfVars.HIVE_AUTHORIZATION_MANAGER,
+        "org.apache.hadoop.hive.ql.security.authorization.plugin.sqlstd.SQLStdHiveAuthorizerFactory");
     // enable trash so it can be tested
     hiveConf.setFloat("fs.trash.checkpoint.interval", 30);  // FS_TRASH_CHECKPOINT_INTERVAL_KEY (hadoop-2)
     hiveConf.setFloat("fs.trash.interval", 30);             // FS_TRASH_INTERVAL_KEY (hadoop-2)
@@ -166,6 +169,8 @@ public class TestHive extends TestCase {
       tbl.setSerializationLib(LazySimpleSerDe.class.getName());
       tbl.setStoredAsSubDirectories(false);
 
+      tbl.setRewriteEnabled(false);
+
       // create table
       setNullCreateTableGrants();
       try {
@@ -225,6 +230,8 @@ public class TestHive extends TestCase {
           .getName());
       tbl.setStoredAsSubDirectories(false);
 
+      tbl.setRewriteEnabled(false);
+
       setNullCreateTableGrants();
       try {
         hm.createTable(tbl);
@@ -249,7 +256,7 @@ public class TestHive extends TestCase {
    * @throws Throwable
    */
   public void testMetaStoreApiTiming() throws Throwable {
-    // Get the RootLogger which, if you don't have log4j2-test.xml defined, will only log ERRORs
+    // Get the RootLogger which, if you don't have log4j2-test.properties defined, will only log ERRORs
     Logger logger = LogManager.getLogger("hive.ql.metadata.Hive");
     Level oldLevel = logger.getLevel();
     LoggerContext ctx = (LoggerContext) LogManager.getContext(false);
@@ -303,7 +310,7 @@ public class TestHive extends TestCase {
 
       ft = hm.getTable(MetaStoreUtils.DEFAULT_DATABASE_NAME, tableName);
       assertNotNull("Unable to fetch table", ft);
-      ft.checkValidity();
+      ft.checkValidity(hiveConf);
       assertEquals("Table names didn't match for table: " + tableName, tbl
           .getTableName(), ft.getTableName());
       assertEquals("Table owners didn't match for table: " + tableName, tbl
@@ -311,7 +318,7 @@ public class TestHive extends TestCase {
       assertEquals("Table retention didn't match for table: " + tableName,
           tbl.getRetention(), ft.getRetention());
       assertEquals("Data location is not set correctly",
-          wh.getTablePath(hm.getDatabase(DEFAULT_DATABASE_NAME), tableName).toString(),
+          wh.getDefaultTablePath(hm.getDatabase(DEFAULT_DATABASE_NAME), tableName).toString(),
           ft.getDataLocation().toString());
       // now that URI and times are set correctly, set the original table's uri and times
       // and then compare the two tables
@@ -588,7 +595,7 @@ public class TestHive extends TestCase {
 
       Table table = createPartitionedTable(dbName, tableName);
       table.getParameters().put("auto.purge", "true");
-      hm.alterTable(tableName, table);
+      hm.alterTable(tableName, table, null);
 
       Map<String, String> partitionSpec =  new ImmutableMap.Builder<String, String>()
           .put("ds", "20141216")

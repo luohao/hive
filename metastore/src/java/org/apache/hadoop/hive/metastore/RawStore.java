@@ -22,16 +22,18 @@ import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
+import java.nio.ByteBuffer;
 import java.util.List;
 import java.util.Map;
-import java.util.SortedSet;
 
 import org.apache.hadoop.conf.Configurable;
+import org.apache.hadoop.hive.common.classification.InterfaceStability;
+import org.apache.hadoop.hive.metastore.TableType;
 import org.apache.hadoop.hive.metastore.api.AggrStats;
 import org.apache.hadoop.hive.metastore.api.ColumnStatistics;
-import org.apache.hadoop.hive.metastore.api.ColumnStatisticsObj;
 import org.apache.hadoop.hive.metastore.api.CurrentNotificationEventId;
 import org.apache.hadoop.hive.metastore.api.Database;
+import org.apache.hadoop.hive.metastore.api.FileMetadataExprType;
 import org.apache.hadoop.hive.metastore.api.Function;
 import org.apache.hadoop.hive.metastore.api.HiveObjectPrivilege;
 import org.apache.hadoop.hive.metastore.api.Index;
@@ -49,19 +51,15 @@ import org.apache.hadoop.hive.metastore.api.PrincipalPrivilegeSet;
 import org.apache.hadoop.hive.metastore.api.PrincipalType;
 import org.apache.hadoop.hive.metastore.api.PrivilegeBag;
 import org.apache.hadoop.hive.metastore.api.Role;
-import org.apache.hadoop.hive.metastore.api.SetPartitionsStatsRequest;
+import org.apache.hadoop.hive.metastore.api.RolePrincipalGrant;
+import org.apache.hadoop.hive.metastore.api.SQLForeignKey;
+import org.apache.hadoop.hive.metastore.api.SQLPrimaryKey;
 import org.apache.hadoop.hive.metastore.api.Table;
+import org.apache.hadoop.hive.metastore.api.TableMeta;
 import org.apache.hadoop.hive.metastore.api.Type;
 import org.apache.hadoop.hive.metastore.api.UnknownDBException;
 import org.apache.hadoop.hive.metastore.api.UnknownPartitionException;
 import org.apache.hadoop.hive.metastore.api.UnknownTableException;
-import org.apache.hadoop.hive.metastore.model.MDBPrivilege;
-import org.apache.hadoop.hive.metastore.model.MGlobalPrivilege;
-import org.apache.hadoop.hive.metastore.model.MPartitionColumnPrivilege;
-import org.apache.hadoop.hive.metastore.model.MPartitionPrivilege;
-import org.apache.hadoop.hive.metastore.model.MRoleMap;
-import org.apache.hadoop.hive.metastore.model.MTableColumnPrivilege;
-import org.apache.hadoop.hive.metastore.model.MTablePrivilege;
 import org.apache.hadoop.hive.metastore.partition.spec.PartitionSpecProxy;
 import org.apache.thrift.TException;
 
@@ -94,6 +92,8 @@ public interface RawStore extends Configurable {
    */
   @CanNotRetry
   public abstract boolean commitTransaction();
+
+  public boolean isActiveTransaction();
 
   /**
    * Rolls back the current transaction if it is active
@@ -157,6 +157,12 @@ public interface RawStore extends Configurable {
 
   public List<String> getTables(String dbName, String pattern)
       throws MetaException;
+
+  public List<String> getTables(String dbName, String pattern, TableType tableType)
+      throws MetaException;
+
+  public List<TableMeta> getTableMeta(
+      String dbNames, String tableNames, List<String> tableTypes) throws MetaException;
 
   /**
    * @param dbname
@@ -225,6 +231,11 @@ public interface RawStore extends Configurable {
       byte[] expr, String defaultPartitionName, short maxParts, List<Partition> result)
       throws TException;
 
+  public abstract int getNumPartitionsByFilter(String dbName, String tblName, String filter)
+    throws MetaException, NoSuchObjectException;
+
+  public abstract int getNumPartitionsByExpr(String dbName, String tblName, byte[] expr) throws MetaException, NoSuchObjectException;
+
   public abstract List<Partition> getPartitionsByNames(
       String dbName, String tblName, List<String> partNames)
       throws MetaException, NoSuchObjectException;
@@ -260,27 +271,27 @@ public interface RawStore extends Configurable {
   public abstract PrincipalPrivilegeSet getColumnPrivilegeSet (String dbName, String tableName, String partitionName,
       String columnName, String userName, List<String> groupNames) throws InvalidObjectException, MetaException;
 
-  public abstract List<MGlobalPrivilege> listPrincipalGlobalGrants(String principalName,
+  public abstract List<HiveObjectPrivilege> listPrincipalGlobalGrants(String principalName,
       PrincipalType principalType);
 
-  public abstract List<MDBPrivilege> listPrincipalDBGrants(String principalName,
+  public abstract List<HiveObjectPrivilege> listPrincipalDBGrants(String principalName,
       PrincipalType principalType, String dbName);
 
-  public abstract List<MTablePrivilege> listAllTableGrants(
+  public abstract List<HiveObjectPrivilege> listAllTableGrants(
       String principalName, PrincipalType principalType, String dbName,
       String tableName);
 
-  public abstract List<MPartitionPrivilege> listPrincipalPartitionGrants(
+  public abstract List<HiveObjectPrivilege> listPrincipalPartitionGrants(
       String principalName, PrincipalType principalType, String dbName,
-      String tableName, String partName);
+      String tableName, List<String> partValues, String partName);
 
-  public abstract List<MTableColumnPrivilege> listPrincipalTableColumnGrants(
+  public abstract List<HiveObjectPrivilege> listPrincipalTableColumnGrants(
       String principalName, PrincipalType principalType, String dbName,
       String tableName, String columnName);
 
-  public abstract List<MPartitionColumnPrivilege> listPrincipalPartitionColumnGrants(
+  public abstract List<HiveObjectPrivilege> listPrincipalPartitionColumnGrants(
       String principalName, PrincipalType principalType, String dbName,
-      String tableName, String partName, String columnName);
+      String tableName, List<String> partValues, String partName, String columnName);
 
   public abstract boolean grantPrivileges (PrivilegeBag privileges)
       throws InvalidObjectException, MetaException, NoSuchObjectException;
@@ -293,8 +304,11 @@ public interface RawStore extends Configurable {
 
   public List<String> listRoleNames();
 
-  public List<MRoleMap> listRoles(String principalName,
+  public List<Role> listRoles(String principalName,
       PrincipalType principalType);
+
+  public List<RolePrincipalGrant> listRolesWithGrants(String principalName,
+                                                      PrincipalType principalType);
 
 
   /**
@@ -302,7 +316,7 @@ public interface RawStore extends Configurable {
    * @param roleName
    * @return
    */
-  public List<MRoleMap> listRoleMembers(String roleName);
+  public List<RolePrincipalGrant> listRoleMembers(String roleName);
 
 
   public abstract Partition getPartitionWithAuth(String dbName, String tblName,
@@ -358,10 +372,7 @@ public interface RawStore extends Configurable {
       throws MetaException, InvalidObjectException, NoSuchObjectException;
 
   /** Persists the given column statistics object to the metastore
-   * @param partVals
-   *
-   * @param ColumnStats object to persist
-   * @param List of partVals
+   * @param colStats object to persist
    * @return Boolean indicating the outcome of the operation
    * @throws NoSuchObjectException
    * @throws MetaException
@@ -374,8 +385,7 @@ public interface RawStore extends Configurable {
   /** Persists the given column statistics object to the metastore
    * @param partVals
    *
-   * @param ColumnStats object to persist
-   * @param List of partVals
+   * @param statsObj object to persist
    * @return Boolean indicating the outcome of the operation
    * @throws NoSuchObjectException
    * @throws MetaException
@@ -390,9 +400,9 @@ public interface RawStore extends Configurable {
    * Returns the relevant column statistics for a given column in a given table in a given database
    * if such statistics exist.
    *
-   * @param The name of the database, defaults to current database
-   * @param The name of the table
-   * @param The name of the column for which statistics is requested
+   * @param dbName name of the database, defaults to current database
+   * @param tableName name of the table
+   * @param colName names of the columns for which statistics is requested
    * @return Relevant column statistics for the column for the given table
    * @throws NoSuchObjectException
    * @throws MetaException
@@ -520,7 +530,7 @@ public interface RawStore extends Configurable {
   /**
    * Alter function based on new function specs.
    * @param dbName
-   * @param name
+   * @param funcName
    * @param newFunction
    * @throws InvalidObjectException
    * @throws MetaException
@@ -531,7 +541,7 @@ public interface RawStore extends Configurable {
   /**
    * Drop a function definition.
    * @param dbName
-   * @param functionName
+   * @param funcName
    * @return
    * @throws MetaException
    * @throws NoSuchObjectException
@@ -544,7 +554,7 @@ public interface RawStore extends Configurable {
   /**
    * Retrieve function by name.
    * @param dbName
-   * @param functionName
+   * @param funcName
    * @return
    * @throws MetaException
    */
@@ -596,5 +606,96 @@ public interface RawStore extends Configurable {
    * @return
    */
   public CurrentNotificationEventId getCurrentNotificationEventId();
-  
+
+  /*
+   * Flush any catalog objects held by the metastore implementation.  Note that this does not
+   * flush statistics objects.  This should be called at the beginning of each query.
+   */
+  public void flushCache();
+
+  /**
+   * @param fileIds List of file IDs from the filesystem.
+   * @return File metadata buffers from file metadata cache. The array is fileIds-sized, and
+   *         the entries (or nulls, if metadata is not in cache) correspond to fileIds in the list
+   */
+  ByteBuffer[] getFileMetadata(List<Long> fileIds) throws MetaException;
+
+  /**
+   * @param fileIds List of file IDs from the filesystem.
+   * @param metadata Metadata buffers corresponding to fileIds in the list.
+   * @param type The type; determines the class that can do additiona processing for metadata.
+   */
+  void putFileMetadata(List<Long> fileIds, List<ByteBuffer> metadata,
+      FileMetadataExprType type) throws MetaException;
+
+  /**
+   * @return Whether file metadata cache is supported by this implementation.
+   */
+  boolean isFileMetadataSupported();
+
+  /**
+   * Gets file metadata from cache after applying a format-specific expression that can
+   * produce additional information based on file metadata and also filter the file list.
+   * @param fileIds List of file IDs from the filesystem.
+   * @param expr Format-specific serialized expression applicable to the files' metadatas.
+   * @param type Expression type; used to determine the class that handles the metadata.
+   * @param metadatas Output parameter; fileIds-sized array to receive the metadatas
+   *                  for corresponding files, if any.
+   * @param exprResults Output parameter; fileIds-sized array to receive the format-specific
+   *                    expression results for the corresponding files.
+   * @param eliminated Output parameter; fileIds-sized array to receive the indication of whether
+   *                   the corresponding files are entirely eliminated by the expression.
+   */
+  void getFileMetadataByExpr(List<Long> fileIds, FileMetadataExprType type, byte[] expr,
+      ByteBuffer[] metadatas, ByteBuffer[] exprResults, boolean[] eliminated)
+          throws MetaException;
+
+  /** Gets file metadata handler for the corresponding type. */
+  FileMetadataHandler getFileMetadataHandler(FileMetadataExprType type);
+
+  /**
+   * Gets total number of tables.
+   */
+  @InterfaceStability.Evolving
+  int getTableCount() throws MetaException;
+
+  /**
+   * Gets total number of partitions.
+   */
+  @InterfaceStability.Evolving
+  int getPartitionCount() throws MetaException;
+
+  /**
+   * Gets total number of databases.
+   */
+  @InterfaceStability.Evolving
+  int getDatabaseCount() throws MetaException;
+
+  public abstract List<SQLPrimaryKey> getPrimaryKeys(String db_name,
+    String tbl_name) throws MetaException;
+
+  /**
+   * Get the foreign keys for a table.  All foreign keys for a particular table can be fetched by
+   * passing null for the last two arguments.
+   * @param parent_db_name Database the table referred to is in.  This can be null to match all
+   *                       databases.
+   * @param parent_tbl_name Table that is referred to.  This can be null to match all tables.
+   * @param foreign_db_name Database the table with the foreign key is in.
+   * @param foreign_tbl_name Table with the foreign key.
+   * @return List of all matching foreign key columns.  Note that if more than one foreign key
+   * matches the arguments the results here will be all mixed together into a single list.
+   * @throws MetaException if something goes wrong.
+   */
+  public abstract List<SQLForeignKey> getForeignKeys(String parent_db_name,
+    String parent_tbl_name, String foreign_db_name, String foreign_tbl_name)
+    throws MetaException;
+
+  void createTableWithConstraints(Table tbl, List<SQLPrimaryKey> primaryKeys,
+    List<SQLForeignKey> foreignKeys) throws InvalidObjectException, MetaException;
+
+  void dropConstraint(String dbName, String tableName, String constraintName) throws NoSuchObjectException;
+
+  void addPrimaryKeys(List<SQLPrimaryKey> pks) throws InvalidObjectException, MetaException;
+
+  void addForeignKeys(List<SQLForeignKey> fks) throws InvalidObjectException, MetaException;
 }

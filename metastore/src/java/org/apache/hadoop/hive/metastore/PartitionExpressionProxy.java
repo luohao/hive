@@ -20,12 +20,15 @@ package org.apache.hadoop.hive.metastore;
 
 import java.util.List;
 
+import org.apache.hadoop.hive.metastore.api.FileMetadataExprType;
 import org.apache.hadoop.hive.metastore.api.MetaException;
+import org.apache.hadoop.hive.ql.io.sarg.SearchArgument;
 import org.apache.hadoop.hive.serde2.typeinfo.PrimitiveTypeInfo;
 
 /**
- * The proxy interface that metastore uses to manipulate and apply
- * serialized filter expressions coming from client.
+ * The proxy interface that metastore uses for variety of QL operations (metastore can't depend
+ * on QL because QL depends on metastore; creating metastore-client module would be a proper way
+ * to solve this problem).
  */
 public interface PartitionExpressionProxy {
 
@@ -45,7 +48,28 @@ public interface PartitionExpressionProxy {
    * @param partitionNames Partition names; the list is modified in place.
    * @return Whether there were any unknown partitions preserved in the name list.
    */
-  public boolean filterPartitionsByExpr(List<String> partColumnNames,
+  boolean filterPartitionsByExpr(List<String> partColumnNames,
       List<PrimitiveTypeInfo> partColumnTypeInfos, byte[] expr,
       String defaultPartitionName, List<String> partitionNames) throws MetaException;
+
+  /**
+   * Determines the file metadata type from input format of the source table or partition.
+   * @param inputFormat Input format name.
+   * @return The file metadata type.
+   */
+  FileMetadataExprType getMetadataType(String inputFormat);
+
+  /**
+   * Gets a separate proxy that can be used to call file-format-specific methods.
+   * @param type The file metadata type.
+   * @return The proxy.
+   */
+  FileFormatProxy getFileFormatProxy(FileMetadataExprType type);
+
+  /**
+   * Creates SARG from serialized representation.
+   * @param expr SARG, serialized as Kryo.
+   * @return SARG.
+   */
+  SearchArgument createSarg(byte[] expr);
 }

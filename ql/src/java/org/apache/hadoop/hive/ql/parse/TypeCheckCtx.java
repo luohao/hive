@@ -18,16 +18,18 @@
 
 package org.apache.hadoop.hive.ql.parse;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.calcite.rel.RelNode;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.hive.ql.lib.NodeProcessorCtx;
+import java.util.Map;
 
 /**
  * This class implements the context information that is used for typechecking
  * phase in query compilation.
  */
 public class TypeCheckCtx implements NodeProcessorCtx {
-  protected static final Log LOG = LogFactory.getLog(TypeCheckCtx.class);
+  protected static final Logger LOG = LoggerFactory.getLogger(TypeCheckCtx.class);
 
   /**
    * The row resolver of the previous operator. This field is used to generate
@@ -35,7 +37,22 @@ public class TypeCheckCtx implements NodeProcessorCtx {
    */
   private RowResolver inputRR;
 
+  /**
+   * RowResolver of outer query. This is used to resolve co-rrelated columns in Filter
+   * TODO:
+   *  this currently will only be able to resolve reference to parent query's column
+   *  this will not work for references to grand-parent column
+   */
+  private RowResolver outerRR;
+
+  /**
+   * Map from astnode of a subquery to it's logical plan.
+   */
+  private Map<ASTNode, RelNode> subqueryToRelNode;
+
   private final boolean useCaching;
+
+  private final boolean foldExpr;
 
   /**
    * Receives translations which will need to be applied during unparse.
@@ -48,7 +65,7 @@ public class TypeCheckCtx implements NodeProcessorCtx {
   private String error;
 
   /**
-   * The node that generated the potential typecheck error
+   * The node that generated the potential typecheck error.
    */
   private ASTNode errorSrcNode;
 
@@ -79,20 +96,21 @@ public class TypeCheckCtx implements NodeProcessorCtx {
    *          The input row resolver of the previous operator.
    */
   public TypeCheckCtx(RowResolver inputRR) {
-    this(inputRR, true);
+    this(inputRR, true, false);
   }
 
-  public TypeCheckCtx(RowResolver inputRR, boolean useCaching) {
-    this(inputRR, useCaching, false, true, true, true, true, true, true, true);
+  public TypeCheckCtx(RowResolver inputRR, boolean useCaching, boolean foldExpr) {
+    this(inputRR, useCaching, foldExpr, false, true, true, true, true, true, true, true);
   }
 
-  public TypeCheckCtx(RowResolver inputRR, boolean useCaching, boolean allowStatefulFunctions,
-      boolean allowDistinctFunctions, boolean allowGBExprElimination, boolean allowAllColRef,
-      boolean allowFunctionStar, boolean allowWindowing,
+  public TypeCheckCtx(RowResolver inputRR, boolean useCaching, boolean foldExpr,
+      boolean allowStatefulFunctions, boolean allowDistinctFunctions, boolean allowGBExprElimination,
+      boolean allowAllColRef, boolean allowFunctionStar, boolean allowWindowing,
       boolean allowIndexExpr, boolean allowSubQueryExpr) {
     setInputRR(inputRR);
     error = null;
     this.useCaching = useCaching;
+    this.foldExpr = foldExpr;
     this.allowStatefulFunctions = allowStatefulFunctions;
     this.allowDistinctFunctions = allowDistinctFunctions;
     this.allowGBExprElimination = allowGBExprElimination;
@@ -101,6 +119,8 @@ public class TypeCheckCtx implements NodeProcessorCtx {
     this.allowWindowing = allowWindowing;
     this.allowIndexExpr = allowIndexExpr;
     this.allowSubQueryExpr = allowSubQueryExpr;
+    this.outerRR = null;
+    this.subqueryToRelNode = null;
   }
 
   /**
@@ -116,6 +136,36 @@ public class TypeCheckCtx implements NodeProcessorCtx {
    */
   public RowResolver getInputRR() {
     return inputRR;
+  }
+
+  /**
+   * @param outerRR
+   *          the outerRR to set
+   */
+  public void setOuterRR(RowResolver outerRR) {
+    this.outerRR = outerRR;
+  }
+
+  /**
+   * @return the outerRR
+   */
+  public RowResolver getOuterRR() {
+    return outerRR;
+  }
+
+  /**
+   * @param subqueryToRelNode
+   *          the subqueryToRelNode to set
+   */
+  public void setSubqueryToRelNode(Map<ASTNode, RelNode> subqueryToRelNode) {
+    this.subqueryToRelNode = subqueryToRelNode;
+  }
+
+  /**
+   * @return the outerRR
+   */
+  public Map<ASTNode, RelNode> getSubqueryToRelNode() {
+    return subqueryToRelNode;
   }
 
   /**
@@ -155,7 +205,7 @@ public class TypeCheckCtx implements NodeProcessorCtx {
    */
   public void setError(String error, ASTNode errorSrcNode) {
     if (LOG.isDebugEnabled()) {
-      // Log the callstack from which the error has been set.
+      // Logger the callstack from which the error has been set.
       LOG.debug("Setting error: [" + error + "] from "
           + ((errorSrcNode == null) ? "null" : errorSrcNode.toStringTree()), new Exception());
     }
@@ -208,5 +258,9 @@ public class TypeCheckCtx implements NodeProcessorCtx {
 
   public boolean isUseCaching() {
     return useCaching;
+  }
+
+  public boolean isFoldExpr() {
+    return foldExpr;
   }
 }

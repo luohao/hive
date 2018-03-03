@@ -20,9 +20,6 @@ package org.apache.hive.service.cli;
 import java.util.List;
 import java.util.Map;
 
-
-
-
 import org.apache.hive.service.auth.HiveAuthFactory;
 
 public interface ICLIService {
@@ -42,12 +39,16 @@ public interface ICLIService {
       throws HiveSQLException;
 
   OperationHandle executeStatement(SessionHandle sessionHandle, String statement,
-      Map<String, String> confOverlay)
-          throws HiveSQLException;
+      Map<String, String> confOverlay) throws HiveSQLException;
 
-  OperationHandle executeStatementAsync(SessionHandle sessionHandle,
-      String statement, Map<String, String> confOverlay)
-          throws HiveSQLException;
+  OperationHandle executeStatement(SessionHandle sessionHandle, String statement,
+      Map<String, String> confOverlay, long queryTimeout) throws HiveSQLException;
+
+  OperationHandle executeStatementAsync(SessionHandle sessionHandle, String statement,
+      Map<String, String> confOverlay) throws HiveSQLException;
+
+  OperationHandle executeStatementAsync(SessionHandle sessionHandle, String statement,
+      Map<String, String> confOverlay, long queryTimeout) throws HiveSQLException;
 
   OperationHandle getTypeInfo(SessionHandle sessionHandle)
       throws HiveSQLException;
@@ -74,7 +75,7 @@ public interface ICLIService {
       String catalogName, String schemaName, String functionName)
           throws HiveSQLException;
 
-  OperationStatus getOperationStatus(OperationHandle opHandle)
+  OperationStatus getOperationStatus(OperationHandle opHandle, boolean getProgressUpdate)
       throws HiveSQLException;
 
   void cancelOperation(OperationHandle opHandle)
@@ -101,5 +102,11 @@ public interface ICLIService {
   void renewDelegationToken(SessionHandle sessionHandle, HiveAuthFactory authFactory,
       String tokenStr) throws HiveSQLException;
 
+  OperationHandle getPrimaryKeys(SessionHandle sessionHandle, String catalog,
+    String schema, String table) throws HiveSQLException;
 
+  OperationHandle getCrossReference(SessionHandle sessionHandle,
+    String primaryCatalog, String primarySchema, String primaryTable,
+    String foreignCatalog, String foreignSchema, String foreignTable)
+    throws HiveSQLException;
 }

@@ -19,14 +19,18 @@ package org.apache.hadoop.hive.serde2.avro;
 
 
 import org.apache.avro.Schema;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hive.common.type.HiveDecimal;
 import org.apache.hadoop.hive.conf.HiveConf;
+import org.apache.hadoop.hive.serde.serdeConstants;
+import org.apache.hadoop.hive.serde2.SerDeUtils;
+import org.apache.hadoop.hive.serde2.typeinfo.TypeInfo;
+import org.apache.hadoop.hive.serde2.typeinfo.TypeInfoUtils;
 import org.apache.hadoop.mapred.JobConf;
 
 import java.io.File;
@@ -38,7 +42,10 @@ import java.net.URISyntaxException;
 import java.net.URL;
 import java.nio.Buffer;
 import java.nio.ByteBuffer;
+import java.util.Arrays;
 import java.util.List;
+import java.util.ArrayList;
+import java.util.Map;
 import java.util.Properties;
 
 /**
@@ -46,7 +53,7 @@ import java.util.Properties;
  * end-users but public for interop to the ql package.
  */
 public class AvroSerdeUtils {
-  private static final Log LOG = LogFactory.getLog(AvroSerdeUtils.class);
+  private static final Logger LOG = LoggerFactory.getLogger(AvroSerdeUtils.class);
 
   /**
    * Enum container for all avro table properties.
@@ -105,14 +112,34 @@ public class AvroSerdeUtils {
 
     // Try pulling directly from URL
     schemaString = properties.getProperty(AvroTableProperties.SCHEMA_URL.getPropName());
-    if(schemaString == null || schemaString.equals(SCHEMA_NONE))
+    if (schemaString == null) {
+      final String columnNameProperty = properties.getProperty(serdeConstants.LIST_COLUMNS);
+      final String columnTypeProperty = properties.getProperty(serdeConstants.LIST_COLUMN_TYPES);
+      final String columnCommentProperty = properties.getProperty(AvroSerDe.LIST_COLUMN_COMMENTS);
+      if (columnNameProperty == null || columnNameProperty.isEmpty()
+        || columnTypeProperty == null || columnTypeProperty.isEmpty() ) {
+        throw new AvroSerdeException(EXCEPTION_MESSAGE);
+      }
+      final String columnNameDelimiter = properties.containsKey(serdeConstants.COLUMN_NAME_DELIMITER) ? properties
+          .getProperty(serdeConstants.COLUMN_NAME_DELIMITER) : String.valueOf(SerDeUtils.COMMA);
+      // Get column names and types
+      List<String> columnNames = Arrays.asList(columnNameProperty.split(columnNameDelimiter));
+      List<TypeInfo> columnTypes = TypeInfoUtils.getTypeInfosFromTypeString(columnTypeProperty);
+
+      Schema schema = AvroSerDe.getSchemaFromCols(properties, columnNames, columnTypes, columnCommentProperty);
+      properties.setProperty(AvroTableProperties.SCHEMA_LITERAL.getPropName(), schema.toString());
+      if (conf != null)
+        conf.set(AvroTableProperties.AVRO_SERDE_SCHEMA.getPropName(), schema.toString(false));
+      return schema;
+    } else if(schemaString.equals(SCHEMA_NONE)) {
       throw new AvroSerdeException(EXCEPTION_MESSAGE);
+    }
 
     try {
       Schema s = getSchemaFromFS(schemaString, conf);
       if (s == null) {
         //in case schema is not a file system
-        return AvroSerdeUtils.getSchemaFor(new URL(schemaString).openStream());
+        return AvroSerdeUtils.getSchemaFor(new URL(schemaString));
       }
       return s;
     } catch (IOException ioe) {
@@ -131,8 +158,11 @@ public class AvroSerdeUtils {
       fs = FileSystem.get(new URI(schemaFSUrl), conf);
     } catch (IOException ioe) {
       //return null only if the file system in schema is not recognized
-      String msg = "Failed to open file system for uri " + schemaFSUrl + " assuming it is not a FileSystem url";
-      LOG.debug(msg, ioe);
+      if (LOG.isDebugEnabled()) {
+        String msg = "Failed to open file system for uri " + schemaFSUrl + " assuming it is not a FileSystem url";
+        LOG.debug(msg, ioe);
+      }
+
       return null;
     }
     try {
@@ -149,14 +179,29 @@ public class AvroSerdeUtils {
    * types via a union of type T and null.  This is a very common use case.
    * As such, we want to silently convert it to just T and allow the value to be null.
    *
+   * When a Hive union type is used with AVRO, the schema type becomes
+   * Union[NULL, T1, T2, ...]. The NULL in the union should be silently removed
+   *
    * @return true if type represents Union[T, Null], false otherwise
    */
   public static boolean isNullableType(Schema schema) {
-    return schema.getType().equals(Schema.Type.UNION) &&
-           schema.getTypes().size() == 2 &&
-             (schema.getTypes().get(0).getType().equals(Schema.Type.NULL) ||
-              schema.getTypes().get(1).getType().equals(Schema.Type.NULL));
-      // [null, null] not allowed, so this check is ok.
+    if (!schema.getType().equals(Schema.Type.UNION)) {
+      return false;
+    }
+
+    List<Schema> itemSchemas = schema.getTypes();
+    if (itemSchemas.size() < 2) {
+      return false;
+    }
+
+    for (Schema itemSchema : itemSchemas) {
+      if (Schema.Type.NULL.equals(itemSchema.getType())) {
+        return true;
+      }
+    }
+
+    // [null, null] not allowed, so this check is ok.
+    return false;
   }
 
   /**
@@ -164,9 +209,18 @@ public class AvroSerdeUtils {
    * does no checking that the provides Schema is nullable.
    */
   public static Schema getOtherTypeFromNullableType(Schema schema) {
-    List<Schema> types = schema.getTypes();
+    List<Schema> itemSchemas = new ArrayList<>();
+    for (Schema itemSchema : schema.getTypes()) {
+      if (!Schema.Type.NULL.equals(itemSchema.getType())) {
+        itemSchemas.add(itemSchema);
+      }
+    }
 
-    return types.get(0).getType().equals(Schema.Type.NULL) ? types.get(1) : types.get(0);
+    if (itemSchemas.size() > 1) {
+      return Schema.createUnion(itemSchemas);
+    } else {
+      return itemSchemas.get(0);
+    }
   }
 
   /**
@@ -191,8 +245,9 @@ public class AvroSerdeUtils {
       return null;
     }
 
-    dec = dec.setScale(scale);
-    return AvroSerdeUtils.getBufferFromBytes(dec.unscaledValue().toByteArray());
+    // NOTE: Previously, we did OldHiveDecimal.setScale(scale), called OldHiveDecimal
+    //       unscaledValue().toByteArray().
+    return AvroSerdeUtils.getBufferFromBytes(dec.bigIntegerBytesScaled(scale));
   }
 
   public static byte[] getBytesFromByteBuffer(ByteBuffer byteBuffer) {
@@ -234,5 +289,44 @@ public class AvroSerdeUtils {
       throw new RuntimeException("Failed to parse Avro schema", e);
     }
     return schema;
+  }
+
+  public static Schema getSchemaFor(URL url) {
+    InputStream in = null;
+    try {
+      in = url.openStream();
+      return getSchemaFor(in);
+    } catch (Exception e) {
+      throw new RuntimeException("Failed to parse Avro schema", e);
+    } finally {
+      if (in != null) {
+        try {
+          in.close();
+        } catch (IOException e) {
+          // Ignore
+        }
+      }
+    }
+  }
+
+  /**
+   * Called on specific alter table events, removes schema url and schema literal from given tblproperties
+   * After the change, HMS solely will be responsible for handling the schema
+   *
+   * @param conf
+   * @param serializationLib
+   * @param parameters
+   */
+  public static void handleAlterTableForAvro(HiveConf conf, String serializationLib, Map<String, String> parameters) {
+    if (AvroSerDe.class.getName().equals(serializationLib)) {
+      String literalPropName = AvroTableProperties.SCHEMA_LITERAL.getPropName();
+      String urlPropName = AvroTableProperties.SCHEMA_URL.getPropName();
+
+      if (parameters.containsKey(literalPropName) || parameters.containsKey(urlPropName)) {
+          throw new RuntimeException("Not allowed to alter schema of Avro stored table having external schema." +
+                  " Consider removing "+AvroTableProperties.SCHEMA_LITERAL.getPropName() + " or " +
+                  AvroTableProperties.SCHEMA_URL.getPropName() + " from table properties.");
+      }
+    }
   }
 }

@@ -37,22 +37,26 @@ import org.apache.hadoop.hive.metastore.api.RolePrincipalGrant;
 import org.apache.hadoop.hive.ql.metadata.Hive;
 import org.apache.hadoop.hive.ql.metadata.HiveException;
 import org.apache.hadoop.hive.ql.metadata.Table;
-import org.apache.hadoop.hive.ql.plan.PrincipalDesc;
-import org.apache.hadoop.hive.ql.plan.PrivilegeDesc;
-import org.apache.hadoop.hive.ql.plan.PrivilegeObjectDesc;
+import org.apache.hadoop.hive.ql.parse.SemanticException;
+import org.apache.hadoop.hive.ql.security.HiveAuthenticationProvider;
 import org.apache.hadoop.hive.ql.security.authorization.AuthorizationUtils;
 import org.apache.hadoop.hive.ql.security.authorization.PrivilegeScope;
 import org.apache.hadoop.hive.ql.security.authorization.plugin.sqlstd.SQLStdHiveAccessController;
 import org.apache.hadoop.hive.ql.session.SessionState;
 
-public class HiveV1Authorizer implements HiveAuthorizer {
+public class HiveV1Authorizer extends AbstractHiveAuthorizer {
 
   private final HiveConf conf;
-  private final Hive hive;
 
-  public HiveV1Authorizer(HiveConf conf, Hive hive) {
+  public HiveV1Authorizer(HiveConf conf) {
     this.conf = conf;
-    this.hive = hive;
+  }
+
+
+  // Leave this ctor around for backward compat.
+  @Deprecated
+  public HiveV1Authorizer(HiveConf conf, Hive hive) {
+    this(conf);
   }
 
   @Override
@@ -101,6 +105,7 @@ public class HiveV1Authorizer implements HiveAuthorizer {
         priv.setPrincipalName(principal.getName());
         priv.setPrincipalType(type);
       }
+      Hive hive = Hive.getWithFastCheck(this.conf);
       if (isGrant) {
         hive.grantPrivileges(privBag);
       } else {
@@ -139,6 +144,7 @@ public class HiveV1Authorizer implements HiveAuthorizer {
     if (privObject.getPartKeys() != null && grantOption) {
       throw new HiveException("Grant does not support partition level.");
     }
+    Hive hive = Hive.getWithFastCheck(this.conf);
     Database dbObj = hive.getDatabase(privObject.getDbname());
     if (dbObj == null) {
       throw new HiveException("Database " + privObject.getDbname() + " does not exists");
@@ -205,6 +211,7 @@ public class HiveV1Authorizer implements HiveAuthorizer {
   @Override
   public void createRole(String roleName, HivePrincipal adminGrantor) throws HiveAuthzPluginException, HiveAccessControlException {
     try {
+      Hive hive = Hive.getWithFastCheck(this.conf);
       hive.createRole(roleName, adminGrantor == null ? null : adminGrantor.getName());
     } catch (HiveException e) {
       throw new HiveAuthzPluginException(e);
@@ -214,6 +221,7 @@ public class HiveV1Authorizer implements HiveAuthorizer {
   @Override
   public void dropRole(String roleName) throws HiveAuthzPluginException, HiveAccessControlException {
     try {
+      Hive hive = Hive.getWithFastCheck(this.conf);
       hive.dropRole(roleName);
     } catch (HiveException e) {
       throw new HiveAuthzPluginException(e);
@@ -223,6 +231,7 @@ public class HiveV1Authorizer implements HiveAuthorizer {
   @Override
   public List<HiveRoleGrant> getPrincipalGrantInfoForRole(String roleName) throws HiveAuthzPluginException, HiveAccessControlException {
     try {
+      Hive hive = Hive.getWithFastCheck(this.conf);
       return SQLStdHiveAccessController.getHiveRoleGrants(hive.getMSC(), roleName);
     } catch (Exception e) {
       throw new HiveAuthzPluginException(e);
@@ -234,6 +243,7 @@ public class HiveV1Authorizer implements HiveAuthorizer {
     PrincipalType type = AuthorizationUtils.getThriftPrincipalType(principal.getType());
     try {
       List<HiveRoleGrant> grants = new ArrayList<HiveRoleGrant>();
+      Hive hive = Hive.getWithFastCheck(this.conf);
       for (RolePrincipalGrant grant : hive.getRoleGrantInfoForPrincipal(principal.getName(), type)) {
         grants.add(new HiveRoleGrant(grant));
       }
@@ -266,6 +276,7 @@ public class HiveV1Authorizer implements HiveAuthorizer {
   private void grantOrRevokeRole(List<HivePrincipal> principals, List<String> roles,
       boolean grantOption, HivePrincipal grantor, boolean isGrant) throws HiveException {
     PrincipalType grantorType = AuthorizationUtils.getThriftPrincipalType(grantor.getType());
+    Hive hive = Hive.getWithFastCheck(this.conf);
     for (HivePrincipal principal : principals) {
       PrincipalType principalType = AuthorizationUtils.getThriftPrincipalType(principal.getType());
       String userName = principal.getName();
@@ -283,6 +294,7 @@ public class HiveV1Authorizer implements HiveAuthorizer {
   @Override
   public List<String> getAllRoles() throws HiveAuthzPluginException, HiveAccessControlException {
     try {
+      Hive hive = Hive.getWithFastCheck(this.conf);
       return hive.getAllRoleNames();
     } catch (HiveException e) {
       throw new HiveAuthzPluginException(e);
@@ -298,6 +310,7 @@ public class HiveV1Authorizer implements HiveAuthorizer {
 
     List<HiveObjectPrivilege> privs = new ArrayList<HiveObjectPrivilege>();
     try {
+      Hive hive = Hive.getWithFastCheck(this.conf);
       if (privObj == null) {
         // show user level privileges
         privs.addAll(hive.showPrivilegeGrant(HiveObjectType.GLOBAL, name, type,
@@ -361,6 +374,7 @@ public class HiveV1Authorizer implements HiveAuthorizer {
       throw new HiveAuthzPluginException("Cannot resolve current user name");
     }
     try {
+      Hive hive = Hive.getWithFastCheck(this.conf);
       List<String> roleNames = new ArrayList<String>();
       for (Role role : hive.listRoles(userName, PrincipalType.USER)) {
         roleNames.add(role.getRoleName());
@@ -383,19 +397,14 @@ public class HiveV1Authorizer implements HiveAuthorizer {
   }
 
   @Override
-  public List<HivePrincipal> getHivePrincipals(
-      List<PrincipalDesc> principals) throws HiveException {
-    return AuthorizationUtils.getHivePrincipals(principals);
+  public boolean needTransform() {
+    return false;
   }
 
   @Override
-  public List<HivePrivilege> getHivePrivileges(List<PrivilegeDesc> privileges) {
-    return AuthorizationUtils.getHivePrivileges(privileges);
+  public List<HivePrivilegeObject> applyRowFilterAndColumnMasking(HiveAuthzContext context,
+      List<HivePrivilegeObject> privObjs) throws SemanticException {
+    return null;
   }
 
-  @Override
-  public HivePrivilegeObject getHivePrivilegeObject(
-      PrivilegeObjectDesc privSubjectDesc) throws HiveException {
-    return AuthorizationUtils.getHivePrivilegeObject(privSubjectDesc);
-  }
 }

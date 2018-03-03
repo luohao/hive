@@ -19,31 +19,37 @@
 package org.apache.hadoop.hive.ql.io;
 
 import java.io.IOException;
+import java.nio.file.FileSystemNotFoundException;
+import java.nio.file.Files;
+import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashMap;
+import java.util.Iterator;
+import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Properties;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.hdfs.DistributedFileSystem;
+import org.apache.hadoop.hive.common.FileUtils;
 import org.apache.hadoop.hive.common.JavaUtils;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.ql.exec.FileSinkOperator.RecordWriter;
 import org.apache.hadoop.hive.ql.exec.Operator;
-import org.apache.hadoop.hive.ql.exec.Utilities;
+import org.apache.hadoop.hive.ql.io.orc.OrcInputFormat;
 import org.apache.hadoop.hive.ql.metadata.HiveException;
 import org.apache.hadoop.hive.ql.plan.FileSinkDesc;
 import org.apache.hadoop.hive.ql.plan.OperatorDesc;
 import org.apache.hadoop.hive.ql.plan.PartitionDesc;
 import org.apache.hadoop.hive.ql.plan.TableDesc;
 import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspector;
-import org.apache.hadoop.hive.shims.ShimLoader;
 import org.apache.hadoop.io.SequenceFile.CompressionType;
 import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.io.compress.CompressionCodec;
@@ -58,8 +64,15 @@ import org.apache.hadoop.mapred.SequenceFileInputFormat;
 import org.apache.hadoop.mapred.SequenceFileOutputFormat;
 import org.apache.hadoop.mapred.TaskAttemptContext;
 import org.apache.hadoop.mapred.TextInputFormat;
+import org.apache.hadoop.mapreduce.MRJobConfig;
 import org.apache.hadoop.util.Shell;
 import org.apache.hive.common.util.ReflectionUtil;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import com.google.common.cache.Cache;
+import com.google.common.cache.CacheBuilder;
+import com.google.common.collect.ImmutableMap;
 
 /**
  * An util class for various Hive file format tasks.
@@ -69,31 +82,70 @@ import org.apache.hive.common.util.ReflectionUtil;
  *
  */
 public final class HiveFileFormatUtils {
+  private static final Logger LOG = LoggerFactory.getLogger(HiveFileFormatUtils.class);
 
-  static {
-    outputFormatSubstituteMap =
-        new ConcurrentHashMap<Class<?>, Class<? extends OutputFormat>>();
-    HiveFileFormatUtils.registerOutputFormatSubstitute(
-        IgnoreKeyTextOutputFormat.class, HiveIgnoreKeyTextOutputFormat.class);
-    HiveFileFormatUtils.registerOutputFormatSubstitute(
-        SequenceFileOutputFormat.class, HiveSequenceFileOutputFormat.class);
-  }
+  public static class FileChecker {
+    // we don't have many file formats that implement InputFormatChecker. We won't be holding
+    // multiple instances of such classes
+    private static final int MAX_CACHE_SIZE = 16;
 
-  @SuppressWarnings("unchecked")
-  private static Map<Class<?>, Class<? extends OutputFormat>>
-    outputFormatSubstituteMap;
+    // immutable maps
+    Map<Class<? extends InputFormat>, Class<? extends InputFormatChecker>> inputFormatCheckerMap;
+    Map<Class<?>, Class<? extends OutputFormat>> outputFormatSubstituteMap;
 
-  /**
-   * register a substitute.
-   *
-   * @param origin
-   *          the class that need to be substituted
-   * @param substitute
-   */
-  @SuppressWarnings("unchecked")
-  public static void registerOutputFormatSubstitute(Class<?> origin,
-      Class<? extends HiveOutputFormat> substitute) {
-    outputFormatSubstituteMap.put(origin, substitute);
+    // mutable thread-safe map to store instances
+    Cache<Class<? extends InputFormatChecker>, InputFormatChecker> inputFormatCheckerInstanceCache;
+
+    // classloader invokes this static block when its first loaded (lazy initialization).
+    // Class loading is thread safe.
+    private static class Factory {
+      static final FileChecker INSTANCE = new FileChecker();
+    }
+
+    public static FileChecker getInstance() {
+      return Factory.INSTANCE;
+    }
+
+    private FileChecker() {
+      // read-only maps (initialized once)
+      inputFormatCheckerMap = ImmutableMap
+          .<Class<? extends InputFormat>, Class<? extends InputFormatChecker>>builder()
+          .put(SequenceFileInputFormat.class, SequenceFileInputFormatChecker.class)
+          .put(RCFileInputFormat.class, RCFileInputFormat.class)
+          .put(OrcInputFormat.class, OrcInputFormat.class)
+          .build();
+      outputFormatSubstituteMap = ImmutableMap
+          .<Class<?>, Class<? extends OutputFormat>>builder()
+          .put(IgnoreKeyTextOutputFormat.class, HiveIgnoreKeyTextOutputFormat.class)
+          .put(SequenceFileOutputFormat.class, HiveSequenceFileOutputFormat.class)
+          .build();
+
+      // updatable map that holds instances of the class
+      inputFormatCheckerInstanceCache = CacheBuilder.newBuilder().maximumSize(MAX_CACHE_SIZE)
+          .build();
+    }
+
+    public Set<Class<? extends InputFormat>> registeredClasses() {
+      return inputFormatCheckerMap.keySet();
+    }
+
+    public Class<? extends OutputFormat> getOutputFormatSubstiture(Class<?> origin) {
+      return outputFormatSubstituteMap.get(origin);
+    }
+
+    public Class<? extends InputFormatChecker> getInputFormatCheckerClass(Class<?> inputFormat) {
+      return inputFormatCheckerMap.get(inputFormat);
+    }
+
+    public void putInputFormatCheckerInstance(
+        Class<? extends InputFormatChecker> checkerCls, InputFormatChecker instanceCls) {
+      inputFormatCheckerInstanceCache.put(checkerCls, instanceCls);
+    }
+
+    public InputFormatChecker getInputFormatCheckerInstance(
+        Class<? extends InputFormatChecker> checkerCls) {
+      return inputFormatCheckerInstanceCache.getIfPresent(checkerCls);
+    }
   }
 
   /**
@@ -105,7 +157,8 @@ public final class HiveFileFormatUtils {
     if (origin == null || HiveOutputFormat.class.isAssignableFrom(origin)) {
       return (Class<? extends OutputFormat>) origin;  // hive native
     }
-    Class<? extends OutputFormat> substitute = outputFormatSubstituteMap.get(origin);
+    Class<? extends OutputFormat> substitute = FileChecker.getInstance()
+        .getOutputFormatSubstiture(origin);
     if (substitute != null) {
       return substitute;  // substituted
     }
@@ -113,113 +166,85 @@ public final class HiveFileFormatUtils {
   }
 
   /**
-   * get the final output path of a given FileOutputFormat.
-   *
-   * @param parent
-   *          parent dir of the expected final output path
-   * @param jc
-   *          job configuration
-   * @deprecated
-   */
-  @Deprecated
-  public static Path getOutputFormatFinalPath(Path parent, String taskId, JobConf jc,
-      HiveOutputFormat<?, ?> hiveOutputFormat, boolean isCompressed,
-      Path defaultFinalPath) throws IOException {
-    if (hiveOutputFormat instanceof HiveIgnoreKeyTextOutputFormat) {
-      return new Path(parent, taskId
-          + Utilities.getFileExtension(jc, isCompressed));
-    }
-    return defaultFinalPath;
-  }
-
-  static {
-    inputFormatCheckerMap =
-        new HashMap<Class<? extends InputFormat>, Class<? extends InputFormatChecker>>();
-    HiveFileFormatUtils.registerInputFormatChecker(
-        SequenceFileInputFormat.class, SequenceFileInputFormatChecker.class);
-    HiveFileFormatUtils.registerInputFormatChecker(RCFileInputFormat.class,
-        RCFileInputFormat.class);
-    inputFormatCheckerInstanceCache =
-        new HashMap<Class<? extends InputFormatChecker>, InputFormatChecker>();
-  }
-
-  @SuppressWarnings("unchecked")
-  private static Map<Class<? extends InputFormat>, Class<? extends InputFormatChecker>> inputFormatCheckerMap;
-
-  private static Map<Class<? extends InputFormatChecker>, InputFormatChecker> inputFormatCheckerInstanceCache;
-
-  /**
-   * register an InputFormatChecker for a given InputFormat.
-   *
-   * @param format
-   *          the class that need to be substituted
-   * @param checker
-   */
-  @SuppressWarnings("unchecked")
-  public static synchronized void registerInputFormatChecker(
-      Class<? extends InputFormat> format,
-      Class<? extends InputFormatChecker> checker) {
-    inputFormatCheckerMap.put(format, checker);
-  }
-
-  /**
-   * get an InputFormatChecker for a file format.
-   */
-  public static synchronized Class<? extends InputFormatChecker> getInputFormatChecker(
-      Class<?> inputFormat) {
-    Class<? extends InputFormatChecker> result = inputFormatCheckerMap
-        .get(inputFormat);
-    return result;
-  }
-
-  /**
    * checks if files are in same format as the given input format.
    */
   @SuppressWarnings("unchecked")
   public static boolean checkInputFormat(FileSystem fs, HiveConf conf,
-      Class<? extends InputFormat> inputFormatCls, ArrayList<FileStatus> files)
+      Class<? extends InputFormat> inputFormatCls, List<FileStatus> files)
       throws HiveException {
-    if (files.size() > 0) {
-      Class<? extends InputFormatChecker> checkerCls = getInputFormatChecker(inputFormatCls);
-      if (checkerCls == null
-          && inputFormatCls.isAssignableFrom(TextInputFormat.class)) {
-        // we get a text input format here, we can not determine a file is text
-        // according to its content, so we can do is to test if other file
-        // format can accept it. If one other file format can accept this file,
-        // we treat this file as text file, although it maybe not.
-        return checkTextInputFormat(fs, conf, files);
-      }
-
-      if (checkerCls != null) {
-        InputFormatChecker checkerInstance = inputFormatCheckerInstanceCache
-            .get(checkerCls);
-        try {
-          if (checkerInstance == null) {
-            checkerInstance = checkerCls.newInstance();
-            inputFormatCheckerInstanceCache.put(checkerCls, checkerInstance);
-          }
-          return checkerInstance.validateInput(fs, conf, files);
-        } catch (Exception e) {
-          throw new HiveException(e);
-        }
-      }
-      return true;
+    if (files.isEmpty()) return false;
+    Class<? extends InputFormatChecker> checkerCls = FileChecker.getInstance()
+        .getInputFormatCheckerClass(inputFormatCls);
+    if (checkerCls == null
+        && inputFormatCls.isAssignableFrom(TextInputFormat.class)) {
+      // we get a text input format here, we can not determine a file is text
+      // according to its content, so we can do is to test if other file
+      // format can accept it. If one other file format can accept this file,
+      // we treat this file as text file, although it maybe not.
+      return checkTextInputFormat(fs, conf, files);
     }
-    return false;
+
+    if (checkerCls != null) {
+      InputFormatChecker checkerInstance = FileChecker.getInstance()
+          .getInputFormatCheckerInstance(checkerCls);
+      try {
+        if (checkerInstance == null) {
+          checkerInstance = checkerCls.newInstance();
+          FileChecker.getInstance().putInputFormatCheckerInstance(checkerCls, checkerInstance);
+        }
+        return checkerInstance.validateInput(fs, conf, files);
+      } catch (Exception e) {
+        throw new HiveException(e);
+      }
+    }
+    return true;
   }
 
   @SuppressWarnings("unchecked")
   private static boolean checkTextInputFormat(FileSystem fs, HiveConf conf,
-      ArrayList<FileStatus> files) throws HiveException {
-    Set<Class<? extends InputFormat>> inputFormatter = inputFormatCheckerMap
-        .keySet();
+      List<FileStatus> files) throws HiveException {
+    List<FileStatus> files2 = new LinkedList<>(files);
+    Iterator<FileStatus> iter = files2.iterator();
+    while (iter.hasNext()) {
+      FileStatus file = iter.next();
+      if (file == null) continue;
+      if (isPipe(fs, file)) {
+        LOG.info("Skipping format check for " + file.getPath() + " as it is a pipe");
+        iter.remove();
+      }
+    }
+    if (files2.isEmpty()) return true;
+    Set<Class<? extends InputFormat>> inputFormatter = FileChecker.getInstance().registeredClasses();
     for (Class<? extends InputFormat> reg : inputFormatter) {
-      boolean result = checkInputFormat(fs, conf, reg, files);
+      boolean result = checkInputFormat(fs, conf, reg, files2);
       if (result) {
         return false;
       }
     }
     return true;
+  }
+
+  // See include/uapi/linux/stat.h
+  private static final int S_IFIFO = 0010000;
+  private static boolean isPipe(FileSystem fs, FileStatus file) {
+    if (fs instanceof DistributedFileSystem) {
+      return false; // Shortcut for HDFS.
+    }
+    int mode = 0;
+    Object pathToLog = file.getPath();
+    try {
+      java.nio.file.Path realPath = Paths.get(file.getPath().toUri());
+      pathToLog = realPath;
+      mode = (Integer)Files.getAttribute(realPath, "unix:mode");
+    } catch (FileSystemNotFoundException t) {
+      return false; // Probably not a local filesystem; no need to check.
+    } catch (UnsupportedOperationException | IOException
+        | SecurityException | IllegalArgumentException t) {
+      LOG.info("Failed to check mode for " + pathToLog + ": "
+        + t.getMessage() + " (" + t.getClass() + ")");
+      return false;
+    }
+    return (mode & S_IFIFO) != 0;
   }
 
   public static RecordWriter getHiveRecordWriter(JobConf jc,
@@ -326,37 +351,32 @@ public final class HiveFileFormatUtils {
   }
 
   public static PartitionDesc getPartitionDescFromPathRecursively(
-      Map<String, PartitionDesc> pathToPartitionInfo, Path dir,
-      Map<Map<String, PartitionDesc>, Map<String, PartitionDesc>> cacheMap)
+      Map<Path, PartitionDesc> pathToPartitionInfo, Path dir,
+      Map<Map<Path, PartitionDesc>, Map<Path, PartitionDesc>> cacheMap)
       throws IOException {
     return getPartitionDescFromPathRecursively(pathToPartitionInfo, dir,
         cacheMap, false);
   }
 
   public static PartitionDesc getPartitionDescFromPathRecursively(
-      Map<String, PartitionDesc> pathToPartitionInfo, Path dir,
-      Map<Map<String, PartitionDesc>, Map<String, PartitionDesc>> cacheMap,
-      boolean ignoreSchema) throws IOException {
+      Map<Path, PartitionDesc> pathToPartitionInfo, Path dir,
+      Map<Map<Path, PartitionDesc>, Map<Path, PartitionDesc>> cacheMap, boolean ignoreSchema)
+          throws IOException {
 
     PartitionDesc part = doGetPartitionDescFromPath(pathToPartitionInfo, dir);
 
     if (part == null
         && (ignoreSchema
-            || (dir.toUri().getScheme() == null || dir.toUri().getScheme().trim()
-            .equals(""))
-            || pathsContainNoScheme(pathToPartitionInfo)
-            )
+            || (dir.toUri().getScheme() == null || dir.toUri().getScheme().trim().equals(""))
+            || FileUtils.pathsContainNoScheme(pathToPartitionInfo.keySet()))) {
 
-        ) {
-
-      Map<String, PartitionDesc> newPathToPartitionInfo = null;
+      Map<Path, PartitionDesc> newPathToPartitionInfo = null;
       if (cacheMap != null) {
         newPathToPartitionInfo = cacheMap.get(pathToPartitionInfo);
       }
 
       if (newPathToPartitionInfo == null) { // still null
-        newPathToPartitionInfo = new HashMap<String, PartitionDesc>();
-        populateNewPartitionDesc(pathToPartitionInfo, newPathToPartitionInfo);
+        newPathToPartitionInfo = populateNewPartitionDesc(pathToPartitionInfo);
 
         if (cacheMap != null) {
           cacheMap.put(pathToPartitionInfo, newPathToPartitionInfo);
@@ -372,64 +392,32 @@ public final class HiveFileFormatUtils {
     }
   }
 
-  private static boolean pathsContainNoScheme(Map<String, PartitionDesc> pathToPartitionInfo) {
-
-    for( Entry<String, PartitionDesc> pe  : pathToPartitionInfo.entrySet()){
-      if(new Path(pe.getKey()).toUri().getScheme() != null){
-        return false;
-      }
-    }
-    return true;
-
-  }
-
-  private static void populateNewPartitionDesc(
-      Map<String, PartitionDesc> pathToPartitionInfo,
-      Map<String, PartitionDesc> newPathToPartitionInfo) {
-    for (Map.Entry<String, PartitionDesc> entry: pathToPartitionInfo.entrySet()) {
-      String entryKey = entry.getKey();
+  private static Map<Path, PartitionDesc> populateNewPartitionDesc(Map<Path, PartitionDesc> pathToPartitionInfo) {
+    Map<Path, PartitionDesc> newPathToPartitionInfo = new HashMap<>();
+    for (Map.Entry<Path, PartitionDesc> entry: pathToPartitionInfo.entrySet()) {
       PartitionDesc partDesc = entry.getValue();
-      Path newP = new Path(entryKey);
-      String pathOnly = newP.toUri().getPath();
+      Path pathOnly = Path.getPathWithoutSchemeAndAuthority(entry.getKey());
       newPathToPartitionInfo.put(pathOnly, partDesc);
     }
+    return newPathToPartitionInfo;
   }
 
   private static PartitionDesc doGetPartitionDescFromPath(
-      Map<String, PartitionDesc> pathToPartitionInfo, Path dir) {
+      Map<Path, PartitionDesc> pathToPartitionInfo, Path dir) {
+    
     // We first do exact match, and then do prefix matching. The latter is due to input dir
     // could be /dir/ds='2001-02-21'/part-03 where part-03 is not part of partition
-    String dirPath = dir.toUri().getPath();
-    PartitionDesc part = pathToPartitionInfo.get(dir.toString());
-    if (part == null) {
-      //      LOG.warn("exact match not found, try ripping input path's theme and authority");
-      part = pathToPartitionInfo.get(dirPath);
+    Path path = FileUtils.getParentRegardlessOfScheme(dir,pathToPartitionInfo.keySet());
+    
+    if(path == null) {
+      // FIXME: old implementation returned null; exception maybe?
+      return null;
     }
-
-    if (part == null) {
-      Path curPath = new Path(dir.toUri().getPath()).getParent();
-      dir = dir.getParent();
-      while (dir != null) {
-
-        // first try full match
-        part = pathToPartitionInfo.get(dir.toString());
-        if (part == null) {
-
-          // exact match not found, try ripping input path's scheme and authority
-          part = pathToPartitionInfo.get(curPath.toString());
-        }
-        if (part != null) {
-          break;
-        }
-        dir = dir.getParent();
-        curPath = curPath.getParent();
-      }
-    }
-    return part;
+    return pathToPartitionInfo.get(path);
   }
 
-  private static boolean foundAlias(Map<String, ArrayList<String>> pathToAliases,
-                                    String path) {
+  private static boolean foundAlias(Map<Path, ArrayList<String>> pathToAliases,
+                                    Path path) {
     List<String> aliases = pathToAliases.get(path);
     if ((aliases == null) || (aliases.isEmpty())) {
       return false;
@@ -437,40 +425,29 @@ public final class HiveFileFormatUtils {
     return true;
   }
 
-  private static String getMatchingPath(Map<String, ArrayList<String>> pathToAliases,
+  private static Path getMatchingPath(Map<Path, ArrayList<String>> pathToAliases,
                                         Path dir) {
     // First find the path to be searched
-    String path = dir.toString();
+    Path path = dir;
     if (foundAlias(pathToAliases, path)) {
       return path;
     }
 
-    String dirPath = dir.toUri().getPath();
-    if(Shell.WINDOWS){
-      //temp hack
-      //do this to get rid of "/" before the drive letter in windows
-      dirPath = new Path(dirPath).toString();
-    }
+    Path dirPath = Path.getPathWithoutSchemeAndAuthority(dir);
     if (foundAlias(pathToAliases, dirPath)) {
       return dirPath;
     }
-    path = dirPath;
 
-    String dirStr = dir.toString();
-    int dirPathIndex = dirPath.lastIndexOf(Path.SEPARATOR);
-    int dirStrIndex = dirStr.lastIndexOf(Path.SEPARATOR);
-    while (dirPathIndex >= 0 && dirStrIndex >= 0) {
-      dirStr = dirStr.substring(0, dirStrIndex);
-      dirPath = dirPath.substring(0, dirPathIndex);
+    while (path!=null && dirPath!=null) {
+      path=path.getParent();
+      dirPath=dirPath.getParent();
       //first try full match
-      if (foundAlias(pathToAliases, dirStr)) {
-        return dirStr;
+      if (foundAlias(pathToAliases, path)) {
+        return path;
       }
       if (foundAlias(pathToAliases, dirPath)) {
         return dirPath;
       }
-      dirPathIndex = dirPath.lastIndexOf(Path.SEPARATOR);
-      dirStrIndex = dirStr.lastIndexOf(Path.SEPARATOR);
     }
     return null;
   }
@@ -482,7 +459,7 @@ public final class HiveFileFormatUtils {
    * @param dir            The path to look for
    **/
   public static List<Operator<? extends OperatorDesc>> doGetWorksFromPath(
-    Map<String, ArrayList<String>> pathToAliases,
+    Map<Path, ArrayList<String>> pathToAliases,
     Map<String, Operator<? extends OperatorDesc>> aliasToWork, Path dir) {
     List<Operator<? extends OperatorDesc>> opList =
       new ArrayList<Operator<? extends OperatorDesc>>();
@@ -500,12 +477,12 @@ public final class HiveFileFormatUtils {
    * @param dir            The path to look for
    **/
   public static List<String> doGetAliasesFromPath(
-    Map<String, ArrayList<String>> pathToAliases,
+    Map<Path, ArrayList<String>> pathToAliases,
     Path dir) {
     if (pathToAliases == null) {
       return new ArrayList<String>();
     }
-    String path = getMatchingPath(pathToAliases, dir);
+    Path path = getMatchingPath(pathToAliases, dir);
     return pathToAliases.get(path);
   }
 
@@ -544,10 +521,10 @@ public final class HiveFileFormatUtils {
 
     // option to bypass job setup and cleanup was introduced in hadoop-21 (MAPREDUCE-463)
     // but can be backported. So we disable setup/cleanup in all versions >= 0.19
-    conf.setBoolean(ShimLoader.getHadoopShims().getHadoopConfNames().get("MAPREDSETUPCLEANUPNEEDED"), false);
+    conf.setBoolean(MRJobConfig.SETUP_CLEANUP_NEEDED, false);
 
     // option to bypass task cleanup task was introduced in hadoop-23 (MAPREDUCE-2206)
     // but can be backported. So we disable setup/cleanup in all versions >= 0.19
-    conf.setBoolean(ShimLoader.getHadoopShims().getHadoopConfNames().get("MAPREDTASKCLEANUPNEEDED"), false);
+    conf.setBoolean(MRJobConfig.TASK_CLEANUP_NEEDED, false);
   }
 }

@@ -20,6 +20,8 @@ package org.apache.hadoop.hive.ql.parse;
 
 import org.antlr.runtime.tree.Tree;
 import org.apache.hadoop.hive.conf.HiveConf;
+import org.apache.hadoop.hive.ql.QueryState;
+import org.apache.hadoop.hive.ql.metadata.HiveException;
 import org.apache.hadoop.hive.ql.plan.HiveOperation;
 import org.apache.hadoop.hive.ql.session.SessionState;
 
@@ -59,12 +61,16 @@ public final class SemanticAnalyzerFactory {
     commandType.put(HiveParser.TOK_ALTERTABLE_UNARCHIVE, HiveOperation.ALTERTABLE_UNARCHIVE);
     commandType.put(HiveParser.TOK_ALTERTABLE_PROPERTIES, HiveOperation.ALTERTABLE_PROPERTIES);
     commandType.put(HiveParser.TOK_ALTERTABLE_DROPPROPERTIES, HiveOperation.ALTERTABLE_PROPERTIES);
-    commandType.put(HiveParser.TOK_ALTERTABLE_EXCHANGEPARTITION, HiveOperation.ALTERTABLE_EXCHANGEPARTITION);
+    commandType.put(HiveParser.TOK_ALTERTABLE_EXCHANGEPARTITION,
+        HiveOperation.ALTERTABLE_EXCHANGEPARTITION);
+    commandType.put(HiveParser.TOK_ALTERTABLE_DROPCONSTRAINT, HiveOperation.ALTERTABLE_DROPCONSTRAINT);
+    commandType.put(HiveParser.TOK_ALTERTABLE_ADDCONSTRAINT, HiveOperation.ALTERTABLE_ADDCONSTRAINT);
     commandType.put(HiveParser.TOK_SHOWDATABASES, HiveOperation.SHOWDATABASES);
     commandType.put(HiveParser.TOK_SHOWTABLES, HiveOperation.SHOWTABLES);
     commandType.put(HiveParser.TOK_SHOWCOLUMNS, HiveOperation.SHOWCOLUMNS);
     commandType.put(HiveParser.TOK_SHOW_TABLESTATUS, HiveOperation.SHOW_TABLESTATUS);
     commandType.put(HiveParser.TOK_SHOW_TBLPROPERTIES, HiveOperation.SHOW_TBLPROPERTIES);
+    commandType.put(HiveParser.TOK_SHOW_CREATEDATABASE, HiveOperation.SHOW_CREATEDATABASE);
     commandType.put(HiveParser.TOK_SHOW_CREATETABLE, HiveOperation.SHOW_CREATETABLE);
     commandType.put(HiveParser.TOK_SHOWFUNCTIONS, HiveOperation.SHOWFUNCTIONS);
     commandType.put(HiveParser.TOK_SHOWINDEXES, HiveOperation.SHOWINDEXES);
@@ -72,12 +78,16 @@ public final class SemanticAnalyzerFactory {
     commandType.put(HiveParser.TOK_SHOWLOCKS, HiveOperation.SHOWLOCKS);
     commandType.put(HiveParser.TOK_SHOWDBLOCKS, HiveOperation.SHOWLOCKS);
     commandType.put(HiveParser.TOK_SHOWCONF, HiveOperation.SHOWCONF);
+    commandType.put(HiveParser.TOK_SHOWVIEWS, HiveOperation.SHOWVIEWS);
     commandType.put(HiveParser.TOK_CREATEFUNCTION, HiveOperation.CREATEFUNCTION);
     commandType.put(HiveParser.TOK_DROPFUNCTION, HiveOperation.DROPFUNCTION);
+    commandType.put(HiveParser.TOK_RELOADFUNCTION, HiveOperation.RELOADFUNCTION);
     commandType.put(HiveParser.TOK_CREATEMACRO, HiveOperation.CREATEMACRO);
     commandType.put(HiveParser.TOK_DROPMACRO, HiveOperation.DROPMACRO);
     commandType.put(HiveParser.TOK_CREATEVIEW, HiveOperation.CREATEVIEW);
+    commandType.put(HiveParser.TOK_CREATE_MATERIALIZED_VIEW, HiveOperation.CREATE_MATERIALIZED_VIEW);
     commandType.put(HiveParser.TOK_DROPVIEW, HiveOperation.DROPVIEW);
+    commandType.put(HiveParser.TOK_DROP_MATERIALIZED_VIEW, HiveOperation.DROP_MATERIALIZED_VIEW);
     commandType.put(HiveParser.TOK_CREATEINDEX, HiveOperation.CREATEINDEX);
     commandType.put(HiveParser.TOK_DROPINDEX, HiveOperation.DROPINDEX);
     commandType.put(HiveParser.TOK_ALTERINDEX_REBUILD, HiveOperation.ALTERINDEX_REBUILD);
@@ -109,13 +119,19 @@ public final class SemanticAnalyzerFactory {
     commandType.put(HiveParser.TOK_DESCDATABASE, HiveOperation.DESCDATABASE);
     commandType.put(HiveParser.TOK_ALTERTABLE_SKEWED, HiveOperation.ALTERTABLE_SKEWED);
     commandType.put(HiveParser.TOK_ANALYZE, HiveOperation.ANALYZE_TABLE);
+    commandType.put(HiveParser.TOK_CACHE_METADATA, HiveOperation.CACHE_METADATA);
     commandType.put(HiveParser.TOK_ALTERTABLE_PARTCOLTYPE, HiveOperation.ALTERTABLE_PARTCOLTYPE);
     commandType.put(HiveParser.TOK_SHOW_COMPACTIONS, HiveOperation.SHOW_COMPACTIONS);
     commandType.put(HiveParser.TOK_SHOW_TRANSACTIONS, HiveOperation.SHOW_TRANSACTIONS);
+    commandType.put(HiveParser.TOK_ABORT_TRANSACTIONS, HiveOperation.ABORT_TRANSACTIONS);
     commandType.put(HiveParser.TOK_START_TRANSACTION, HiveOperation.START_TRANSACTION);
     commandType.put(HiveParser.TOK_COMMIT, HiveOperation.COMMIT);
     commandType.put(HiveParser.TOK_ROLLBACK, HiveOperation.ROLLBACK);
     commandType.put(HiveParser.TOK_SET_AUTOCOMMIT, HiveOperation.SET_AUTOCOMMIT);
+    commandType.put(HiveParser.TOK_REPL_DUMP, HiveOperation.EXPORT); // piggyback on EXPORT security handling for now
+    commandType.put(HiveParser.TOK_REPL_LOAD, HiveOperation.IMPORT); // piggyback on IMPORT security handling for now
+    commandType.put(HiveParser.TOK_REPL_STATUS, HiveOperation.SHOW_TBLPROPERTIES); // TODO : also actually DESCDATABASE
+
   }
 
   static {
@@ -150,26 +166,35 @@ public final class SemanticAnalyzerFactory {
     tablePartitionCommandType.put(HiveParser.TOK_ALTERTABLE_UPDATECOLSTATS,
         new HiveOperation[] {HiveOperation.ALTERTABLE_UPDATETABLESTATS,
             HiveOperation.ALTERTABLE_UPDATEPARTSTATS});
+    tablePartitionCommandType.put(HiveParser.TOK_ALTERTABLE_UPDATESTATS,
+        new HiveOperation[] {HiveOperation.ALTERTABLE_UPDATETABLESTATS,
+        HiveOperation.ALTERTABLE_UPDATEPARTSTATS});
   }
 
-  public static BaseSemanticAnalyzer get(HiveConf conf, ASTNode tree)
+  public static BaseSemanticAnalyzer get(QueryState queryState, ASTNode tree)
       throws SemanticException {
     if (tree.getToken() == null) {
       throw new RuntimeException("Empty Syntax Tree");
     } else {
-      setSessionCommandType(commandType.get(tree.getType()));
-
+      HiveOperation opType = commandType.get(tree.getType());
+      queryState.setCommandType(opType);
       switch (tree.getType()) {
       case HiveParser.TOK_EXPLAIN:
-        return new ExplainSemanticAnalyzer(conf);
+        return new ExplainSemanticAnalyzer(queryState);
       case HiveParser.TOK_EXPLAIN_SQ_REWRITE:
-        return new ExplainSQRewriteSemanticAnalyzer(conf);
+        return new ExplainSQRewriteSemanticAnalyzer(queryState);
       case HiveParser.TOK_LOAD:
-        return new LoadSemanticAnalyzer(conf);
+        return new LoadSemanticAnalyzer(queryState);
       case HiveParser.TOK_EXPORT:
-        return new ExportSemanticAnalyzer(conf);
+        return new ExportSemanticAnalyzer(queryState);
       case HiveParser.TOK_IMPORT:
-        return new ImportSemanticAnalyzer(conf);
+        return new ImportSemanticAnalyzer(queryState);
+      case HiveParser.TOK_REPL_DUMP:
+        return new ReplicationSemanticAnalyzer(queryState);
+      case HiveParser.TOK_REPL_LOAD:
+        return new ReplicationSemanticAnalyzer(queryState);
+      case HiveParser.TOK_REPL_STATUS:
+        return new ReplicationSemanticAnalyzer(queryState);
       case HiveParser.TOK_ALTERTABLE: {
         Tree child = tree.getChild(1);
         switch (child.getType()) {
@@ -187,13 +212,15 @@ public final class SemanticAnalyzerFactory {
           case HiveParser.TOK_ALTERTABLE_DROPPROPERTIES:
           case HiveParser.TOK_ALTERTABLE_EXCHANGEPARTITION:
           case HiveParser.TOK_ALTERTABLE_SKEWED:
-          setSessionCommandType(commandType.get(child.getType()));
-          return new DDLSemanticAnalyzer(conf);
+          case HiveParser.TOK_ALTERTABLE_DROPCONSTRAINT:
+          case HiveParser.TOK_ALTERTABLE_ADDCONSTRAINT:
+          queryState.setCommandType(commandType.get(child.getType()));
+          return new DDLSemanticAnalyzer(queryState);
         }
-        HiveOperation commandType =
+        opType =
             tablePartitionCommandType.get(child.getType())[tree.getChildCount() > 2 ? 1 : 0];
-        setSessionCommandType(commandType);
-        return new DDLSemanticAnalyzer(conf);
+        queryState.setCommandType(opType);
+        return new DDLSemanticAnalyzer(queryState);
       }
       case HiveParser.TOK_ALTERVIEW: {
         Tree child = tree.getChild(1);
@@ -203,19 +230,21 @@ public final class SemanticAnalyzerFactory {
           case HiveParser.TOK_ALTERVIEW_ADDPARTS:
           case HiveParser.TOK_ALTERVIEW_DROPPARTS:
           case HiveParser.TOK_ALTERVIEW_RENAME:
-            setSessionCommandType(commandType.get(child.getType()));
-            return new DDLSemanticAnalyzer(conf);
+            opType = commandType.get(child.getType());
+            queryState.setCommandType(opType);
+            return new DDLSemanticAnalyzer(queryState);
         }
         // TOK_ALTERVIEW_AS
         assert child.getType() == HiveParser.TOK_QUERY;
-        setSessionCommandType(HiveOperation.ALTERVIEW_AS);
-        return new SemanticAnalyzer(conf);
+        queryState.setCommandType(HiveOperation.ALTERVIEW_AS);
+        return new SemanticAnalyzer(queryState);
       }
       case HiveParser.TOK_CREATEDATABASE:
       case HiveParser.TOK_DROPDATABASE:
       case HiveParser.TOK_SWITCHDATABASE:
       case HiveParser.TOK_DROPTABLE:
       case HiveParser.TOK_DROPVIEW:
+      case HiveParser.TOK_DROP_MATERIALIZED_VIEW:
       case HiveParser.TOK_DESCDATABASE:
       case HiveParser.TOK_DESCTABLE:
       case HiveParser.TOK_DESCFUNCTION:
@@ -227,6 +256,7 @@ public final class SemanticAnalyzerFactory {
       case HiveParser.TOK_SHOWCOLUMNS:
       case HiveParser.TOK_SHOW_TABLESTATUS:
       case HiveParser.TOK_SHOW_TBLPROPERTIES:
+      case HiveParser.TOK_SHOW_CREATEDATABASE:
       case HiveParser.TOK_SHOW_CREATETABLE:
       case HiveParser.TOK_SHOWFUNCTIONS:
       case HiveParser.TOK_SHOWPARTITIONS:
@@ -235,7 +265,9 @@ public final class SemanticAnalyzerFactory {
       case HiveParser.TOK_SHOWDBLOCKS:
       case HiveParser.TOK_SHOW_COMPACTIONS:
       case HiveParser.TOK_SHOW_TRANSACTIONS:
+      case HiveParser.TOK_ABORT_TRANSACTIONS:
       case HiveParser.TOK_SHOWCONF:
+      case HiveParser.TOK_SHOWVIEWS:
       case HiveParser.TOK_CREATEINDEX:
       case HiveParser.TOK_DROPINDEX:
       case HiveParser.TOK_ALTERTABLE_CLUSTER_SORT:
@@ -257,23 +289,25 @@ public final class SemanticAnalyzerFactory {
       case HiveParser.TOK_ALTERDATABASE_OWNER:
       case HiveParser.TOK_TRUNCATETABLE:
       case HiveParser.TOK_SHOW_SET_ROLE:
-        return new DDLSemanticAnalyzer(conf);
+      case HiveParser.TOK_CACHE_METADATA:
+        return new DDLSemanticAnalyzer(queryState);
 
       case HiveParser.TOK_CREATEFUNCTION:
       case HiveParser.TOK_DROPFUNCTION:
       case HiveParser.TOK_RELOADFUNCTION:
-        return new FunctionSemanticAnalyzer(conf);
+        return new FunctionSemanticAnalyzer(queryState);
 
       case HiveParser.TOK_ANALYZE:
-        return new ColumnStatsSemanticAnalyzer(conf);
+        return new ColumnStatsSemanticAnalyzer(queryState);
 
       case HiveParser.TOK_CREATEMACRO:
       case HiveParser.TOK_DROPMACRO:
-        return new MacroSemanticAnalyzer(conf);
+        return new MacroSemanticAnalyzer(queryState);
 
       case HiveParser.TOK_UPDATE_TABLE:
       case HiveParser.TOK_DELETE_FROM:
-        return new UpdateDeleteSemanticAnalyzer(conf);
+      case HiveParser.TOK_MERGE:
+        return new UpdateDeleteSemanticAnalyzer(queryState);
 
       case HiveParser.TOK_START_TRANSACTION:
       case HiveParser.TOK_COMMIT:
@@ -281,17 +315,11 @@ public final class SemanticAnalyzerFactory {
       case HiveParser.TOK_SET_AUTOCOMMIT:
       default: {
         SemanticAnalyzer semAnalyzer = HiveConf
-            .getBoolVar(conf, HiveConf.ConfVars.HIVE_CBO_ENABLED) ? new CalcitePlanner(conf)
-            : new SemanticAnalyzer(conf);
+            .getBoolVar(queryState.getConf(), HiveConf.ConfVars.HIVE_CBO_ENABLED) ?
+                new CalcitePlanner(queryState) : new SemanticAnalyzer(queryState);
         return semAnalyzer;
       }
       }
-    }
-  }
-
-  private static void setSessionCommandType(HiveOperation commandType) {
-    if (SessionState.get() != null) {
-      SessionState.get().setCommandType(commandType);
     }
   }
 

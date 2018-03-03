@@ -1,12 +1,8 @@
-PREHOOK: query: -- this is to test the case where some dynamic partitions are merged and some are moved
-
-create table srcpart_merge_dp like srcpart
+PREHOOK: query: create table srcpart_merge_dp like srcpart
 PREHOOK: type: CREATETABLE
 PREHOOK: Output: database:default
 PREHOOK: Output: default@srcpart_merge_dp
-POSTHOOK: query: -- this is to test the case where some dynamic partitions are merged and some are moved
-
-create table srcpart_merge_dp like srcpart
+POSTHOOK: query: create table srcpart_merge_dp like srcpart
 POSTHOOK: type: CREATETABLE
 POSTHOOK: Output: database:default
 POSTHOOK: Output: default@srcpart_merge_dp
@@ -216,13 +212,9 @@ ds=2008-04-08/hr=b1
 PREHOOK: query: select count(*) from merge_dynamic_part
 PREHOOK: type: QUERY
 PREHOOK: Input: default@merge_dynamic_part
-PREHOOK: Input: default@merge_dynamic_part@ds=2008-04-08/hr=a1
-PREHOOK: Input: default@merge_dynamic_part@ds=2008-04-08/hr=b1
 #### A masked pattern was here ####
 POSTHOOK: query: select count(*) from merge_dynamic_part
 POSTHOOK: type: QUERY
 POSTHOOK: Input: default@merge_dynamic_part
-POSTHOOK: Input: default@merge_dynamic_part@ds=2008-04-08/hr=a1
-POSTHOOK: Input: default@merge_dynamic_part@ds=2008-04-08/hr=b1
 #### A masked pattern was here ####
 618

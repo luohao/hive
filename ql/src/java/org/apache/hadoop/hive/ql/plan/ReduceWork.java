@@ -19,25 +19,26 @@
 package org.apache.hadoop.hive.ql.plan;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Map.Entry;
 import java.util.Set;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.ql.exec.FileSinkOperator;
+import org.apache.hadoop.hive.ql.exec.JoinOperator;
 import org.apache.hadoop.hive.ql.exec.Operator;
 import org.apache.hadoop.hive.ql.exec.OperatorUtils;
-import org.apache.hadoop.hive.ql.exec.Utilities;
+import org.apache.hadoop.hive.ql.optimizer.physical.VectorizerReason;
+import org.apache.hadoop.hive.ql.plan.BaseWork.BaseExplainVectorization;
 import org.apache.hadoop.hive.ql.plan.Explain.Level;
+import org.apache.hadoop.hive.ql.plan.Explain.Vectorization;
 import org.apache.hadoop.hive.serde2.Deserializer;
 import org.apache.hadoop.hive.serde2.SerDeUtils;
 import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspector;
-import org.apache.hadoop.hive.serde2.objectinspector.StructField;
-import org.apache.hadoop.hive.serde2.objectinspector.StructObjectInspector;
 import org.apache.hadoop.mapred.JobConf;
 import org.apache.hive.common.util.ReflectionUtil;
 
@@ -62,8 +63,6 @@ public class ReduceWork extends BaseWork {
   public ReduceWork(String name) {
     super(name);
   }
-
-  private static transient final Log LOG = LogFactory.getLog(ReduceWork.class);
 
   // schema of the map-reduce 'key' object - this is homogeneous
   private TableDesc keyDesc;
@@ -96,6 +95,9 @@ public class ReduceWork extends BaseWork {
   private ObjectInspector keyObjectInspector = null;
   private ObjectInspector valueObjectInspector = null;
 
+  private boolean reduceVectorizationEnabled;
+  private String vectorReduceEngine;
+
   /**
    * If the plan has a reducer and correspondingly a reduce-sink, then store the TableDesc pointing
    * to keySerializeInfo of the ReduceSink
@@ -110,37 +112,6 @@ public class ReduceWork extends BaseWork {
      return keyDesc;
   }
 
-  private ObjectInspector getObjectInspector(TableDesc desc) {
-    ObjectInspector objectInspector;
-    try {
-      Deserializer deserializer = ReflectionUtil.newInstance(desc
-                .getDeserializerClass(), null);
-      SerDeUtils.initializeSerDe(deserializer, null, desc.getProperties(), null);
-      objectInspector = deserializer.getObjectInspector();
-    } catch (Exception e) {
-      return null;
-    }
-    return objectInspector;
-  }
-
-  public ObjectInspector getKeyObjectInspector() {
-    if (keyObjectInspector == null) {
-      keyObjectInspector = getObjectInspector(keyDesc);
-    }
-    return keyObjectInspector;
-  }
-
-  // Only works when not tagging.
-  public ObjectInspector getValueObjectInspector() {
-    if (needsTagging) {
-      return null;
-    }
-    if (valueObjectInspector == null) {
-      valueObjectInspector = getObjectInspector(tagToValueDesc.get(tag));
-    }
-    return valueObjectInspector;
-  }
-
   public List<TableDesc> getTagToValueDesc() {
     return tagToValueDesc;
   }
@@ -149,12 +120,27 @@ public class ReduceWork extends BaseWork {
     this.tagToValueDesc = tagToValueDesc;
   }
 
-  @Explain(displayName = "Execution mode")
-  public String getVectorModeOn() {
-    return vectorMode ? "vectorized" : null;
+  @Explain(displayName = "Execution mode", explainLevels = { Level.USER, Level.DEFAULT, Level.EXTENDED },
+      vectorization = Vectorization.SUMMARY_PATH)
+  public String getExecutionMode() {
+    if (vectorMode) {
+      if (llapMode) {
+	if (uberMode) {
+	  return "vectorized, uber";
+	} else {
+	  return "vectorized, llap";
+	}
+      } else {
+	return "vectorized";
+      }
+    } else if (llapMode) {
+      return uberMode? "uber" : "llap";
+    }
+    return null;
   }
 
-  @Explain(displayName = "Reduce Operator Tree", explainLevels = { Level.USER, Level.DEFAULT, Level.EXTENDED })
+  @Explain(displayName = "Reduce Operator Tree", explainLevels = { Level.USER, Level.DEFAULT, Level.EXTENDED },
+      vectorization = Vectorization.OPERATOR_PATH)
   public Operator<?> getReducer() {
     return reducer;
   }
@@ -176,6 +162,7 @@ public class ReduceWork extends BaseWork {
     this.tagToInput = tagToInput;
   }
 
+  @Explain(displayName = "tagToInput", explainLevels = { Level.USER })
   public Map<Integer, String> getTagToInput() {
     return tagToInput;
   }
@@ -190,6 +177,11 @@ public class ReduceWork extends BaseWork {
     Set<Operator<?>> opSet = new LinkedHashSet<Operator<?>>();
     opSet.add(getReducer());
     return opSet;
+  }
+
+  @Override
+  public Operator<? extends OperatorDesc> getAnyRootOperator() {
+    return getReducer();
   }
 
   /**
@@ -239,5 +231,82 @@ public class ReduceWork extends BaseWork {
 
   public void setMaxReduceTasks(int maxReduceTasks) {
     this.maxReduceTasks = maxReduceTasks;
+  }
+
+  public void setReduceVectorizationEnabled(boolean reduceVectorizationEnabled) {
+    this.reduceVectorizationEnabled = reduceVectorizationEnabled;
+  }
+
+  public boolean getReduceVectorizationEnabled() {
+    return reduceVectorizationEnabled;
+  }
+
+  public void setVectorReduceEngine(String vectorReduceEngine) {
+    this.vectorReduceEngine = vectorReduceEngine;
+  }
+
+  public String getVectorReduceEngine() {
+    return vectorReduceEngine;
+  }
+
+  // Use LinkedHashSet to give predictable display order.
+  private static Set<String> reduceVectorizableEngines =
+      new LinkedHashSet<String>(Arrays.asList("tez", "spark"));
+
+  public class ReduceExplainVectorization extends BaseExplainVectorization {
+
+    private final ReduceWork reduceWork;
+
+    private VectorizationCondition[] reduceVectorizationConditions;
+
+    public ReduceExplainVectorization(ReduceWork reduceWork) {
+      super(reduceWork);
+      this.reduceWork = reduceWork;
+    }
+
+    private VectorizationCondition[] createReduceExplainVectorizationConditions() {
+
+      boolean enabled = reduceWork.getReduceVectorizationEnabled();
+
+      String engine = reduceWork.getVectorReduceEngine();
+      String engineInSupportedCondName =
+          HiveConf.ConfVars.HIVE_EXECUTION_ENGINE.varname + " " + engine + " IN " + reduceVectorizableEngines;
+
+      boolean engineInSupported = reduceVectorizableEngines.contains(engine);
+
+      VectorizationCondition[] conditions = new VectorizationCondition[] {
+          new VectorizationCondition(
+              enabled,
+              HiveConf.ConfVars.HIVE_VECTORIZATION_REDUCE_ENABLED.varname),
+          new VectorizationCondition(
+              engineInSupported,
+              engineInSupportedCondName)
+      };
+      return conditions;
+    }
+
+    @Explain(vectorization = Vectorization.SUMMARY, displayName = "enableConditionsMet", explainLevels = { Level.DEFAULT, Level.EXTENDED })
+    public List<String> getEnableConditionsMet() {
+      if (reduceVectorizationConditions == null) {
+        reduceVectorizationConditions = createReduceExplainVectorizationConditions();
+      }
+      return VectorizationCondition.getConditionsMet(reduceVectorizationConditions);
+    }
+
+    @Explain(vectorization = Vectorization.SUMMARY, displayName = "enableConditionsNotMet", explainLevels = { Level.DEFAULT, Level.EXTENDED })
+    public List<String> getEnableConditionsNotMet() {
+      if (reduceVectorizationConditions == null) {
+        reduceVectorizationConditions = createReduceExplainVectorizationConditions();
+      }
+      return VectorizationCondition.getConditionsNotMet(reduceVectorizationConditions);
+    }
+  }
+
+  @Explain(vectorization = Vectorization.SUMMARY, displayName = "Reduce Vectorization", explainLevels = { Level.DEFAULT, Level.EXTENDED })
+  public ReduceExplainVectorization getReduceExplainVectorization() {
+    if (!getVectorizationExamined()) {
+      return null;
+    }
+    return new ReduceExplainVectorization(this);
   }
 }

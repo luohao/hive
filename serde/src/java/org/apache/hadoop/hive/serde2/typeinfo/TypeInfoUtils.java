@@ -23,6 +23,7 @@ import java.lang.reflect.Method;
 import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.Type;
 import java.util.ArrayList;
+import java.util.EnumMap;
 import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.List;
@@ -45,6 +46,7 @@ import org.apache.hadoop.hive.serde2.objectinspector.StructObjectInspector;
 import org.apache.hadoop.hive.serde2.objectinspector.UnionObjectInspector;
 import org.apache.hadoop.hive.serde2.objectinspector.primitive.PrimitiveObjectInspectorFactory;
 import org.apache.hadoop.hive.serde2.objectinspector.primitive.PrimitiveObjectInspectorUtils;
+import org.apache.hadoop.hive.serde2.objectinspector.primitive.PrimitiveObjectInspectorUtils.PrimitiveGrouping;
 import org.apache.hadoop.hive.serde2.objectinspector.primitive.PrimitiveObjectInspectorUtils.PrimitiveTypeEntry;
 
 /**
@@ -52,6 +54,25 @@ import org.apache.hadoop.hive.serde2.objectinspector.primitive.PrimitiveObjectIn
  *
  */
 public final class TypeInfoUtils {
+
+  public static List<PrimitiveCategory> numericTypeList = new ArrayList<PrimitiveCategory>();
+  // The ordering of types here is used to determine which numeric types
+  // are common/convertible to one another. Probably better to rely on the
+  // ordering explicitly defined here than to assume that the enum values
+  // that were arbitrarily assigned in PrimitiveCategory work for our purposes.
+  public static EnumMap<PrimitiveCategory, Integer> numericTypes =
+      new EnumMap<PrimitiveCategory, Integer>(PrimitiveCategory.class);
+
+  static {
+    registerNumericType(PrimitiveCategory.BYTE, 1);
+    registerNumericType(PrimitiveCategory.SHORT, 2);
+    registerNumericType(PrimitiveCategory.INT, 3);
+    registerNumericType(PrimitiveCategory.LONG, 4);
+    registerNumericType(PrimitiveCategory.DECIMAL, 5);
+    registerNumericType(PrimitiveCategory.FLOAT, 6);
+    registerNumericType(PrimitiveCategory.DOUBLE, 7);
+    registerNumericType(PrimitiveCategory.STRING, 8);
+  }
 
   private TypeInfoUtils() {
     // prevent instantiation
@@ -256,7 +277,7 @@ public final class TypeInfoUtils {
     };
 
     private static boolean isTypeChar(char c) {
-      return Character.isLetterOrDigit(c) || c == '_' || c == '.' || c == ' ';
+      return Character.isLetterOrDigit(c) || c == '_' || c == '.' || c == ' ' || c == '$';
     }
 
     /**
@@ -266,6 +287,9 @@ public final class TypeInfoUtils {
      *
      * tokenize("map<int,string>") should return
      * ["map","<","int",",","string",">"]
+     *
+     * Note that we add '$' in new Calcite return path. As '$' will not appear
+     * in any type in Hive, it is safe to do so.
      */
     private static ArrayList<Token> tokenize(String typeInfoString) {
       ArrayList<Token> tokens = new ArrayList<Token>(0);
@@ -406,7 +430,7 @@ public final class TypeInfoUtils {
 
           int length = 1;
           if (params.length == 1) {
-            length = Integer.valueOf(params[0]);
+            length = Integer.parseInt(params[0]);
             if (typeEntry.primitiveCategory == PrimitiveCategory.VARCHAR) {
               BaseCharUtils.validateVarcharParameter(length);
               return TypeInfoFactory.getVarcharTypeInfo(length);
@@ -427,8 +451,8 @@ public final class TypeInfoUtils {
             // precision/scale. In this case, the default (10,0) is assumed. Thus, do nothing here.
           } else if (params.length == 2) {
             // New metadata always have two parameters.
-            precision = Integer.valueOf(params[0]);
-            scale = Integer.valueOf(params[1]);
+            precision = Integer.parseInt(params[0]);
+            scale = Integer.parseInt(params[1]);
             HiveDecimalUtils.validateParameter(precision, scale);
           } else if (params.length > 2) {
             throw new IllegalArgumentException("Type decimal only takes two parameter, but " +
@@ -760,9 +784,46 @@ public final class TypeInfoUtils {
     return result;
   }
 
+  public static ArrayList<TypeInfo> typeInfosFromStructObjectInspector(
+      StructObjectInspector structObjectInspector) {
+
+    List<? extends StructField> fields = structObjectInspector.getAllStructFieldRefs();
+    ArrayList<TypeInfo> typeInfoList = new ArrayList<TypeInfo>(fields.size());
+
+    for(StructField field : fields) {
+      TypeInfo typeInfo = TypeInfoUtils.getTypeInfoFromTypeString(
+          field.getFieldObjectInspector().getTypeName());
+      typeInfoList.add(typeInfo);
+    }
+    return typeInfoList;
+  }
+
+  public static ArrayList<TypeInfo> typeInfosFromTypeNames(List<String> typeNames) {
+
+    ArrayList<TypeInfo> result = new ArrayList<TypeInfo>(typeNames.size());
+
+    for(int i = 0; i < typeNames.size(); i++) {
+      TypeInfo typeInfo = TypeInfoUtils.getTypeInfoFromTypeString(typeNames.get(i));
+      result.add(typeInfo);
+    }
+    return result;
+  }
+
   public static ArrayList<TypeInfo> getTypeInfosFromTypeString(String typeString) {
     TypeInfoParser parser = new TypeInfoParser(typeString);
     return parser.parseTypeInfos();
+  }
+
+  public static List<String> getTypeStringsFromTypeInfo(List<TypeInfo> typeInfos) {
+    if (typeInfos == null) {
+      return null;
+    }
+
+    List<String> result = new ArrayList<>(typeInfos.size());
+    for (TypeInfo typeInfo : typeInfos) {
+      result.add(typeInfo.toString());
+    }
+    return result;
   }
 
   public static TypeInfo getTypeInfoFromTypeString(String typeString) {
@@ -806,5 +867,77 @@ public final class TypeInfoUtils {
       default:
         return 0;
     }
+  }
+
+  public static synchronized void registerNumericType(PrimitiveCategory primitiveCategory, int level) {
+    numericTypeList.add(primitiveCategory);
+    numericTypes.put(primitiveCategory, level);
+  }
+
+  /**
+   * Test if it's implicitly convertible for data comparison.
+   */
+  public static boolean implicitConvertible(PrimitiveCategory from, PrimitiveCategory to) {
+    if (from == to) {
+      return true;
+    }
+
+    PrimitiveGrouping fromPg = PrimitiveObjectInspectorUtils.getPrimitiveGrouping(from);
+    PrimitiveGrouping toPg = PrimitiveObjectInspectorUtils.getPrimitiveGrouping(to);
+
+    // Allow implicit String to Double conversion
+    if (fromPg == PrimitiveGrouping.STRING_GROUP && to == PrimitiveCategory.DOUBLE) {
+      return true;
+    }
+
+    // Void can be converted to any type
+    if (from == PrimitiveCategory.VOID) {
+      return true;
+    }
+
+    // Allow implicit String to Date conversion
+    if (fromPg == PrimitiveGrouping.DATE_GROUP && toPg == PrimitiveGrouping.STRING_GROUP) {
+      return true;
+    }
+    // Allow implicit Numeric to String conversion
+    if (fromPg == PrimitiveGrouping.NUMERIC_GROUP && toPg == PrimitiveGrouping.STRING_GROUP) {
+      return true;
+    }
+    // Allow implicit String to varchar conversion, and vice versa
+    if (fromPg == PrimitiveGrouping.STRING_GROUP && toPg == PrimitiveGrouping.STRING_GROUP) {
+      return true;
+    }
+
+    // Allow implicit conversion from Byte -> Integer -> Long -> Float -> Double
+    // Decimal -> String
+    Integer f = numericTypes.get(from);
+    Integer t = numericTypes.get(to);
+    if (f == null || t == null) {
+      return false;
+    }
+    if (f.intValue() > t.intValue()) {
+      return false;
+    }
+    return true;
+  }
+
+  /**
+   * Returns whether it is possible to implicitly convert an object of Class
+   * from to Class to.
+   */
+  public static boolean implicitConvertible(TypeInfo from, TypeInfo to) {
+    if (from.equals(to)) {
+      return true;
+    }
+
+    // Reimplemented to use PrimitiveCategory rather than TypeInfo, because
+    // 2 TypeInfos from the same qualified type (varchar, decimal) should still be
+    // seen as equivalent.
+    if (from.getCategory() == Category.PRIMITIVE && to.getCategory() == Category.PRIMITIVE) {
+      return implicitConvertible(
+          ((PrimitiveTypeInfo) from).getPrimitiveCategory(),
+          ((PrimitiveTypeInfo) to).getPrimitiveCategory());
+    }
+    return false;
   }
 }

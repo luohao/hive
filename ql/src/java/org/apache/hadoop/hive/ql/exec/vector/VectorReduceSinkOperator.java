@@ -18,15 +18,15 @@
 
 package org.apache.hadoop.hive.ql.exec.vector;
 
-import java.util.Collection;
-import java.util.concurrent.Future;
-
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hive.ql.CompilationOpContext;
 import org.apache.hadoop.hive.ql.exec.ReduceSinkOperator;
 import org.apache.hadoop.hive.ql.metadata.HiveException;
 import org.apache.hadoop.hive.ql.plan.OperatorDesc;
 import org.apache.hadoop.hive.ql.plan.ReduceSinkDesc;
 import org.apache.hadoop.hive.serde2.objectinspector.StructObjectInspector;
+
+import com.google.common.annotations.VisibleForTesting;
 
 public class VectorReduceSinkOperator extends ReduceSinkOperator {
 
@@ -40,24 +40,30 @@ public class VectorReduceSinkOperator extends ReduceSinkOperator {
 
   private transient boolean firstBatch;
 
-  private transient VectorExtractRowDynBatch vectorExtractRowDynBatch;
+  private transient VectorExtractRow vectorExtractRow;
 
   protected transient Object[] singleRow;
 
-  public VectorReduceSinkOperator(VectorizationContext vContext, OperatorDesc conf)
-      throws HiveException {
-    this();
+  public VectorReduceSinkOperator(CompilationOpContext ctx,
+      VectorizationContext vContext, OperatorDesc conf) throws HiveException {
+    this(ctx);
     ReduceSinkDesc desc = (ReduceSinkDesc) conf;
     this.conf = desc;
     this.vContext = vContext;
   }
 
+  /** Kryo ctor. */
+  @VisibleForTesting
   public VectorReduceSinkOperator() {
     super();
   }
 
+  public VectorReduceSinkOperator(CompilationOpContext ctx) {
+    super(ctx);
+  }
+
   @Override
-  protected Collection<Future<?>> initializeOp(Configuration hconf) throws HiveException {
+  protected void initializeOp(Configuration hconf) throws HiveException {
 
     // We need a input object inspector that is for the row we will extract out of the
     // vectorized row batch, not for example, an original inspector for an ORC table, etc.
@@ -65,12 +71,9 @@ public class VectorReduceSinkOperator extends ReduceSinkOperator {
         VectorizedBatchUtil.convertToStandardStructObjectInspector((StructObjectInspector) inputObjInspectors[0]);
 
     // Call ReduceSinkOperator with new input inspector.
-    Collection<Future<?>> result = super.initializeOp(hconf);
-    assert result.isEmpty();
+    super.initializeOp(hconf);
 
     firstBatch = true;
-
-    return result;
   }
 
   @Override
@@ -78,15 +81,13 @@ public class VectorReduceSinkOperator extends ReduceSinkOperator {
 
     VectorizedRowBatch batch = (VectorizedRowBatch) data;
     if (firstBatch) {
-      vectorExtractRowDynBatch = new VectorExtractRowDynBatch();
-      vectorExtractRowDynBatch.init((StructObjectInspector) inputObjInspectors[0], vContext.getProjectedColumns());
+      vectorExtractRow = new VectorExtractRow();
+      vectorExtractRow.init((StructObjectInspector) inputObjInspectors[0], vContext.getProjectedColumns());
 
-      singleRow = new Object[vectorExtractRowDynBatch.getCount()];
+      singleRow = new Object[vectorExtractRow.getCount()];
 
       firstBatch = false;
     }
-
-    vectorExtractRowDynBatch.setBatchOnEntry(batch);
 
     // VectorizedBatchUtil.debugDisplayBatch( batch, "VectorReduceSinkOperator processOp ");
 
@@ -94,16 +95,14 @@ public class VectorReduceSinkOperator extends ReduceSinkOperator {
       int selected[] = batch.selected;
       for (int logical = 0 ; logical < batch.size; logical++) {
         int batchIndex = selected[logical];
-        vectorExtractRowDynBatch.extractRow(batchIndex, singleRow);
+        vectorExtractRow.extractRow(batch, batchIndex, singleRow);
         super.process(singleRow, tag);
       }
     } else {
       for (int batchIndex = 0 ; batchIndex < batch.size; batchIndex++) {
-        vectorExtractRowDynBatch.extractRow(batchIndex, singleRow);
+        vectorExtractRow.extractRow(batch, batchIndex, singleRow);
         super.process(singleRow, tag);
       }
     }
-
-    vectorExtractRowDynBatch.forgetBatchOnExit();
   }
 }

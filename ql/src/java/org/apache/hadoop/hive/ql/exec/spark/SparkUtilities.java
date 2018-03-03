@@ -22,8 +22,6 @@ import java.io.IOException;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.util.Collection;
-import java.util.UUID;
-import java.util.Collection;
 
 import com.google.common.base.Preconditions;
 import org.apache.commons.io.FilenameUtils;
@@ -41,6 +39,7 @@ import org.apache.hadoop.hive.ql.plan.BaseWork;
 import org.apache.hadoop.hive.ql.plan.SparkWork;
 import org.apache.hadoop.hive.ql.session.SessionState;
 import org.apache.hadoop.io.BytesWritable;
+import org.apache.hive.spark.client.SparkClientUtilities;
 import org.apache.spark.Dependency;
 import org.apache.spark.SparkConf;
 import org.apache.spark.api.java.JavaPairRDD;
@@ -67,20 +66,6 @@ public class SparkUtilities {
     return copy;
   }
 
-  public static URI getURI(String path) throws URISyntaxException {
-    if (path == null) {
-      return null;
-    }
-
-      URI uri = new URI(path);
-      if (uri.getScheme() == null) {
-        // if no file schema in path, we assume it's file on local fs.
-        uri = new File(path).toURI();
-      }
-
-    return uri;
-  }
-
   /**
    * Uploads a local file to HDFS
    *
@@ -91,18 +76,22 @@ public class SparkUtilities {
    */
   public static URI uploadToHDFS(URI source, HiveConf conf) throws IOException {
     Path localFile = new Path(source.getPath());
-    // give the uploaded file a UUID
-    Path remoteFile = new Path(SessionState.getHDFSSessionPath(conf),
-        UUID.randomUUID() + "-" + getFileName(source));
+    Path remoteFile = new Path(SessionState.get().getSparkSession().getHDFSSessionDir(),
+        getFileName(source));
     FileSystem fileSystem = FileSystem.get(conf);
-    fileSystem.copyFromLocalFile(localFile, remoteFile);
+    // Overwrite if the remote file already exists. Whether the file can be added
+    // on executor is up to spark, i.e. spark.files.overwrite
+    fileSystem.copyFromLocalFile(false, true, localFile, remoteFile);
     Path fullPath = fileSystem.getFileStatus(remoteFile).getPath();
     return fullPath.toUri();
   }
 
   // checks if a resource has to be uploaded to HDFS for yarn-cluster mode
   public static boolean needUploadToHDFS(URI source, SparkConf sparkConf) {
-    return sparkConf.get("spark.master").equals("yarn-cluster") &&
+    String master = sparkConf.get("spark.master");
+    String deployMode = sparkConf.contains("spark.submit.deployMode") ?
+        sparkConf.get("spark.submit.deployMode") : null;
+    return SparkClientUtilities.isYarnClusterMode(master, deployMode) &&
         !source.getScheme().equals("hdfs");
   }
 
@@ -117,18 +106,22 @@ public class SparkUtilities {
 
   public static boolean isDedicatedCluster(Configuration conf) {
     String master = conf.get("spark.master");
-    return master.startsWith("yarn-") || master.startsWith("local");
+    return SparkClientUtilities.isYarnMaster(master) || SparkClientUtilities.isLocalMaster(master);
   }
 
   public static SparkSession getSparkSession(HiveConf conf,
       SparkSessionManager sparkSessionManager) throws HiveException {
     SparkSession sparkSession = SessionState.get().getSparkSession();
+    HiveConf sessionConf = SessionState.get().getConf();
 
     // Spark configurations are updated close the existing session
-    if (conf.getSparkConfigUpdated()) {
+    // In case of async queries or confOverlay is not empty,
+    // sessionConf and conf are different objects
+    if (sessionConf.getSparkConfigUpdated() || conf.getSparkConfigUpdated()) {
       sparkSessionManager.closeSession(sparkSession);
       sparkSession =  null;
       conf.setSparkConfigUpdated(false);
+      sessionConf.setSparkConfigUpdated(false);
     }
     sparkSession = sparkSessionManager.getSession(sparkSession, conf, true);
     SessionState.get().setSparkSession(sparkSession);

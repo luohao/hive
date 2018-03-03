@@ -21,12 +21,13 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.conf.HiveConf.ConfVars;
 import org.apache.hadoop.hive.metastore.IMetaStoreClient;
+import org.apache.hadoop.hive.ql.parse.SemanticException;
 import org.apache.hadoop.hive.ql.security.HiveAuthenticationProvider;
 import org.apache.hadoop.hive.ql.security.authorization.plugin.HiveAccessControlException;
 import org.apache.hadoop.hive.ql.security.authorization.plugin.HiveAuthorizationValidator;
@@ -48,7 +49,7 @@ public class SQLStdHiveAuthorizationValidator implements HiveAuthorizationValida
   private final HiveAuthenticationProvider authenticator;
   private final SQLStdHiveAccessControllerWrapper privController;
   private final HiveAuthzSessionContext ctx;
-  public static final Log LOG = LogFactory.getLog(SQLStdHiveAuthorizationValidator.class);
+  public static final Logger LOG = LoggerFactory.getLogger(SQLStdHiveAuthorizationValidator.class);
 
   public SQLStdHiveAuthorizationValidator(HiveMetastoreClientFactory metastoreClientFactory,
       HiveConf conf, HiveAuthenticationProvider authenticator,
@@ -60,17 +61,6 @@ public class SQLStdHiveAuthorizationValidator implements HiveAuthorizationValida
     this.authenticator = authenticator;
     this.privController = privilegeManager;
     this.ctx = SQLAuthorizationUtils.applyTestSettings(ctx, conf);
-    assertHiveCliAuthDisabled(conf);
-  }
-
-  private void assertHiveCliAuthDisabled(HiveConf conf) throws HiveAuthzPluginException {
-    if (ctx.getClientType() == CLIENT_TYPE.HIVECLI
-        && conf.getBoolVar(ConfVars.HIVE_AUTHORIZATION_ENABLED)) {
-      throw new HiveAuthzPluginException(
-          "SQL standards based authorization should not be enabled from hive cli"
-              + "Instead the use of storage based authorization in hive metastore is reccomended. Set "
-              + ConfVars.HIVE_AUTHORIZATION_ENABLED.varname + "=false to disable authz within cli");
-    }
   }
 
   @Override
@@ -158,6 +148,17 @@ public class SQLStdHiveAuthorizationValidator implements HiveAuthorizationValida
       LOG.debug(msg);
     }
     return listObjs;
+  }
+
+  @Override
+  public boolean needTransform() {
+    return false;
+  }
+
+  @Override
+  public List<HivePrivilegeObject> applyRowFilterAndColumnMasking(HiveAuthzContext context,
+      List<HivePrivilegeObject> privObjs) throws SemanticException {
+    return null;
   }
 
 }

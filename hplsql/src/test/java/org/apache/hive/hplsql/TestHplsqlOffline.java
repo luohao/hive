@@ -34,8 +34,23 @@ public class TestHplsqlOffline {
   private final ByteArrayOutputStream out = new ByteArrayOutputStream();
 
   @Test
+  public void testCreateTableDb2() throws Exception {
+    run("create_table_db2");
+  }
+  
+  @Test
   public void testCreateTableMssql() throws Exception {
     run("create_table_mssql");
+  }
+  
+  @Test
+  public void testCreateTableMssql2() throws Exception {
+    run("create_table_mssql2");
+  }
+  
+  @Test
+  public void testCreateTableMysql() throws Exception {
+    run("create_table_mysql");
   }
 
   @Test
@@ -43,6 +58,51 @@ public class TestHplsqlOffline {
     run("create_table_ora");
   }
   
+  @Test
+  public void testCreateTableOra2() throws Exception {
+    run("create_table_ora2");
+  }
+  
+  @Test
+  public void testCreateTablePg() throws Exception {
+    run("create_table_pg");
+  }
+  
+  @Test
+  public void testCreateTableTd() throws Exception {
+    run("create_table_td");
+  }
+  
+  @Test
+  public void testDeleteAll() throws Exception {
+    run("delete_all");
+  }
+  
+  @Test
+  public void testInsertMysql() throws Exception {
+    run("insert_mysql");
+  }
+
+  @Test
+  public void testSelect() throws Exception {
+    run("select");
+  }
+  
+  @Test
+  public void testSelectDb2() throws Exception {
+    run("select_db2");
+  }
+  
+  @Test
+  public void testSelectTeradata() throws Exception {
+    run("select_teradata");
+  }
+  
+  @Test
+  public void testUpdate() throws Exception {
+    run("update");
+  }
+
   /**
    * Run a test file
    */
@@ -66,7 +126,7 @@ public class TestHplsqlOffline {
     BufferedReader reader = new BufferedReader(new StringReader(s));
     String line = null;
     while ((line = reader.readLine()) != null) {
-      if (!line.startsWith("log4j:")) {
+      if (!line.startsWith("log4j:") && !line.contains("INFO Log4j")) {
         sb.append(line);
         sb.append("\n");
       }

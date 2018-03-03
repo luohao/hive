@@ -21,12 +21,10 @@ package org.apache.hadoop.hive.serde2;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 
-import org.apache.hadoop.hive.serde2.ByteStream.Output;
 import org.apache.hadoop.hive.serde2.ByteStream.RandomAccessOutput;
-import org.apache.hadoop.hive.serde2.binarysortable.BinarySortableSerDe;
 import org.apache.hadoop.hive.serde2.lazybinary.LazyBinaryUtils;
-import org.apache.hadoop.hive.serde2.objectinspector.PrimitiveObjectInspector.PrimitiveCategory;
 import org.apache.hadoop.io.WritableUtils;
+import org.apache.hive.common.util.HashCodeUtil;
 
 
 /**
@@ -52,7 +50,7 @@ public final class WriteBuffers implements RandomAccessOutput {
   }
 
   Position writePos = new Position(); // Position where we'd write
-  Position defaultReadPos = new Position(); // Position where we'd read (by default).
+  Position unsafeReadPos = new Position(); // Position where we'd read (unsafely at write time).
 
 
   public WriteBuffers(int wbSize, long maxSize) {
@@ -61,19 +59,20 @@ public final class WriteBuffers implements RandomAccessOutput {
     this.offsetMask = this.wbSize - 1;
     this.maxSize = maxSize;
     writePos.bufferIndex = -1;
-    nextBufferToWrite();
   }
 
-  public int readVInt() {
-    return (int) readVLong(defaultReadPos);
+  /** THIS METHOD IS NOT THREAD-SAFE. Use only at load time (or be mindful of thread safety). */
+  public int unsafeReadVInt() {
+    return (int) readVLong(unsafeReadPos);
   }
 
   public int readVInt(Position readPos) {
     return (int) readVLong(readPos);
   }
 
-  public long readVLong() {
-    return readVLong(defaultReadPos);
+  /** THIS METHOD IS NOT THREAD-SAFE. Use only at load time (or be mindful of thread safety). */
+  public long unsafeReadVLong() {
+    return readVLong(unsafeReadPos);
   }
 
   public long readVLong(Position readPos) {
@@ -97,8 +96,9 @@ public final class WriteBuffers implements RandomAccessOutput {
     return (WritableUtils.isNegativeVInt(firstByte) ? (i ^ -1L) : i);
   }
 
-  public void skipVLong() {
-    skipVLong(defaultReadPos);
+  /** THIS METHOD IS NOT THREAD-SAFE. Use only at load time (or be mindful of thread safety). */
+  public void unsafeSkipVLong() {
+    skipVLong(unsafeReadPos);
   }
 
   public void skipVLong(Position readPos) {
@@ -117,8 +117,9 @@ public final class WriteBuffers implements RandomAccessOutput {
     }
   }
 
-  public void setReadPoint(long offset) {
-    setReadPoint(offset, defaultReadPos);
+  /** THIS METHOD IS NOT THREAD-SAFE. Use only at load time (or be mindful of thread safety). */
+  public void setUnsafeReadPoint(long offset) {
+    setReadPoint(offset, unsafeReadPos);
   }
 
   public void setReadPoint(long offset, Position readPos) {
@@ -127,14 +128,15 @@ public final class WriteBuffers implements RandomAccessOutput {
     readPos.offset = getOffset(offset);
   }
 
-  public int hashCode(long offset, int length) {
-    return hashCode(offset, length, defaultReadPos);
+  /** THIS METHOD IS NOT THREAD-SAFE. Use only at load time (or be mindful of thread safety). */
+  public int unsafeHashCode(long offset, int length) {
+    return hashCode(offset, length, unsafeReadPos);
   }
 
   public int hashCode(long offset, int length, Position readPos) {
     setReadPoint(offset, readPos);
     if (isAllInOneReadBuffer(length, readPos)) {
-      int result = murmurHash(readPos.buffer, readPos.offset, length);
+      int result = HashCodeUtil.murmurHash(readPos.buffer, readPos.offset, length);
       readPos.offset += length;
       return result;
     }
@@ -149,7 +151,7 @@ public final class WriteBuffers implements RandomAccessOutput {
       readPos.offset += toRead;
       destOffset += toRead;
     }
-    return murmurHash(bytes, 0, bytes.length);
+    return HashCodeUtil.murmurHash(bytes, 0, bytes.length);
   }
 
   private byte readNextByte(Position readPos) {
@@ -167,7 +169,7 @@ public final class WriteBuffers implements RandomAccessOutput {
   }
 
   public int hashCode(byte[] key, int offset, int length) {
-    return murmurHash(key, offset, length);
+    return HashCodeUtil.murmurHash(key, offset, length);
   }
 
   private void setByte(long offset, byte value) {
@@ -207,6 +209,9 @@ public final class WriteBuffers implements RandomAccessOutput {
 
   @Override
   public void write(byte[] b, int off, int len) {
+    if (writePos.bufferIndex == -1) {
+      nextBufferToWrite();
+    }
     int srcOffset = 0;
     while (srcOffset < len) {
       int toWrite = Math.min(len - srcOffset, wbSize - writePos.offset);
@@ -279,58 +284,27 @@ public final class WriteBuffers implements RandomAccessOutput {
     return true;
   }
 
-  /**
-   * Compares part of the buffer with a part of an external byte array.
-   * Does not modify readPoint.
-   */
-  public boolean isEqual(byte[] left, int leftLength, long rightOffset, int rightLength) {
-    if (rightLength != leftLength) {
-      return false;
-    }
-    int rightIndex = getBufferIndex(rightOffset), rightFrom = getOffset(rightOffset);
-    byte[] rightBuffer = writeBuffers.get(rightIndex);
-    if (rightFrom + rightLength <= wbSize) {
-      // TODO: allow using unsafe optionally.
-      for (int i = 0; i < leftLength; ++i) {
-        if (left[i] != rightBuffer[rightFrom + i]) {
-          return false;
-        }
-      }
+  private final boolean isEqual(byte[] left, int leftOffset, int rightIndex, int rightFrom, int length) {
+    if (length == 0) {
       return true;
     }
-    for (int i = 0; i < rightLength; ++i) {
-      if (rightFrom == wbSize) {
-        ++rightIndex;
-        rightBuffer = writeBuffers.get(rightIndex);
-        rightFrom = 0;
-      }
-      if (left[i] != rightBuffer[rightFrom++]) {
+    // invariant: rightLength = leftLength
+    // rightOffset is within the buffers
+    byte[] rightBuffer = writeBuffers.get(rightIndex);
+    if (rightFrom + length <= wbSize) {
+      // TODO: allow using unsafe optionally.
+      // bounds check first, to trigger bugs whether the first byte matches or not
+      if (left[leftOffset + length - 1] != rightBuffer[rightFrom + length - 1]) {
         return false;
       }
-    }
-    return true;
-  }
-
-  /**
-   * Compares part of the buffer with a part of an external byte array.
-   * Does not modify readPoint.
-   */
-  public boolean isEqual(byte[] left, int leftOffset, int leftLength, long rightOffset, int rightLength) {
-    if (rightLength != leftLength) {
-      return false;
-    }
-    int rightIndex = getBufferIndex(rightOffset), rightFrom = getOffset(rightOffset);
-    byte[] rightBuffer = writeBuffers.get(rightIndex);
-    if (rightFrom + rightLength <= wbSize) {
-      // TODO: allow using unsafe optionally.
-      for (int i = 0; i < leftLength; ++i) {
+      for (int i = 0; i < length; ++i) {
         if (left[leftOffset + i] != rightBuffer[rightFrom + i]) {
           return false;
         }
       }
       return true;
     }
-    for (int i = 0; i < rightLength; ++i) {
+    for (int i = 0; i < length; ++i) {
       if (rightFrom == wbSize) {
         ++rightIndex;
         rightBuffer = writeBuffers.get(rightIndex);
@@ -343,23 +317,57 @@ public final class WriteBuffers implements RandomAccessOutput {
     return true;
   }
 
+  /**
+   * Compares part of the buffer with a part of an external byte array.
+   * Does not modify readPoint.
+   */
+  public boolean isEqual(byte[] left, int leftLength, long rightOffset, int rightLength) {
+    if (rightLength != leftLength) {
+      return false;
+    }
+    return isEqual(left, 0, getBufferIndex(rightOffset), getOffset(rightOffset), leftLength);
+  }
+
+  /**
+   * Compares part of the buffer with a part of an external byte array.
+   * Does not modify readPoint.
+   */
+  public boolean isEqual(byte[] left, int leftOffset, int leftLength, long rightOffset, int rightLength) {
+    if (rightLength != leftLength) {
+      return false;
+    }
+    return isEqual(left, leftOffset, getBufferIndex(rightOffset), getOffset(rightOffset), leftLength);
+  }
+
+  /**
+   * Compares the current readPosition of the buffer with the external byte array.
+   * Does not modify readPoint.
+   */
+  public boolean isEqual(byte[] left, int leftOffset, Position readPos, int length) {
+    return isEqual(left, leftOffset, readPos.bufferIndex, readPos.offset, length);
+  }
+
   public void clear() {
     writeBuffers.clear();
     clearState();
   }
-
+ 
   private void clearState() {
     writePos.clear();
-    defaultReadPos.clear();
+    unsafeReadPos.clear();
   }
 
 
   public long getWritePoint() {
+    if (writePos.bufferIndex == -1) {
+      nextBufferToWrite();
+    }
     return ((long)writePos.bufferIndex << wbSizeLog2) + writePos.offset;
   }
 
-  public long getReadPoint() {
-    return getReadPoint(defaultReadPos);
+  /** THIS METHOD IS NOT THREAD-SAFE. Use only at load time (or be mindful of thread safety). */
+  public long getUnsafeReadPoint() {
+    return getReadPoint(unsafeReadPos);
   }
 
   public long getReadPoint(Position readPos) {
@@ -498,6 +506,9 @@ public final class WriteBuffers implements RandomAccessOutput {
   }
 
   public void seal() {
+    if (writePos.bufferIndex == -1) {
+      return;
+    }
     if (writePos.offset < (wbSize * 0.8)) { // arbitrary
       byte[] smallerBuffer = new byte[writePos.offset];
       System.arraycopy(writePos.buffer, 0, smallerBuffer, 0, writePos.offset);
@@ -510,8 +521,9 @@ public final class WriteBuffers implements RandomAccessOutput {
     clearState();
   }
 
-  public long readNByteLong(long offset, int bytes) {
-    return readNByteLong(offset, bytes, defaultReadPos);
+  /** THIS METHOD IS NOT THREAD-SAFE. Use only at load time (or be mindful of thread safety). */
+  public long unsafeReadNByteLong(long offset, int bytes) {
+    return readNByteLong(offset, bytes, unsafeReadPos);
   }
 
   public long readNByteLong(long offset, int bytes, Position readPos) {
@@ -553,7 +565,7 @@ public final class WriteBuffers implements RandomAccessOutput {
   }
 
   public int readInt(long offset) {
-    return (int)readNByteLong(offset, 4);
+    return (int)unsafeReadNByteLong(offset, 4);
   }
 
   @Override
@@ -590,57 +602,6 @@ public final class WriteBuffers implements RandomAccessOutput {
     writePos.offset = prevOffset;
   }
 
-  // Lifted from org.apache.hadoop.util.hash.MurmurHash... but supports offset.
-  public static int murmurHash(byte[] data, int offset, int length) {
-    int m = 0x5bd1e995;
-    int r = 24;
-
-    int h = length;
-
-    int len_4 = length >> 2;
-
-    for (int i = 0; i < len_4; i++) {
-      int i_4 = offset + (i << 2);
-      int k = data[i_4 + 3];
-      k = k << 8;
-      k = k | (data[i_4 + 2] & 0xff);
-      k = k << 8;
-      k = k | (data[i_4 + 1] & 0xff);
-      k = k << 8;
-      k = k | (data[i_4 + 0] & 0xff);
-      k *= m;
-      k ^= k >>> r;
-      k *= m;
-      h *= m;
-      h ^= k;
-    }
-
-    // avoid calculating modulo
-    int len_m = len_4 << 2;
-    int left = length - len_m;
-
-    if (left != 0) {
-      length += offset;
-      if (left >= 3) {
-        h ^= (int) data[length - 3] << 16;
-      }
-      if (left >= 2) {
-        h ^= (int) data[length - 2] << 8;
-      }
-      if (left >= 1) {
-        h ^= (int) data[length - 1];
-      }
-
-      h *= m;
-    }
-
-    h ^= h >>> 13;
-    h *= m;
-    h ^= h >>> 15;
-
-    return h;
-  }
-
   /**
    * Write buffer size
    * @return write buffer size
@@ -649,7 +610,8 @@ public final class WriteBuffers implements RandomAccessOutput {
     return writeBuffers.size() * (long) wbSize;
   }
 
-  public Position getReadPosition() {
-    return defaultReadPos;
+  /** THIS METHOD IS NOT THREAD-SAFE. Use only at load time (or be mindful of thread safety). */
+  public Position getUnsafeReadPosition() {
+    return unsafeReadPos;
   }
 }

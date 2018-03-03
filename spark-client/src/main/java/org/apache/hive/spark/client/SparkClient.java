@@ -19,6 +19,7 @@ package org.apache.hive.spark.client;
 
 import java.io.Serializable;
 import java.net.URI;
+import java.util.List;
 import java.util.concurrent.Future;
 
 import org.apache.hadoop.hive.common.classification.InterfaceAudience;
@@ -36,6 +37,15 @@ public interface SparkClient extends Serializable {
    * @return A handle that be used to monitor the job.
    */
   <T extends Serializable> JobHandle<T> submit(Job<T> job);
+
+  /**
+   * Submits a job for asynchronous execution.
+   *
+   * @param job The job to execute.
+   * @param listeners jobhandle listeners to invoke during the job processing
+   * @return A handle that be used to monitor the job.
+   */
+  <T extends Serializable> JobHandle<T> submit(Job<T> job, List<JobHandle.Listener<T>> listeners);
 
   /**
    * Asks the remote context to run a job immediately.
@@ -94,4 +104,9 @@ public interface SparkClient extends Serializable {
    * Get default parallelism. For standalone mode, this can be used to get total number of cores.
    */
   Future<Integer> getDefaultParallelism();
+
+  /**
+   * Check if remote context is still active.
+   */
+  boolean isActive();
 }

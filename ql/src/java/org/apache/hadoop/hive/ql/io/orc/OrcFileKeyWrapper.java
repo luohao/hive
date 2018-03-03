@@ -25,6 +25,8 @@ import java.util.List;
 
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.WritableComparable;
+import org.apache.orc.CompressionKind;
+import org.apache.orc.OrcProto;
 
 /**
  * Key for OrcFileMergeMapper task. Contains orc file related information that
@@ -34,7 +36,7 @@ public class OrcFileKeyWrapper implements WritableComparable<OrcFileKeyWrapper> 
 
   private Path inputPath;
   private CompressionKind compression;
-  private long compressBufferSize;
+  private int compressBufferSize;
   private List<OrcProto.Type> types;
   private int rowIndexStride;
   private OrcFile.Version version;
@@ -64,11 +66,11 @@ public class OrcFileKeyWrapper implements WritableComparable<OrcFileKeyWrapper> 
     this.rowIndexStride = rowIndexStride;
   }
 
-  public long getCompressBufferSize() {
+  public int getCompressBufferSize() {
     return compressBufferSize;
   }
 
-  public void setCompressBufferSize(long compressBufferSize) {
+  public void setCompressBufferSize(int compressBufferSize) {
     this.compressBufferSize = compressBufferSize;
   }
 

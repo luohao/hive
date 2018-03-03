@@ -1,4 +1,4 @@
--- JAVA_VERSION_SPECIFIC_OUTPUT
+set hive.mapred.mode=nonstrict;
 
 DROP TABLE avro_date_staging;
 DROP TABLE avro_date;

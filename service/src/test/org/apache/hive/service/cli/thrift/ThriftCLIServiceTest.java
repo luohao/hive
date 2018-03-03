@@ -73,7 +73,7 @@ public abstract class ThriftCLIServiceTest {
     stopHiveServer2();
   }
 
-  protected static void startHiveServer2WithConf(HiveConf hiveConf) throws Exception {
+   static void startHiveServer2WithConf(HiveConf hiveConf) throws Exception {
     hiveServer2.init(hiveConf);
     // Start HiveServer2 with given config
     // Fail if server doesn't start
@@ -94,7 +94,7 @@ public abstract class ThriftCLIServiceTest {
     }
   }
 
-  protected static ThriftCLIServiceClient getServiceClientInternal() {
+  static ThriftCLIServiceClient getServiceClientInternal() {
     for (Service service : hiveServer2.getServices()) {
       if (service instanceof ThriftBinaryCLIService) {
         return new ThriftCLIServiceClient((ThriftBinaryCLIService) service);
@@ -178,11 +178,10 @@ public abstract class ThriftCLIServiceTest {
 
     // Execute another query
     queryString = "SELECT ID+1 FROM TEST_EXEC_THRIFT";
-    OperationHandle opHandle = client.executeStatement(sessHandle,
-        queryString, opConf);
+    OperationHandle opHandle = client.executeStatement(sessHandle, queryString, opConf);
     assertNotNull(opHandle);
 
-    OperationStatus opStatus = client.getOperationStatus(opHandle);
+    OperationStatus opStatus = client.getOperationStatus(opHandle, false);
     assertNotNull(opStatus);
 
     OperationState state = opStatus.getState();
@@ -229,8 +228,7 @@ public abstract class ThriftCLIServiceTest {
     // Execute another query
     queryString = "SELECT ID+1 FROM TEST_EXEC_ASYNC_THRIFT";
     System.out.println("Will attempt to execute: " + queryString);
-    opHandle = client.executeStatementAsync(sessHandle,
-        queryString, opConf);
+    opHandle = client.executeStatementAsync(sessHandle, queryString, opConf);
     assertNotNull(opHandle);
 
     // Poll on the operation status till the query is completed
@@ -243,7 +241,7 @@ public abstract class ThriftCLIServiceTest {
         System.out.println("Polling timed out");
         break;
       }
-      opStatus = client.getOperationStatus(opHandle);
+      opStatus = client.getOperationStatus(opHandle, false);
       assertNotNull(opStatus);
       state = opStatus.getState();
       System.out.println("Current state: " + state);
@@ -266,7 +264,7 @@ public abstract class ThriftCLIServiceTest {
     System.out.println("Will attempt to execute: " + queryString);
     opHandle = client.executeStatementAsync(sessHandle, queryString, opConf);
     assertNotNull(opHandle);
-    opStatus = client.getOperationStatus(opHandle);
+    opStatus = client.getOperationStatus(opHandle, false);
     assertNotNull(opStatus);
     isQueryRunning = true;
     pollTimeout = System.currentTimeMillis() + 100000;
@@ -285,7 +283,7 @@ public abstract class ThriftCLIServiceTest {
         isQueryRunning = false;
       }
       Thread.sleep(1000);
-      opStatus = client.getOperationStatus(opHandle);
+      opStatus = client.getOperationStatus(opHandle, false);
     }
     // Expect query to return an error state
     assertEquals("Operation should be in error state",

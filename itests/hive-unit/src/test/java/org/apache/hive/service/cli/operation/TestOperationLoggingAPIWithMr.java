@@ -36,19 +36,21 @@ import org.junit.Test;
  * TestOperationLoggingAPIWithMr
  * Test the FetchResults of TFetchType.LOG in thrift level in MR mode.
  */
-public class TestOperationLoggingAPIWithMr extends OperationLoggingAPITestBase{
+public class TestOperationLoggingAPIWithMr extends OperationLoggingAPITestBase {
 
   @BeforeClass
   public static void setUpBeforeClass() throws Exception {
     tableName  = "testOperationLoggingAPIWithMr_table";
     expectedLogsVerbose = new String[]{
-      "Parsing command",
-      "Parse Completed",
-      "Starting Semantic Analysis",
-      "Semantic Analysis Completed",
-      "Starting command"
+      "Starting Semantic Analysis"
     };
     expectedLogsExecution = new String[]{
+      "Compiling command",
+      "Completed compiling command",
+      "Total jobs",
+      "Executing command",
+      "Completed executing command",
+      "Semantic Analysis Completed",
       "Number of reduce tasks determined at compile time",
       "number of splits",
       "Submitting tokens for job",
@@ -95,7 +97,7 @@ public class TestOperationLoggingAPIWithMr extends OperationLoggingAPITestBase{
       if (System.currentTimeMillis() > pollTimeout) {
         break;
       }
-      opStatus = client.getOperationStatus(operationHandle);
+      opStatus = client.getOperationStatus(operationHandle, false);
       Assert.assertNotNull(opStatus);
       state = opStatus.getState();
 

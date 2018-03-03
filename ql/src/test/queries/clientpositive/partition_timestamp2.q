@@ -1,5 +1,5 @@
--- Exclude test on Windows due to space character being escaped in Hive paths on Windows.
--- EXCLUDE_OS_WINDOWS
+set hive.mapred.mode=nonstrict;
+set hive.optimize.metadataonly=true;
 drop table partition_timestamp2_1;
 
 create table partition_timestamp2_1 (key string, value string) partitioned by (dt timestamp, region int);

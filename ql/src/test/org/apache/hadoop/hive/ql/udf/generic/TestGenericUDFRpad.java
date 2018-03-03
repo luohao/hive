@@ -18,10 +18,8 @@
 package org.apache.hadoop.hive.ql.udf.generic;
 
 import org.apache.hadoop.hive.ql.metadata.HiveException;
-import org.apache.hadoop.hive.ql.udf.generic.GenericUDF;
 import org.apache.hadoop.hive.ql.udf.generic.GenericUDF.DeferredJavaObject;
 import org.apache.hadoop.hive.ql.udf.generic.GenericUDF.DeferredObject;
-import org.apache.hadoop.hive.ql.udf.generic.GenericUDFLpad;
 import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspector;
 import org.apache.hadoop.hive.serde2.objectinspector.primitive.PrimitiveObjectInspectorFactory;
 import org.apache.hadoop.io.IntWritable;
@@ -31,16 +29,19 @@ import junit.framework.TestCase;
 
 public class TestGenericUDFRpad extends TestCase {
 
-  public void testLpad() throws HiveException {
-    GenericUDFLpad udf = new GenericUDFLpad();
+  public void testRpad() throws HiveException {
+    GenericUDFRpad udf = new GenericUDFRpad();
     ObjectInspector valueOI1 = PrimitiveObjectInspectorFactory.writableStringObjectInspector;
     ObjectInspector valueOI2 = PrimitiveObjectInspectorFactory.writableIntObjectInspector;
     ObjectInspector valueOI3 = PrimitiveObjectInspectorFactory.writableStringObjectInspector;
     ObjectInspector[] arguments = { valueOI1, valueOI2, valueOI3 };
 
     udf.initialize(arguments);
-    runAndVerify("hi", 5, "??", "???hi", udf);
+    runAndVerify("hi", 5, "??", "hi???", udf);
     runAndVerify("hi", 1, "??", "h", udf);
+    runAndVerify("ｈｉ", 5, "？？", "ｈｉ？？？", udf);
+    runAndVerify("ｈｉ", 1, "？？", "ｈ", udf);
+    runAndVerify("hi", 3, "", null, udf);
   }
 
   private void runAndVerify(String str, int len, String pad, String expResult, GenericUDF udf)
@@ -49,7 +50,11 @@ public class TestGenericUDFRpad extends TestCase {
     DeferredObject valueObj2 = new DeferredJavaObject(new IntWritable(len));
     DeferredObject valueObj3 = new DeferredJavaObject(new Text(pad));
     DeferredObject[] args = { valueObj1, valueObj2, valueObj3 };
-    Text output = (Text) udf.evaluate(args);
-    assertEquals("lpad() test ", expResult, output.toString());
+    Object output = udf.evaluate(args);
+    if(expResult != null) {
+      assertEquals("rpad() test ", expResult, output.toString());
+    } else {
+      assertNull("rpad() test ", output);
+    }
   }
 }

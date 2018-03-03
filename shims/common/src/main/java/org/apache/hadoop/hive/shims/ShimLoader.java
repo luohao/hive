@@ -17,22 +17,24 @@
  */
 package org.apache.hadoop.hive.shims;
 
-import java.util.HashMap;
-import java.util.Map;
-
 import org.apache.hadoop.hive.thrift.HadoopThriftAuthBridge;
 import org.apache.hadoop.util.VersionInfo;
 import org.apache.log4j.AppenderSkeleton;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.util.HashMap;
+import java.util.Map;
 
 /**
  * ShimLoader.
  *
  */
 public abstract class ShimLoader {
-  public static String HADOOP20SVERSIONNAME = "0.20S";
-  public static String HADOOP23VERSIONNAME = "0.23";
+  private static final Logger LOG = LoggerFactory.getLogger(ShimLoader.class);
+  public static final String HADOOP23VERSIONNAME = "0.23";
 
-  private static HadoopShims hadoopShims;
+  private static volatile HadoopShims hadoopShims;
   private static JettyShims jettyShims;
   private static AppenderSkeleton eventCounter;
   private static HadoopThriftAuthBridge hadoopThriftAuthBridge;
@@ -45,20 +47,7 @@ public abstract class ShimLoader {
       new HashMap<String, String>();
 
   static {
-    HADOOP_SHIM_CLASSES.put(HADOOP20SVERSIONNAME, "org.apache.hadoop.hive.shims.Hadoop20SShims");
     HADOOP_SHIM_CLASSES.put(HADOOP23VERSIONNAME, "org.apache.hadoop.hive.shims.Hadoop23Shims");
-  }
-
-  /**
-   * The names of the classes for shimming Jetty for each major version of
-   * Hadoop.
-   */
-  private static final HashMap<String, String> JETTY_SHIM_CLASSES =
-      new HashMap<String, String>();
-
-  static {
-    JETTY_SHIM_CLASSES.put(HADOOP20SVERSIONNAME, "org.apache.hadoop.hive.shims.Jetty20SShims");
-    JETTY_SHIM_CLASSES.put(HADOOP23VERSIONNAME, "org.apache.hadoop.hive.shims.Jetty23Shims");
   }
 
   /**
@@ -68,21 +57,17 @@ public abstract class ShimLoader {
       new HashMap<String, String>();
 
   static {
-    EVENT_COUNTER_SHIM_CLASSES.put(HADOOP20SVERSIONNAME, "org.apache.hadoop.log.metrics" +
-        ".EventCounter");
     EVENT_COUNTER_SHIM_CLASSES.put(HADOOP23VERSIONNAME, "org.apache.hadoop.log.metrics" +
         ".EventCounter");
   }
 
   /**
-   * The names of the classes for shimming {@link HadoopThriftAuthBridge}
+   * The names of the classes for shimming HadoopThriftAuthBridge
    */
   private static final HashMap<String, String> HADOOP_THRIFT_AUTH_BRIDGE_CLASSES =
       new HashMap<String, String>();
 
   static {
-    HADOOP_THRIFT_AUTH_BRIDGE_CLASSES.put(HADOOP20SVERSIONNAME,
-        "org.apache.hadoop.hive.thrift.HadoopThriftAuthBridge");
     HADOOP_THRIFT_AUTH_BRIDGE_CLASSES.put(HADOOP23VERSIONNAME,
         "org.apache.hadoop.hive.thrift.HadoopThriftAuthBridge23");
   }
@@ -95,22 +80,20 @@ public abstract class ShimLoader {
    * Factory method to get an instance of HadoopShims based on the
    * version of Hadoop on the classpath.
    */
-  public static synchronized HadoopShims getHadoopShims() {
+  public static HadoopShims getHadoopShims() {
     if (hadoopShims == null) {
-      hadoopShims = loadShims(HADOOP_SHIM_CLASSES, HadoopShims.class);
+      synchronized (ShimLoader.class) {
+        if (hadoopShims == null) {
+          try {
+            hadoopShims = loadShims(HADOOP_SHIM_CLASSES, HadoopShims.class);
+          } catch (Throwable t) {
+            LOG.error("Error loading shims", t);
+            throw new RuntimeException(t);
+          }
+        }
+      }
     }
     return hadoopShims;
-  }
-
-  /**
-   * Factory method to get an instance of JettyShims based on the version
-   * of Hadoop on the classpath.
-   */
-  public static synchronized JettyShims getJettyShims() {
-    if (jettyShims == null) {
-      jettyShims = loadShims(JETTY_SHIM_CLASSES, JettyShims.class);
-    }
-    return jettyShims;
   }
 
   public static synchronized AppenderSkeleton getEventCounter() {
@@ -166,9 +149,8 @@ public abstract class ShimLoader {
     }
 
     switch (Integer.parseInt(parts[0])) {
-    case 1:
-      return HADOOP20SVERSIONNAME;
     case 2:
+    case 3:
       return HADOOP23VERSIONNAME;
     default:
       throw new IllegalArgumentException("Unrecognized Hadoop major version number: " + vers);

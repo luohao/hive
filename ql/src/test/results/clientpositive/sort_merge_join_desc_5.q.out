@@ -46,71 +46,16 @@ POSTHOOK: query: ALTER TABLE srcbucket_mapjoin_part_2 CLUSTERED BY (key) SORTED 
 POSTHOOK: type: ALTERTABLE_CLUSTER_SORT
 POSTHOOK: Input: default@srcbucket_mapjoin_part_2
 POSTHOOK: Output: default@srcbucket_mapjoin_part_2
-PREHOOK: query: -- The partition sorting metadata matches but the table metadata does not, sorted merge join should still be used
-
-EXPLAIN EXTENDED
+PREHOOK: query: EXPLAIN EXTENDED
 SELECT /*+ MAPJOIN(b) */ count(*)
 FROM srcbucket_mapjoin_part_1 a JOIN srcbucket_mapjoin_part_2 b
 ON a.key = b.key AND a.part = '1' AND b.part = '1'
 PREHOOK: type: QUERY
-POSTHOOK: query: -- The partition sorting metadata matches but the table metadata does not, sorted merge join should still be used
-
-EXPLAIN EXTENDED
+POSTHOOK: query: EXPLAIN EXTENDED
 SELECT /*+ MAPJOIN(b) */ count(*)
 FROM srcbucket_mapjoin_part_1 a JOIN srcbucket_mapjoin_part_2 b
 ON a.key = b.key AND a.part = '1' AND b.part = '1'
 POSTHOOK: type: QUERY
-ABSTRACT SYNTAX TREE:
-  
-TOK_QUERY
-   TOK_FROM
-      TOK_JOIN
-         TOK_TABREF
-            TOK_TABNAME
-               srcbucket_mapjoin_part_1
-            a
-         TOK_TABREF
-            TOK_TABNAME
-               srcbucket_mapjoin_part_2
-            b
-         AND
-            AND
-               =
-                  .
-                     TOK_TABLE_OR_COL
-                        a
-                     key
-                  .
-                     TOK_TABLE_OR_COL
-                        b
-                     key
-               =
-                  .
-                     TOK_TABLE_OR_COL
-                        a
-                     part
-                  '1'
-            =
-               .
-                  TOK_TABLE_OR_COL
-                     b
-                  part
-               '1'
-   TOK_INSERT
-      TOK_DESTINATION
-         TOK_DIR
-            TOK_TMP_FILE
-      TOK_SELECT
-         TOK_HINTLIST
-            TOK_HINT
-               TOK_MAPJOIN
-               TOK_HINTARGLIST
-                  b
-         TOK_SELEXPR
-            TOK_FUNCTIONSTAR
-               count
-
-
 STAGE DEPENDENCIES:
   Stage-1 is a root stage
   Stage-0 depends on stages: Stage-1
@@ -126,7 +71,7 @@ STAGE PLANS:
             Filter Operator
               isSamplingPred: false
               predicate: key is not null (type: boolean)
-              Statistics: Num rows: 250 Data size: 2656 Basic stats: COMPLETE Column stats: NONE
+              Statistics: Num rows: 500 Data size: 5312 Basic stats: COMPLETE Column stats: NONE
               Sorted Merge Bucket Map Join Operator
                 condition map:
                      Inner Join 0 to 1
@@ -140,6 +85,7 @@ STAGE PLANS:
                   mode: hash
                   outputColumnNames: _col0
                   Reduce Output Operator
+                    null sort order: 
                     sort order: 
                     tag: -1
                     value expressions: _col0 (type: bigint)
@@ -155,9 +101,10 @@ STAGE PLANS:
             partition values:
               part 1
             properties:
-              COLUMN_STATS_ACCURATE true
+              COLUMN_STATS_ACCURATE {"BASIC_STATS":"true"}
               bucket_count 1
               bucket_field_name key
+              column.name.delimiter ,
               columns key,value
               columns.comments 
               columns.types int:string
@@ -181,6 +128,7 @@ STAGE PLANS:
                 SORTBUCKETCOLSPREFIX TRUE
                 bucket_count 1
                 bucket_field_name key
+                column.name.delimiter ,
                 columns key,value
                 columns.comments 
                 columns.types int:string
@@ -210,13 +158,14 @@ STAGE PLANS:
             NumFilesPerFileSink: 1
 #### A masked pattern was here ####
             table:
-                input format: org.apache.hadoop.mapred.TextInputFormat
-                output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
+                input format: org.apache.hadoop.mapred.SequenceFileInputFormat
+                output format: org.apache.hadoop.hive.ql.io.HiveSequenceFileOutputFormat
                 properties:
                   columns _col0
                   columns.types bigint
                   escape.delim \
                   hive.serialization.extend.additional.nesting.levels true
+                  serialization.escape.crlf true
                   serialization.format 1
                   serialization.lib org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe
                 serde: org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe

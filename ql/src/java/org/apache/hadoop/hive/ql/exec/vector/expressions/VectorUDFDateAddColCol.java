@@ -21,16 +21,15 @@ package org.apache.hadoop.hive.ql.exec.vector.expressions;
 import org.apache.hadoop.hive.ql.exec.vector.BytesColumnVector;
 import org.apache.hadoop.hive.ql.exec.vector.ColumnVector;
 import org.apache.hadoop.hive.ql.exec.vector.LongColumnVector;
+import org.apache.hadoop.hive.ql.exec.vector.TimestampColumnVector;
 import org.apache.hadoop.hive.ql.exec.vector.VectorExpressionDescriptor;
 import org.apache.hadoop.hive.ql.exec.vector.VectorizedRowBatch;
 import org.apache.hadoop.hive.serde2.io.DateWritable;
 import org.apache.hadoop.io.Text;
+import org.apache.hive.common.util.DateParser;
 
-import java.text.ParseException;
-import java.text.SimpleDateFormat;
 import java.util.Arrays;
-import java.util.Calendar;
-import java.util.Date;
+import java.sql.Date;
 
 public class VectorUDFDateAddColCol extends VectorExpression {
   private static final long serialVersionUID = 1L;
@@ -39,9 +38,9 @@ public class VectorUDFDateAddColCol extends VectorExpression {
   private int colNum2;
   private int outputColumn;
   protected boolean isPositive = true;
-  private transient final Calendar calendar = Calendar.getInstance();
-  private transient SimpleDateFormat formatter = new SimpleDateFormat("yyyy-MM-dd");
   private transient final Text text = new Text();
+  private transient final Date date = new Date(0);
+  private transient final DateParser dateParser = new DateParser();
 
   public VectorUDFDateAddColCol(int colNum1, int colNum2, int outputColumn) {
     this();
@@ -67,8 +66,8 @@ public class VectorUDFDateAddColCol extends VectorExpression {
     int n = batch.size;
     long[] vector2 = inputColVector2.vector;
 
-    BytesColumnVector outV = (BytesColumnVector) batch.cols[outputColumn];
-    byte[][] outputVector = outV.vector;
+    LongColumnVector outV = (LongColumnVector) batch.cols[outputColumn];
+    long[] outputVector = outV.vector;
     if (n <= 0) {
       // Nothing to do
       return;
@@ -85,20 +84,14 @@ public class VectorUDFDateAddColCol extends VectorExpression {
           // Repeating property will not change.
           outV.isRepeating = true;
           outputVector[0] = evaluateDate(inputColVector1, 0, vector2[0]);
-          outV.start[0] = 0;
-          outV.length[0] = outputVector[0].length;
         } else if (batch.selectedInUse) {
           for (int j = 0; j != n; j++) {
             int i = sel[j];
             outputVector[i] = evaluateDate(inputColVector1, i, vector2[i]);
-            outV.start[i] = 0;
-            outV.length[i] = outputVector[0].length;
           }
         } else {
           for (int i = 0; i != n; i++) {
             outputVector[i] = evaluateDate(inputColVector1, i, vector2[i]);
-            outV.start[i] = 0;
-            outV.length[i] = outputVector[0].length;
           }
         }
         break;
@@ -114,14 +107,10 @@ public class VectorUDFDateAddColCol extends VectorExpression {
           for (int j = 0; j != n; j++) {
             int i = sel[j];
             outputVector[i] = evaluateTimestamp(inputColVector1, i, vector2[i]);
-            outV.start[i] = 0;
-            outV.length[i] = outputVector[0].length;
           }
         } else {
           for (int i = 0; i != n; i++) {
             outputVector[i] = evaluateTimestamp(inputColVector1, i, vector2[i]);
-            outV.start[i] = 0;
-            outV.length[i] = outputVector[0].length;
           }
         }
         break;
@@ -134,15 +123,15 @@ public class VectorUDFDateAddColCol extends VectorExpression {
           // All must be selected otherwise size would be zero
           // Repeating property will not change.
           outV.isRepeating = true;
-          evaluateString((BytesColumnVector) inputColVector1, inputColVector2, outV, 0);
+          evaluateString((BytesColumnVector) inputColVector1, outV, 0, vector2[0]);
         } else if (batch.selectedInUse) {
           for (int j = 0; j != n; j++) {
             int i = sel[j];
-            evaluateString((BytesColumnVector) inputColVector1, inputColVector2, outV, i);
+            evaluateString((BytesColumnVector) inputColVector1, outV, i, vector2[i]);
           }
         } else {
           for (int i = 0; i != n; i++) {
-            evaluateString((BytesColumnVector) inputColVector1, inputColVector2, outV, i);
+            evaluateString((BytesColumnVector) inputColVector1, outV, i, vector2[i]);
           }
         }
         break;
@@ -151,55 +140,48 @@ public class VectorUDFDateAddColCol extends VectorExpression {
     }
   }
 
-  protected byte[] evaluateDate(ColumnVector columnVector, int index, long numDays) {
+  protected long evaluateDate(ColumnVector columnVector, int index, long numDays) {
     LongColumnVector lcv = (LongColumnVector) columnVector;
+    long days = lcv.vector[index];
     if (isPositive) {
-      calendar.setTimeInMillis(DateWritable.daysToMillis((int) lcv.vector[index] + (int) numDays));
+      days += numDays;
     } else {
-      calendar.setTimeInMillis(DateWritable.daysToMillis((int) lcv.vector[index] - (int) numDays));
+      days -= numDays;
     }
-    Date newDate = calendar.getTime();
-    text.set(formatter.format(newDate));
-    return Arrays.copyOf(text.getBytes(), text.getLength());
+    return days;
   }
 
-  protected byte[] evaluateTimestamp(ColumnVector columnVector, int index, long numDays) {
-    LongColumnVector lcv = (LongColumnVector) columnVector;
-    calendar.setTimeInMillis(lcv.vector[index] / 1000000);
+  protected long evaluateTimestamp(ColumnVector columnVector, int index, long numDays) {
+    TimestampColumnVector tcv = (TimestampColumnVector) columnVector;
+    // Convert to date value (in days)
+    long days = DateWritable.millisToDays(tcv.getTime(index));
     if (isPositive) {
-      calendar.add(Calendar.DATE, (int) numDays);
+      days += numDays;
     } else {
-      calendar.add(Calendar.DATE, (int) -numDays);
+      days -= numDays;
     }
-    Date newDate = calendar.getTime();
-    text.set(formatter.format(newDate));
-    return Arrays.copyOf(text.getBytes(), text.getLength());
+    return days;
   }
 
-  protected void evaluateString(BytesColumnVector inputColumnVector1, LongColumnVector inputColumnVector2,
-                                BytesColumnVector outputVector, int i) {
-    if (inputColumnVector1.isNull[i] || inputColumnVector2.isNull[i]) {
+  protected void evaluateString(BytesColumnVector inputColumnVector1, LongColumnVector outputVector, int index, long numDays) {
+    if (inputColumnVector1.isNull[index]) {
       outputVector.noNulls = false;
-      outputVector.isNull[i] = true;
+      outputVector.isNull[index] = true;
     } else {
-      text.set(inputColumnVector1.vector[i], inputColumnVector1.start[i], inputColumnVector1.length[i]);
-      try {
-        calendar.setTime(formatter.parse(text.toString()));
-      } catch (ParseException e) {
+      text.set(inputColumnVector1.vector[index], inputColumnVector1.start[index], inputColumnVector1.length[index]);
+      boolean parsed = dateParser.parseDate(text.toString(), date);
+      if (!parsed) {
         outputVector.noNulls = false;
-        outputVector.isNull[i] = true;
+        outputVector.isNull[index] = true;
+        return;
       }
+      long days = DateWritable.millisToDays(date.getTime());
       if (isPositive) {
-        calendar.add(Calendar.DATE, (int) inputColumnVector2.vector[i]);
+        days += numDays;
       } else {
-        calendar.add(Calendar.DATE, -(int) inputColumnVector2.vector[i]);
+        days -= numDays;
       }
-      Date newDate = calendar.getTime();
-      text.set(formatter.format(newDate));
-
-      outputVector.vector[i] = Arrays.copyOf(text.getBytes(), text.getLength());
-      outputVector.start[i] = 0;
-      outputVector.length[i] = text.getLength();
+      outputVector.vector[index] = days;
     }
   }
 
@@ -210,7 +192,7 @@ public class VectorUDFDateAddColCol extends VectorExpression {
 
   @Override
   public String getOutputType() {
-    return "string";
+    return "date";
   }
 
   public int getColNum1() {
@@ -231,6 +213,11 @@ public class VectorUDFDateAddColCol extends VectorExpression {
 
   public void setOutputColumn(int outputColumn) {
     this.outputColumn = outputColumn;
+  }
+
+  @Override
+  public String vectorExpressionParameters() {
+    return "col " + colNum1 + ", col " + colNum2;
   }
 
   @Override

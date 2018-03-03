@@ -52,8 +52,8 @@
 package org.apache.hive.beeline;
 
 import jline.console.completer.StringsCompleter;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.File;
 import java.io.IOException;
@@ -81,7 +81,7 @@ import java.util.zip.ZipEntry;
  */
 public class ClassNameCompleter extends StringsCompleter {
 
-  private static final Log LOG = LogFactory.getLog(ClassNameCompleter.class.getName());
+  private static final Logger LOG = LoggerFactory.getLogger(ClassNameCompleter.class.getName());
   public final static String clazzFileNameExtension = ".class";
   public final static String jarFileNameExtension = ".jar";
 
@@ -123,38 +123,42 @@ public class ClassNameCompleter extends StringsCompleter {
 
     for (Iterator i = urls.iterator(); i.hasNext(); ) {
       URL url = (URL) i.next();
-      File file = new File(url.getFile());
+      try {
+        File file = new File(url.getFile());
 
-      if (file.isDirectory()) {
-        Set files = getClassFiles(file.getAbsolutePath(), new HashSet(), file, new int[]{200});
-        classes.addAll(files);
+        if (file.isDirectory()) {
+          Set files = getClassFiles(file.getAbsolutePath(), new HashSet(), file, new int[] { 200 });
+          classes.addAll(files);
 
-        continue;
-      }
-
-      if ((file == null) || !file.isFile()) {
-        continue;
-      }
-
-      JarFile jf = new JarFile(file);
-
-      for (Enumeration e = jf.entries(); e.hasMoreElements(); ) {
-        JarEntry entry = (JarEntry) e.nextElement();
-
-        if (entry == null) {
           continue;
         }
 
-        String name = entry.getName();
-
-        if (isClazzFile(name)) {
-          /* only use class file*/
-          classes.add(name);
-        } else if (isJarFile(name)) {
-          classes.addAll(getClassNamesFromJar(name));
-        } else {
+        if (!isJarFile(file)) {
           continue;
         }
+
+        JarFile jf = new JarFile(file);
+
+        for (Enumeration e = jf.entries(); e.hasMoreElements();) {
+          JarEntry entry = (JarEntry) e.nextElement();
+
+          if (entry == null) {
+            continue;
+          }
+
+          String name = entry.getName();
+
+          if (isClazzFile(name)) {
+            /* only use class file */
+            classes.add(name);
+          } else if (isJarFile(name)) {
+            classes.addAll(getClassNamesFromJar(name));
+          } else {
+            continue;
+          }
+        }
+      } catch (IOException e) {
+        throw new IOException(String.format("Error reading classpath entry: %s", url), e);
       }
     }
 
@@ -234,6 +238,10 @@ public class ClassNameCompleter extends StringsCompleter {
     }
 
     return classNames;
+  }
+
+  private static boolean isJarFile(File file) {
+    return (file != null && file.isFile() && isJarFile(file.getName()));
   }
 
   private static boolean isJarFile(String fileName) {

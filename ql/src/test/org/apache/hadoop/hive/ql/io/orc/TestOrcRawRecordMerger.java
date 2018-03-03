@@ -18,22 +18,30 @@
 
 package org.apache.hadoop.hive.ql.io.orc;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.orc.CompressionKind;
+import org.apache.orc.MemoryManager;
+import org.apache.orc.StripeInformation;
+import org.apache.orc.impl.MemoryManagerImpl;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hive.common.ValidTxnList;
 import org.apache.hadoop.hive.common.ValidReadTxnList;
+import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.ql.io.AcidOutputFormat;
 import org.apache.hadoop.hive.ql.io.AcidUtils;
+import org.apache.hadoop.hive.ql.io.IOConstants;
 import org.apache.hadoop.hive.ql.io.RecordIdentifier;
 import org.apache.hadoop.hive.ql.io.RecordUpdater;
 import org.apache.hadoop.hive.ql.io.orc.OrcRawRecordMerger.OriginalReaderPair;
 import org.apache.hadoop.hive.ql.io.orc.OrcRawRecordMerger.ReaderKey;
 import org.apache.hadoop.hive.ql.io.orc.OrcRawRecordMerger.ReaderPair;
+import org.apache.hadoop.hive.serde.serdeConstants;
 import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspector;
 import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspectorFactory;
+import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspectorUtils;
 import org.apache.hadoop.hive.serde2.objectinspector.StructField;
 import org.apache.hadoop.hive.serde2.objectinspector.StructObjectInspector;
 import org.apache.hadoop.io.IntWritable;
@@ -44,9 +52,12 @@ import org.apache.hadoop.mapred.InputFormat;
 import org.apache.hadoop.mapred.InputSplit;
 import org.apache.hadoop.mapred.JobConf;
 import org.apache.hadoop.mapred.Reporter;
+import org.apache.orc.OrcProto;
 import org.junit.Test;
 import org.mockito.MockSettings;
 import org.mockito.Mockito;
+
+import com.google.common.collect.Lists;
 
 import java.io.File;
 import java.io.IOException;
@@ -61,7 +72,7 @@ import static org.junit.Assert.assertNull;
 
 public class TestOrcRawRecordMerger {
 
-  private static final Log LOG = LogFactory.getLog(TestOrcRawRecordMerger.class);
+  private static final Logger LOG = LoggerFactory.getLogger(TestOrcRawRecordMerger.class);
 //todo: why is statementId -1?
   @Test
   public void testOrdering() throws Exception {
@@ -301,7 +312,7 @@ public class TestOrcRawRecordMerger {
   }
 
   private static ValidTxnList createMaximalTxnList() {
-    return new ValidReadTxnList(Long.MAX_VALUE + ":");
+    return new ValidReadTxnList();
   }
 
   @Test
@@ -352,8 +363,9 @@ public class TestOrcRawRecordMerger {
   @Test
   public void testNewBase() throws Exception {
     Configuration conf = new Configuration();
-    conf.set("columns", "col1");
-    conf.set("columns.types", "string");
+    conf.set(IOConstants.SCHEMA_EVOLUTION_COLUMNS, "col1");
+    conf.set(IOConstants.SCHEMA_EVOLUTION_COLUMNS_TYPES, "string");
+    HiveConf.setBoolVar(conf, HiveConf.ConfVars.HIVE_TRANSACTIONAL_TABLE_SCAN, true);
     Reader reader = Mockito.mock(Reader.class, settings);
     RecordReader recordReader = Mockito.mock(RecordReader.class, settings);
 
@@ -362,6 +374,8 @@ public class TestOrcRawRecordMerger {
     typeBuilder.setKind(OrcProto.Type.Kind.STRUCT).addSubtypes(1)
         .addSubtypes(2).addSubtypes(3).addSubtypes(4).addSubtypes(5)
         .addSubtypes(6);
+    typeBuilder.addAllFieldNames(Lists.newArrayList("operation", "originalTransaction", "bucket",
+        "rowId", "currentTransaction", "row"));
     types.add(typeBuilder.build());
     types.add(null);
     types.add(null);
@@ -370,6 +384,10 @@ public class TestOrcRawRecordMerger {
     types.add(null);
     typeBuilder.clearSubtypes();
     typeBuilder.addSubtypes(7);
+    typeBuilder.addAllFieldNames(Lists.newArrayList("col1"));
+    types.add(typeBuilder.build());
+    typeBuilder.clear();
+    typeBuilder.setKind(OrcProto.Type.Kind.STRING);
     types.add(typeBuilder.build());
 
     Mockito.when(reader.getTypes()).thenReturn(types);
@@ -466,6 +484,14 @@ public class TestOrcRawRecordMerger {
       col1 = new Text(val);
       ROW__ID = new RecordIdentifier(origTxn, bucket, rowId);
     }
+
+    static String getColumnNamesProperty() {
+      return "col1,ROW__ID";
+    }
+    static String getColumnTypesProperty() {
+      return "string:struct<transactionId:bigint,bucketId:int,rowId:bigint>";
+    }
+
   }
 
   static String getValue(OrcStruct event) {
@@ -492,13 +518,16 @@ public class TestOrcRawRecordMerger {
         .maximumTransactionId(100).finalDestination(root);
     of.getRecordUpdater(root, options).close(false);
 
-    ValidTxnList txnList = new ValidReadTxnList("200:");
+    ValidTxnList txnList = new ValidReadTxnList("200:" + Long.MAX_VALUE);
     AcidUtils.Directory directory = AcidUtils.getAcidState(root, conf, txnList);
 
     Path basePath = AcidUtils.createBucketFile(directory.getBaseDirectory(),
         BUCKET);
     Reader baseReader = OrcFile.createReader(basePath,
         OrcFile.readerOptions(conf));
+    conf.set(IOConstants.SCHEMA_EVOLUTION_COLUMNS, MyRow.getColumnNamesProperty());
+    conf.set(IOConstants.SCHEMA_EVOLUTION_COLUMNS_TYPES, MyRow.getColumnTypesProperty());
+    HiveConf.setBoolVar(conf, HiveConf.ConfVars.HIVE_TRANSACTIONAL_TABLE_SCAN, true);
     OrcRawRecordMerger merger =
         new OrcRawRecordMerger(conf, true, baseReader, false, BUCKET,
             createMaximalTxnList(), new Reader.Options(),
@@ -557,7 +586,7 @@ public class TestOrcRawRecordMerger {
     ru.delete(200, new MyRow("", 8, 0, BUCKET));
     ru.close(false);
 
-    ValidTxnList txnList = new ValidReadTxnList("200:");
+    ValidTxnList txnList = new ValidReadTxnList("200:" + Long.MAX_VALUE);
     AcidUtils.Directory directory = AcidUtils.getAcidState(root, conf, txnList);
 
     assertEquals(new Path(root, "base_0000100"), directory.getBaseDirectory());
@@ -567,6 +596,11 @@ public class TestOrcRawRecordMerger {
 
     Path basePath = AcidUtils.createBucketFile(directory.getBaseDirectory(),
         BUCKET);
+
+    conf.set(IOConstants.SCHEMA_EVOLUTION_COLUMNS, MyRow.getColumnNamesProperty());
+    conf.set(IOConstants.SCHEMA_EVOLUTION_COLUMNS_TYPES, MyRow.getColumnTypesProperty());
+    HiveConf.setBoolVar(conf, HiveConf.ConfVars.HIVE_TRANSACTIONAL_TABLE_SCAN, true);
+
     Reader baseReader = OrcFile.createReader(basePath,
         OrcFile.readerOptions(conf));
     OrcRawRecordMerger merger =
@@ -742,7 +776,7 @@ public class TestOrcRawRecordMerger {
     merger.close();
 
     // try ignoring the 200 transaction and make sure it works still
-    ValidTxnList txns = new ValidReadTxnList("2000:200");
+    ValidTxnList txns = new ValidReadTxnList("2000:200:200");
     merger =
         new OrcRawRecordMerger(conf, true, baseReader, false, BUCKET,
             txns, new Reader.Options(),
@@ -790,6 +824,13 @@ public class TestOrcRawRecordMerger {
     BigRow(long rowId, long origTxn, int bucket) {
       ROW__ID = new RecordIdentifier(origTxn, bucket, rowId);
     }
+
+    static String getColumnNamesProperty() {
+      return "myint,mylong,mytext,myfloat,mydouble,ROW__ID";
+    }
+    static String getColumnTypesProperty() {
+      return "int:bigint:string:float:double:struct<transactionId:bigint,bucketId:int,rowId:bigint>";
+    }
   }
 
   /**
@@ -812,11 +853,13 @@ public class TestOrcRawRecordMerger {
     }
 
     // write the base
-    MemoryManager mgr = new MemoryManager(conf){
+    MemoryManager mgr = new MemoryManagerImpl(conf){
       int rowsAddedSinceCheck = 0;
 
-      synchronized void addedRow() throws IOException {
-        if (++rowsAddedSinceCheck >= 2) {
+      @Override
+      public synchronized void addedRow(int rows) throws IOException {
+        rowsAddedSinceCheck += rows;
+        if (rowsAddedSinceCheck >= 2) {
           notifyWriters();
           rowsAddedSinceCheck = 0;
         }
@@ -826,7 +869,7 @@ public class TestOrcRawRecordMerger {
     Writer writer = OrcFile.createWriter(new Path(root, "0000010_0"),
         OrcFile.writerOptions(conf).inspector(inspector).fileSystem(fs)
         .blockPadding(false).bufferSize(10000).compress(CompressionKind.NONE)
-        .stripeSize(1).memory(mgr).version(OrcFile.Version.V_0_11));
+        .stripeSize(1).memory(mgr).batchSize(2).version(OrcFile.Version.V_0_11));
     String[] values= new String[]{"ignore.1", "0.1", "ignore.2", "ignore.3",
        "2.0", "2.1", "3.0", "ignore.4", "ignore.5", "ignore.6"};
     for(int i=0; i < values.length; ++i) {
@@ -837,7 +880,8 @@ public class TestOrcRawRecordMerger {
     // write a delta
     AcidOutputFormat.Options options = new AcidOutputFormat.Options(conf)
         .writingBase(false).minimumTransactionId(1).maximumTransactionId(1)
-        .bucket(BUCKET).inspector(inspector).filesystem(fs).recordIdColumn(5).finalDestination(root);
+        .bucket(BUCKET).inspector(inspector).filesystem(fs).recordIdColumn(5)
+        .finalDestination(root);
     RecordUpdater ru = of.getRecordUpdater(root, options);
     values = new String[]{"0.0", null, null, "1.1", null, null, null,
         "ignore.7"};
@@ -863,6 +907,9 @@ public class TestOrcRawRecordMerger {
 
     InputFormat inf = new OrcInputFormat();
     JobConf job = new JobConf();
+    job.set(IOConstants.SCHEMA_EVOLUTION_COLUMNS, BigRow.getColumnNamesProperty());
+    job.set(IOConstants.SCHEMA_EVOLUTION_COLUMNS_TYPES, BigRow.getColumnTypesProperty());
+    HiveConf.setBoolVar(job, HiveConf.ConfVars.HIVE_TRANSACTIONAL_TABLE_SCAN, true);
     job.set("mapred.min.split.size", "1");
     job.set("mapred.max.split.size", "2");
     job.set("mapred.input.dir", root.toString());
@@ -896,7 +943,7 @@ public class TestOrcRawRecordMerger {
    */
   @Test
   public void testRecordReaderNewBaseAndDelta() throws Exception {
-    final int BUCKET = 10;
+    final int BUCKET = 11;
     Configuration conf = new Configuration();
     OrcOutputFormat of = new OrcOutputFormat();
     FileSystem fs = FileSystem.getLocal(conf);
@@ -909,11 +956,13 @@ public class TestOrcRawRecordMerger {
     }
 
     // write the base
-    MemoryManager mgr = new MemoryManager(conf){
+    MemoryManager mgr = new MemoryManagerImpl(conf){
       int rowsAddedSinceCheck = 0;
 
-      synchronized void addedRow() throws IOException {
-        if (++rowsAddedSinceCheck >= 2) {
+      @Override
+      public synchronized void addedRow(int rows) throws IOException {
+        rowsAddedSinceCheck += rows;
+        if (rowsAddedSinceCheck >= 2) {
           notifyWriters();
           rowsAddedSinceCheck = 0;
         }
@@ -927,7 +976,7 @@ public class TestOrcRawRecordMerger {
         .bucket(BUCKET).inspector(inspector).filesystem(fs);
     options.orcOptions(OrcFile.writerOptions(conf)
       .stripeSize(1).blockPadding(false).compress(CompressionKind.NONE)
-      .memory(mgr));
+      .memory(mgr).batchSize(2));
     options.finalDestination(root);
     RecordUpdater ru = of.getRecordUpdater(root, options);
     String[] values= new String[]{"ignore.1", "0.1", "ignore.2", "ignore.3",
@@ -938,7 +987,8 @@ public class TestOrcRawRecordMerger {
     ru.close(false);
 
     // write a delta
-    options.writingBase(false).minimumTransactionId(1).maximumTransactionId(1).recordIdColumn(5);
+    options.writingBase(false).minimumTransactionId(1).maximumTransactionId(1)
+        .recordIdColumn(5);
     ru = of.getRecordUpdater(root, options);
     values = new String[]{"0.0", null, null, "1.1", null, null, null,
         "ignore.7"};
@@ -967,13 +1017,16 @@ public class TestOrcRawRecordMerger {
     job.set("mapred.min.split.size", "1");
     job.set("mapred.max.split.size", "2");
     job.set("mapred.input.dir", root.toString());
+    job.set(IOConstants.SCHEMA_EVOLUTION_COLUMNS, BigRow.getColumnNamesProperty());
+    job.set(IOConstants.SCHEMA_EVOLUTION_COLUMNS_TYPES, BigRow.getColumnTypesProperty());
+    HiveConf.setBoolVar(job, HiveConf.ConfVars.HIVE_TRANSACTIONAL_TABLE_SCAN, true);
     InputSplit[] splits = inf.getSplits(job, 5);
     assertEquals(5, splits.length);
     org.apache.hadoop.mapred.RecordReader<NullWritable, OrcStruct> rr;
 
     // loop through the 5 splits and read each
     for(int i=0; i < 4; ++i) {
-      System.out.println("starting split " + i);
+      System.out.println("starting split " + i + " = " + splits[i]);
       rr = inf.getRecordReader(splits[i], job, Reporter.NULL);
       NullWritable key = rr.createKey();
       OrcStruct value = rr.createValue();
@@ -1037,6 +1090,9 @@ public class TestOrcRawRecordMerger {
     job.set("mapred.max.split.size", "2");
     job.set("mapred.input.dir", root.toString());
     job.set("bucket_count", "1");
+    job.set(IOConstants.SCHEMA_EVOLUTION_COLUMNS, MyRow.getColumnNamesProperty());
+    job.set(IOConstants.SCHEMA_EVOLUTION_COLUMNS_TYPES, MyRow.getColumnTypesProperty());
+    HiveConf.setBoolVar(job, HiveConf.ConfVars.HIVE_TRANSACTIONAL_TABLE_SCAN, true);
     InputSplit[] splits = inf.getSplits(job, 5);
     assertEquals(1, splits.length);
     org.apache.hadoop.mapred.RecordReader<NullWritable, OrcStruct> rr;
@@ -1104,6 +1160,9 @@ public class TestOrcRawRecordMerger {
     JobConf job = new JobConf();
     job.set("mapred.input.dir", root.toString());
     job.set("bucket_count", "2");
+    job.set(IOConstants.SCHEMA_EVOLUTION_COLUMNS, MyRow.getColumnNamesProperty());
+    job.set(IOConstants.SCHEMA_EVOLUTION_COLUMNS_TYPES, MyRow.getColumnTypesProperty());
+    HiveConf.setBoolVar(job, HiveConf.ConfVars.HIVE_TRANSACTIONAL_TABLE_SCAN, true);
 
     // read the keys before the delta is flushed
     InputSplit[] splits = inf.getSplits(job, 1);

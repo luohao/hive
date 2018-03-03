@@ -17,18 +17,33 @@
  */
 package org.apache.hadoop.hive.ql.txn.compactor;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.commons.io.FileUtils;
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.fs.*;
+import org.apache.hadoop.fs.FSDataInputStream;
+import org.apache.hadoop.fs.FSDataOutputStream;
+import org.apache.hadoop.fs.FileStatus;
+import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hive.common.ValidTxnList;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.metastore.HiveMetaStoreClient;
 import org.apache.hadoop.hive.metastore.IMetaStoreClient;
-import org.apache.hadoop.hive.metastore.MetaStoreThread;
-import org.apache.hadoop.hive.metastore.api.*;
-import org.apache.hadoop.hive.metastore.txn.CompactionTxnHandler;
+import org.apache.hadoop.hive.metastore.api.AbortTxnRequest;
+import org.apache.hadoop.hive.metastore.api.CommitTxnRequest;
+import org.apache.hadoop.hive.metastore.api.FieldSchema;
+import org.apache.hadoop.hive.metastore.api.MetaException;
+import org.apache.hadoop.hive.metastore.api.NoSuchTxnException;
+import org.apache.hadoop.hive.metastore.api.OpenTxnRequest;
+import org.apache.hadoop.hive.metastore.api.OpenTxnsResponse;
+import org.apache.hadoop.hive.metastore.api.Order;
+import org.apache.hadoop.hive.metastore.api.Partition;
+import org.apache.hadoop.hive.metastore.api.SerDeInfo;
+import org.apache.hadoop.hive.metastore.api.StorageDescriptor;
+import org.apache.hadoop.hive.metastore.api.Table;
+import org.apache.hadoop.hive.metastore.api.TxnAbortedException;
 import org.apache.hadoop.hive.metastore.txn.TxnDbUtil;
+import org.apache.hadoop.hive.metastore.txn.TxnStore;
+import org.apache.hadoop.hive.metastore.txn.TxnUtils;
 import org.apache.hadoop.hive.ql.io.AcidInputFormat;
 import org.apache.hadoop.hive.ql.io.AcidOutputFormat;
 import org.apache.hadoop.hive.ql.io.AcidUtils;
@@ -39,13 +54,20 @@ import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspector;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.io.WritableComparable;
-import org.apache.hadoop.mapred.*;
+import org.apache.hadoop.mapred.InputSplit;
+import org.apache.hadoop.mapred.JobConf;
+import org.apache.hadoop.mapred.RecordReader;
+import org.apache.hadoop.mapred.RecordWriter;
+import org.apache.hadoop.mapred.Reporter;
 import org.apache.hadoop.util.Progressable;
 import org.apache.thrift.TException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.EOFException;
 import java.io.File;
 import java.io.IOException;
+import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -60,9 +82,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 public abstract class CompactorTest {
   static final private String CLASS_NAME = CompactorTest.class.getName();
-  static final private Log LOG = LogFactory.getLog(CLASS_NAME);
+  static final private Logger LOG = LoggerFactory.getLogger(CLASS_NAME);
 
-  protected CompactionTxnHandler txnHandler;
+  protected TxnStore txnHandler;
   protected IMetaStoreClient ms;
   protected long sleepTime = 1000;
   protected HiveConf conf;
@@ -75,11 +97,12 @@ public abstract class CompactorTest {
     TxnDbUtil.setConfValues(conf);
     TxnDbUtil.cleanDb();
     ms = new HiveMetaStoreClient(conf);
-    txnHandler = new CompactionTxnHandler(conf);
-    tmpdir = new File(System.getProperty("java.io.tmpdir") +
-        System.getProperty("file.separator") + "compactor_test_tables");
-    tmpdir.mkdir();
-    tmpdir.deleteOnExit();
+    txnHandler = TxnUtils.getTxnStore(conf);
+    tmpdir = new File (Files.createTempDirectory("compactor_test_table_").toString());
+  }
+
+  protected void compactorTestCleanup() throws IOException {
+    FileUtils.deleteDirectory(tmpdir);
   }
 
   protected void startInitiator() throws Exception {
@@ -293,7 +316,7 @@ public abstract class CompactorTest {
       if (bucket == 0 && !allBucketsPresent) continue; // skip one
       Path partFile = null;
       if (type == FileType.LEGACY) {
-        partFile = new Path(location, String.format(AcidUtils.BUCKET_DIGITS, bucket) + "_0");
+        partFile = new Path(location, String.format(AcidUtils.LEGACY_FILE_BUCKET_DIGITS, bucket) + "_0");
       } else {
         Path dir = new Path(location, filename);
         fs.mkdirs(dir);
@@ -337,7 +360,7 @@ public abstract class CompactorTest {
           FileSystem fs = p.getFileSystem(conf);
           if (fs.exists(p)) filesToRead.add(p);
         } else {
-          filesToRead.add(new Path(baseDirectory, "00000_0"));
+          filesToRead.add(new Path(baseDirectory, "000000_0"));
 
         }
       }
@@ -361,7 +384,7 @@ public abstract class CompactorTest {
     }
 
     @Override
-    public boolean validateInput(FileSystem fs, HiveConf conf, ArrayList<FileStatus> files) throws
+    public boolean validateInput(FileSystem fs, HiveConf conf, List<FileStatus> files) throws
         IOException {
       return false;
     }
@@ -516,6 +539,10 @@ public abstract class CompactorTest {
   abstract boolean useHive130DeltaDirName();
 
   String makeDeltaDirName(long minTxnId, long maxTxnId) {
+    if(minTxnId != maxTxnId) {
+      //covers both streaming api and post compaction style.
+      return makeDeltaDirNameCompacted(minTxnId, maxTxnId);
+    }
     return useHive130DeltaDirName() ?
       AcidUtils.deltaSubdir(minTxnId, maxTxnId, 0) : AcidUtils.deltaSubdir(minTxnId, maxTxnId);
   }

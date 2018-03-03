@@ -402,10 +402,12 @@ public final class LazyBinaryUtils {
     return 1 + len;
   }
 
+  public static final int VLONG_BYTES_LEN = 9;
+
   private static ThreadLocal<byte[]> vLongBytesThreadLocal = new ThreadLocal<byte[]>() {
     @Override
     public byte[] initialValue() {
-      return new byte[9];
+      return new byte[VLONG_BYTES_LEN];
     }
   };
 
@@ -414,7 +416,7 @@ public final class LazyBinaryUtils {
     int len = LazyBinaryUtils.writeVLongToByteArray(vLongBytes, l);
     byteStream.write(vLongBytes, 0, len);
   }
-  
+
   public static void writeDouble(RandomAccessOutput byteStream, double d) {
     long v = Double.doubleToLongBits(d);
     byteStream.write((byte) (v >> 56));

@@ -1,4 +1,6 @@
+set hive.mapred.mode=nonstrict;
 
+set hive.cbo.enable=false;
 
 
 

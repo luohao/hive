@@ -18,8 +18,11 @@
 
 package org.apache.hadoop.hive.common;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import java.net.InetAddress;
+import java.net.UnknownHostException;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hive.conf.HiveConf;
@@ -29,7 +32,7 @@ import org.apache.hadoop.hive.conf.HiveConf;
  */
 public class ServerUtils {
 
-  public static final Log LOG = LogFactory.getLog(ServerUtils.class);
+  public static final Logger LOG = LoggerFactory.getLogger(ServerUtils.class);
 
   public static void cleanUpScratchDir(HiveConf hiveConf) {
     if (hiveConf.getBoolVar(HiveConf.ConfVars.HIVE_START_CLEANUP_SCRATCHDIR)) {
@@ -44,6 +47,33 @@ public class ServerUtils {
       catch (Throwable e) {
         LOG.warn("Unable to delete scratchDir : " + hiveScratchDir, e);
       }
+    }
+  }
+
+  /**
+   * Get the Inet address of the machine of the given host name.
+   * @param hostname The name of the host
+   * @return The network address of the the host
+   * @throws UnknownHostException
+   */
+  public static InetAddress getHostAddress(String hostname) throws UnknownHostException {
+    InetAddress serverIPAddress;
+    if (hostname != null && !hostname.isEmpty()) {
+      serverIPAddress = InetAddress.getByName(hostname);
+    } else {
+      serverIPAddress = InetAddress.getLocalHost();
+    }
+    return serverIPAddress;
+  }
+  /**
+   * @return name of current host
+   */
+  public static String hostname() {
+    try {
+      return InetAddress.getLocalHost().getHostName();
+    } catch (UnknownHostException e) {
+      LOG.error("Unable to resolve my host name " + e.getMessage());
+      throw new RuntimeException(e);
     }
   }
 

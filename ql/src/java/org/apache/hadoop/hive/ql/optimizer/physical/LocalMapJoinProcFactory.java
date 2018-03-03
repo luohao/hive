@@ -24,8 +24,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Stack;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.ql.exec.GroupByOperator;
 import org.apache.hadoop.hive.ql.exec.HashTableDummyOperator;
@@ -62,7 +62,7 @@ import org.apache.hadoop.hive.ql.plan.TableDesc;
  * OOM in group by operator.
  */
 public final class LocalMapJoinProcFactory {
-  private static final Log LOG = LogFactory.getLog(LocalMapJoinProcFactory.class);
+  private static final Logger LOG = LoggerFactory.getLogger(LocalMapJoinProcFactory.class);
 
   public static NodeProcessor getJoinProc() {
     return new LocalMapJoinProcessor();
@@ -141,7 +141,7 @@ public final class LocalMapJoinProcFactory {
 
       HashTableSinkDesc hashTableSinkDesc = new HashTableSinkDesc(mapJoinDesc);
       HashTableSinkOperator hashTableSinkOp = (HashTableSinkOperator) OperatorFactory
-          .get(hashTableSinkDesc);
+          .get(mapJoinOp.getCompilationOpContext(), hashTableSinkDesc);
 
       // get the last operator for processing big tables
       int bigTable = mapJoinDesc.getPosBigTable();
@@ -203,7 +203,8 @@ public final class LocalMapJoinProcFactory {
 
         // create new operator: HashTable DummyOperator, which share the table desc
         HashTableDummyDesc desc = new HashTableDummyDesc();
-        HashTableDummyOperator dummyOp = (HashTableDummyOperator) OperatorFactory.get(desc);
+        HashTableDummyOperator dummyOp = (HashTableDummyOperator) OperatorFactory.get(
+            parent.getCompilationOpContext(), desc);
         TableDesc tbl;
 
         if (parent.getSchema() == null) {

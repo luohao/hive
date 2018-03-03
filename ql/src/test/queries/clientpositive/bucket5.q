@@ -1,9 +1,10 @@
 set hive.input.format=org.apache.hadoop.hive.ql.io.HiveInputFormat;
-set hive.enforce.bucketing = true;
-set hive.enforce.sorting = true;
+;
+
 set hive.exec.reducers.max = 1;
 set hive.merge.mapfiles = true;
 set hive.merge.mapredfiles = true;
+set hive.merge.tezfiles = true;
 set mapred.reduce.tasks = 2;
 
 -- Tests that when a multi insert inserts into a bucketed table and a table which is not bucketed

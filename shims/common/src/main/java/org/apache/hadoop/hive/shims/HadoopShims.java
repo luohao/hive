@@ -25,19 +25,13 @@ import java.net.URI;
 import java.nio.ByteBuffer;
 import java.security.AccessControlException;
 import java.security.NoSuchAlgorithmException;
-import java.security.PrivilegedExceptionAction;
 import java.util.Comparator;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
 
-import javax.security.auth.login.LoginException;
-
 import com.google.common.annotations.VisibleForTesting;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.BlockLocation;
 import org.apache.hadoop.fs.FSDataInputStream;
@@ -48,7 +42,6 @@ import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.PathFilter;
 import org.apache.hadoop.fs.permission.FsAction;
 import org.apache.hadoop.fs.permission.FsPermission;
-import org.apache.hadoop.hive.shims.HadoopShims.StoragePolicyValue;
 import org.apache.hadoop.io.LongWritable;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.mapred.ClusterStatus;
@@ -80,10 +73,10 @@ import org.apache.hadoop.util.Progressable;
 public interface HadoopShims {
 
   /**
-   * Constructs and Returns TaskAttempt Log Url
+   * Constructs and Returns TaskAttempt Logger Url
    * or null if the TaskLogServlet is not available
    *
-   *  @return TaskAttempt Log Url
+   *  @return TaskAttempt Logger Url
    */
   String getTaskAttemptLogUrl(JobConf conf,
       String taskTrackerHttpAddress,
@@ -97,7 +90,9 @@ public interface HadoopShims {
       String nameNode, int numDir) throws IOException;
 
   public MiniMrShim getMiniTezCluster(Configuration conf, int numberOfTaskTrackers,
-      String nameNode, int numDir) throws IOException;
+      String nameNode, boolean usingLlap) throws IOException;
+
+  public MiniMrShim getLocalMiniTezCluster(Configuration conf, boolean usingLlap);
 
   public MiniMrShim getMiniSparkCluster(Configuration conf, int numberOfTaskTrackers,
       String nameNode, int numDir) throws IOException;
@@ -119,6 +114,12 @@ public interface HadoopShims {
       int numDataNodes,
       boolean format,
       String[] racks) throws IOException;
+
+  MiniDFSShim getMiniDfs(Configuration conf,
+      int numDataNodes,
+      boolean format,
+      String[] racks,
+      boolean isHA) throws IOException;
 
   /**
    * Shim around the functions in MiniDFSCluster that Hive uses.
@@ -180,18 +181,6 @@ public interface HadoopShims {
   public String getJobLauncherHttpAddress(Configuration conf);
 
   /**
-   * Move the directory/file to trash. In case of the symlinks or mount points, the file is
-   * moved to the trashbin in the actual volume of the path p being deleted
-   * @param fs
-   * @param path
-   * @param conf
-   * @return false if the item is already in the trash or trash is disabled
-   * @throws IOException
-   */
-  public boolean moveToAppropriateTrash(FileSystem fs, Path path, Configuration conf)
-      throws IOException;
-
-  /**
    * Get the default block size for the path. FileSystem alone is not sufficient to
    * determine the same, as in case of CSMT the underlying file system determines that.
    * @param fs
@@ -247,18 +236,6 @@ public interface HadoopShims {
         Class<RecordReader<K, V>> rrClass) throws IOException;
   }
 
-  /**
-   * Get the block locations for the given directory.
-   * @param fs the file system
-   * @param path the directory name to get the status and block locations
-   * @param filter a filter that needs to accept the file (or null)
-   * @return an list for the located file status objects
-   * @throws IOException
-   */
-  List<FileStatus> listLocatedStatus(FileSystem fs, Path path,
-                                     PathFilter filter) throws IOException;
-
-
   List<HdfsFileStatusWithId> listLocatedHdfsStatus(
       FileSystem fs, Path path, PathFilter filter) throws IOException;
 
@@ -292,35 +269,6 @@ public interface HadoopShims {
    * @throws IOException
    */
   public void hflush(FSDataOutputStream stream) throws IOException;
-
-  /**
-   * For a given file, return a file status
-   * @param conf
-   * @param fs
-   * @param file
-   * @return
-   * @throws IOException
-   */
-  public HdfsFileStatus getFullFileStatus(Configuration conf, FileSystem fs, Path file) throws IOException;
-
-  /**
-   * For a given file, set a given file status.
-   * @param conf
-   * @param sourceStatus
-   * @param fs
-   * @param target
-   * @throws IOException
-   */
-  public void setFullFileStatus(Configuration conf, HdfsFileStatus sourceStatus,
-    FileSystem fs, Path target) throws IOException;
-
-  /**
-   * Includes the vanilla FileStatus, and AclStatus if it applies to this version of hadoop.
-   */
-  public interface HdfsFileStatus {
-    public FileStatus getFileStatus();
-    public void debugLog();
-  }
 
   public interface HdfsFileStatusWithId {
     public FileStatus getFileStatus();
@@ -417,12 +365,10 @@ public interface HadoopShims {
    */
   public FileSystem createProxyFileSystem(FileSystem fs, URI uri);
 
-  public Map<String, String> getHadoopConfNames();
-  
   /**
    * Create a shim for DFS storage policy.
    */
-  
+
   public enum StoragePolicyValue {
     MEMORY, /* 1-replica memory */
     SSD, /* 3-replica ssd */
@@ -435,80 +381,16 @@ public interface HadoopShims {
       return StoragePolicyValue.valueOf(name.toUpperCase().trim());
     }
   };
-  
+
   public interface StoragePolicyShim {
     void setStoragePolicy(Path path, StoragePolicyValue policy) throws IOException;
   }
-  
+
   /**
    *  obtain a storage policy shim associated with the filesystem.
    *  Returns null when the filesystem has no storage policies.
    */
   public StoragePolicyShim getStoragePolicyShim(FileSystem fs);
-
-  /**
-   * a hadoop.io ByteBufferPool shim.
-   */
-  public interface ByteBufferPoolShim {
-    /**
-     * Get a new ByteBuffer from the pool.  The pool can provide this from
-     * removing a buffer from its internal cache, or by allocating a
-     * new buffer.
-     *
-     * @param direct     Whether the buffer should be direct.
-     * @param length     The minimum length the buffer will have.
-     * @return           A new ByteBuffer. Its capacity can be less
-     *                   than what was requested, but must be at
-     *                   least 1 byte.
-     */
-    ByteBuffer getBuffer(boolean direct, int length);
-
-    /**
-     * Release a buffer back to the pool.
-     * The pool may choose to put this buffer into its cache/free it.
-     *
-     * @param buffer    a direct bytebuffer
-     */
-    void putBuffer(ByteBuffer buffer);
-  }
-
-  /**
-   * Provides an HDFS ZeroCopyReader shim.
-   * @param in FSDataInputStream to read from (where the cached/mmap buffers are tied to)
-   * @param in ByteBufferPoolShim to allocate fallback buffers with
-   *
-   * @return returns null if not supported
-   */
-  public ZeroCopyReaderShim getZeroCopyReader(FSDataInputStream in, ByteBufferPoolShim pool) throws IOException;
-
-  public interface ZeroCopyReaderShim {
-    /**
-     * Get a ByteBuffer from the FSDataInputStream - this can be either a HeapByteBuffer or an MappedByteBuffer.
-     * Also move the in stream by that amount. The data read can be small than maxLength.
-     *
-     * @return ByteBuffer read from the stream,
-     */
-    public ByteBuffer readBuffer(int maxLength, boolean verifyChecksums) throws IOException;
-    /**
-     * Release a ByteBuffer obtained from a read on the
-     * Also move the in stream by that amount. The data read can be small than maxLength.
-     *
-     */
-    public void releaseBuffer(ByteBuffer buffer);
-  }
-
-  public enum DirectCompressionType {
-    NONE,
-    ZLIB_NOHEADER,
-    ZLIB,
-    SNAPPY,
-  };
-
-  public interface DirectDecompressorShim {
-    public void decompress(ByteBuffer src, ByteBuffer dst) throws IOException;
-  }
-
-  public DirectDecompressorShim getDirectDecompressor(DirectCompressionType codec);
 
   /**
    * Get configuration from JobContext
@@ -632,6 +514,17 @@ public interface HadoopShims {
     public boolean arePathsOnSameEncryptionZone(Path path1, Path path2) throws IOException;
 
     /**
+     * Checks if two HDFS paths are on the same encrypted or unencrypted zone.
+     *
+     * @param path1 Path to HDFS file system
+     * @param path2 Path to HDFS file system
+     * @param encryptionShim2 The encryption-shim corresponding to path2.
+     * @return True if both paths are in the same zone; False otherwise.
+     * @throws IOException If an error occurred attempting to get encryption information
+     */
+    public boolean arePathsOnSameEncryptionZone(Path path1, Path path2, HdfsEncryptionShim encryptionShim2) throws IOException;
+
+    /**
      * Compares two encrypted path strengths.
      *
      * @param path1 HDFS path to compare.
@@ -682,6 +575,12 @@ public interface HadoopShims {
     @Override
     public boolean arePathsOnSameEncryptionZone(Path path1, Path path2) throws IOException {
     /* not supported */
+      return true;
+    }
+
+    @Override
+    public boolean arePathsOnSameEncryptionZone(Path path1, Path path2, HdfsEncryptionShim encryptionShim2) throws IOException {
+      // Not supported.
       return true;
     }
 
@@ -749,23 +648,6 @@ public interface HadoopShims {
    */
   long getFileId(FileSystem fs, String path) throws IOException;
 
-  /**
-   * Read data into a Text object in the fastest way possible
-   */
-  public interface TextReaderShim {
-    /**
-     * @param txt
-     * @param len
-     * @return bytes read
-     * @throws IOException
-     */
-    void read(Text txt, int size) throws IOException;
-  }
-
-  /**
-   * Wrap a TextReaderShim around an input stream. The reader shim will not
-   * buffer any reads from the underlying stream and will only consume bytes
-   * which are required for TextReaderShim.read() input.
-   */
-  public TextReaderShim getTextReaderShim(InputStream input) throws IOException;
+  /** Clones the UGI and the Subject. */
+  UserGroupInformation cloneUgi(UserGroupInformation baseUgi) throws IOException;
 }

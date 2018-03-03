@@ -21,20 +21,20 @@ import java.io.IOException;
 import java.io.Serializable;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.Future;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hive.common.ObjectPair;
 import org.apache.hadoop.hive.conf.HiveConf;
+import org.apache.hadoop.hive.ql.CompilationOpContext;
 import org.apache.hadoop.hive.ql.exec.persistence.RowContainer;
+import org.apache.hadoop.hive.ql.io.AcidUtils;
 import org.apache.hadoop.hive.ql.io.HiveInputFormat;
 import org.apache.hadoop.hive.ql.metadata.HiveException;
 import org.apache.hadoop.hive.ql.plan.BucketMapJoinContext;
@@ -50,6 +50,7 @@ import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspector;
 import org.apache.hadoop.io.WritableComparable;
 import org.apache.hadoop.io.WritableComparator;
 import org.apache.hadoop.mapred.JobConf;
+import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.util.PriorityQueue;
 import org.apache.hive.common.util.ReflectionUtil;
 
@@ -61,7 +62,7 @@ public class SMBMapJoinOperator extends AbstractMapJoinOperator<SMBJoinDesc> imp
 
   private static final long serialVersionUID = 1L;
 
-  private static final Log LOG = LogFactory.getLog(SMBMapJoinOperator.class
+  private static final Logger LOG = LoggerFactory.getLogger(SMBMapJoinOperator.class
       .getName());
 
   private MapredLocalWork localWork = null;
@@ -85,7 +86,13 @@ public class SMBMapJoinOperator extends AbstractMapJoinOperator<SMBJoinDesc> imp
   // performed as a smb join, based on all the tables/partitions being joined.
   private transient boolean convertedAutomaticallySMBJoin = false;
 
-  public SMBMapJoinOperator() {
+  /** Kryo ctor. */
+  protected SMBMapJoinOperator() {
+    super();
+  }
+
+  public SMBMapJoinOperator(CompilationOpContext ctx) {
+    super(ctx);
   }
 
   public SMBMapJoinOperator(AbstractMapJoinOperator<? extends MapJoinDesc> mapJoinOp) {
@@ -93,7 +100,7 @@ public class SMBMapJoinOperator extends AbstractMapJoinOperator<SMBJoinDesc> imp
   }
 
   @Override
-  protected Collection<Future<?>> initializeOp(Configuration hconf) throws HiveException {
+  protected void initializeOp(Configuration hconf) throws HiveException {
 
     // If there is a sort-merge join followed by a regular join, the SMBJoinOperator may not
     // get initialized at all. Consider the following query:
@@ -101,7 +108,7 @@ public class SMBMapJoinOperator extends AbstractMapJoinOperator<SMBJoinDesc> imp
     // For the mapper processing C, The SMJ is not initialized, no need to close it either.
     initDone = true;
 
-    Collection<Future<?>> result = super.initializeOp(hconf);
+    super.initializeOp(hconf);
 
     closeCalled = false;
 
@@ -156,7 +163,6 @@ public class SMBMapJoinOperator extends AbstractMapJoinOperator<SMBJoinDesc> imp
       }
       foundNextKeyGroup[pos] = false;
     }
-    return result;
   }
 
   @Override
@@ -166,7 +172,7 @@ public class SMBMapJoinOperator extends AbstractMapJoinOperator<SMBJoinDesc> imp
   }
 
   public void initializeMapredLocalWork(MapJoinDesc mjConf, Configuration hconf,
-      MapredLocalWork localWork, Log l4j) throws HiveException {
+      MapredLocalWork localWork, Logger l4j) throws HiveException {
     if (localWork == null || localWorkInited) {
       return;
     }
@@ -189,14 +195,22 @@ public class SMBMapJoinOperator extends AbstractMapJoinOperator<SMBJoinDesc> imp
       FetchWork fetchWork = entry.getValue();
 
       JobConf jobClone = new JobConf(hconf);
+      if (UserGroupInformation.isSecurityEnabled()) {
+        String hadoopAuthToken = System.getenv(UserGroupInformation.HADOOP_TOKEN_FILE_LOCATION);
+        if(hadoopAuthToken != null){
+          jobClone.set("mapreduce.job.credentials.binary", hadoopAuthToken);
+        }
+      }
 
       TableScanOperator ts = (TableScanOperator)aliasToWork.get(alias);
       // push down projections
       ColumnProjectionUtils.appendReadColumns(
-          jobClone, ts.getNeededColumnIDs(), ts.getNeededColumns());
+          jobClone, ts.getNeededColumnIDs(), ts.getNeededColumns(), ts.getNeededNestedColumnPaths());
       // push down filters
       HiveInputFormat.pushFilters(jobClone, ts);
 
+      AcidUtils.setTransactionalTableScan(jobClone, ts.getConf().isAcidTable());
+      AcidUtils.setAcidOperationalProperties(jobClone, ts.getConf().getAcidOperationalProperties());
 
       ts.passExecContext(getExecContext());
 
@@ -342,7 +356,7 @@ public class SMBMapJoinOperator extends AbstractMapJoinOperator<SMBJoinDesc> imp
       joinOneGroup();
       dataInCache = false;
       for (byte pos = 0; pos < order.length; pos++) {
-        if (this.candidateStorage[pos].hasRows()) {
+        if (this.candidateStorage[pos] != null && this.candidateStorage[pos].hasRows()) {
           dataInCache = true;
           break;
         }

@@ -29,6 +29,7 @@ import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspectorUtils.Object
 import org.apache.hadoop.hive.serde2.objectinspector.primitive.StringObjectInspector;
 import org.apache.hadoop.hive.serde2.typeinfo.TypeInfoFactory;
 import org.apache.hadoop.hive.serde2.typeinfo.TypeInfoUtils;
+import org.apache.hadoop.io.DoubleWritable;
 import org.apache.hadoop.io.Text;
 
 public class KeyWrapperFactory {
@@ -104,22 +105,7 @@ public class KeyWrapperFactory {
 
     @Override
     public void setHashKey() {
-      if (keys == null) {
-        hashcode = 0;
-      } else {
-        hashcode = 1;
-        for (Object element : keys) {
-          hashcode = 31 * hashcode;
-          if(element != null) {
-            if(element instanceof LazyDouble) {
-              long v = Double.doubleToLongBits(((LazyDouble)element).getWritableObject().get());
-              hashcode = hashcode + (int) (v ^ (v >>> 32));
-            } else {
-              hashcode = hashcode + element.hashCode();
-            }
-          }
-        }
-      }
+      hashcode = ObjectInspectorUtils.writableArrayHashCode(keys);
     }
 
     @Override

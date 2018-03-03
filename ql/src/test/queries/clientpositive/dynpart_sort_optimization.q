@@ -1,13 +1,13 @@
+set hive.compute.query.using.stats=false;
+set hive.mapred.mode=nonstrict;
 set hive.explain.user=false;
 set hive.optimize.sort.dynamic.partition=true;
 set hive.exec.dynamic.partition=true;
 set hive.exec.max.dynamic.partitions=1000;
 set hive.exec.max.dynamic.partitions.pernode=1000;
 set hive.exec.dynamic.partition.mode=nonstrict;
-set hive.enforce.bucketing=false;
-set hive.enforce.sorting=false;
-set hive.exec.submitviachild=true;
-set hive.exec.submit.local.task.via.child=true;
+
+
 
 create table over1k(
            t tinyint,
@@ -63,8 +63,8 @@ insert overwrite table over1k_part_limit partition(ds="foo", t) select si,i,b,f,
 insert overwrite table over1k_part_buck partition(t) select si,i,b,f,t from over1k where t is null or t=27;
 insert overwrite table over1k_part_buck_sort partition(t) select si,i,b,f,t from over1k where t is null or t=27;
 
-set hive.enforce.bucketing=true;
-set hive.enforce.sorting=true;
+
+
 
 -- map-reduce jobs modified by hive.optimize.sort.dynamic.partition optimization
 explain insert into table over1k_part partition(ds="foo", t) select si,i,b,f,t from over1k where t is null or t=27;
@@ -117,6 +117,7 @@ insert overwrite table over1k_part2 partition(ds="foo",t) select si,i,b,f,t from
 desc formatted over1k_part2 partition(ds="foo",t=27);
 desc formatted over1k_part2 partition(ds="foo",t="__HIVE_DEFAULT_PARTITION__");
 
+-- SORT_BEFORE_DIFF
 select * from over1k_part2;
 select count(*) from over1k_part2;
 
@@ -126,6 +127,7 @@ insert overwrite table over1k_part2 partition(ds="foo",t) select si,i,b,f,t from
 desc formatted over1k_part2 partition(ds="foo",t=27);
 desc formatted over1k_part2 partition(ds="foo",t="__HIVE_DEFAULT_PARTITION__");
 
+-- SORT_BEFORE_DIFF
 select * from over1k_part2;
 select count(*) from over1k_part2;
 
@@ -163,3 +165,46 @@ desc formatted over1k_part_buck_sort2 partition(t="__HIVE_DEFAULT_PARTITION__");
 
 select * from over1k_part_buck_sort2;
 select count(*) from over1k_part_buck_sort2;
+
+create table over1k_part3(
+           si smallint,
+           b bigint,
+           f float)
+       partitioned by (s string, t tinyint, i int);
+
+set hive.optimize.sort.dynamic.partition=true;
+explain insert overwrite table over1k_part3 partition(s,t,i) select si,b,f,s,t,i from over1k where s="foo";
+explain insert overwrite table over1k_part3 partition(s,t,i) select si,b,f,s,t,i from over1k where t=27;
+explain insert overwrite table over1k_part3 partition(s,t,i) select si,b,f,s,t,i from over1k where i=100;
+explain insert overwrite table over1k_part3 partition(s,t,i) select si,b,f,s,t,i from over1k where i=100 and t=27;
+explain insert overwrite table over1k_part3 partition(s,t,i) select si,b,f,s,t,i from over1k where i=100 and s="foo";
+explain insert overwrite table over1k_part3 partition(s,t,i) select si,b,f,s,t,i from over1k where t=27 and s="foo";
+explain insert overwrite table over1k_part3 partition(s,t,i) select si,b,f,s,t,i from over1k where i=100 and t=27 and s="foo";
+
+insert overwrite table over1k_part3 partition(s,t,i) select si,b,f,s,t,i from over1k where s="foo";
+insert overwrite table over1k_part3 partition(s,t,i) select si,b,f,s,t,i from over1k where t=27;
+insert overwrite table over1k_part3 partition(s,t,i) select si,b,f,s,t,i from over1k where i=100;
+insert overwrite table over1k_part3 partition(s,t,i) select si,b,f,s,t,i from over1k where i=100 and t=27;
+insert overwrite table over1k_part3 partition(s,t,i) select si,b,f,s,t,i from over1k where i=100 and s="foo";
+insert overwrite table over1k_part3 partition(s,t,i) select si,b,f,s,t,i from over1k where t=27 and s="foo";
+insert overwrite table over1k_part3 partition(s,t,i) select si,b,f,s,t,i from over1k where i=100 and t=27 and s="foo";
+
+select sum(hash(*)) from over1k_part3;
+
+-- cross verify results with SDPO disabled
+drop table over1k_part3;
+create table over1k_part3(
+           si smallint,
+           b bigint,
+           f float)
+       partitioned by (s string, t tinyint, i int);
+set hive.optimize.sort.dynamic.partition=false;
+insert overwrite table over1k_part3 partition(s,t,i) select si,b,f,s,t,i from over1k where s="foo";
+insert overwrite table over1k_part3 partition(s,t,i) select si,b,f,s,t,i from over1k where t=27;
+insert overwrite table over1k_part3 partition(s,t,i) select si,b,f,s,t,i from over1k where i=100;
+insert overwrite table over1k_part3 partition(s,t,i) select si,b,f,s,t,i from over1k where i=100 and t=27;
+insert overwrite table over1k_part3 partition(s,t,i) select si,b,f,s,t,i from over1k where i=100 and s="foo";
+insert overwrite table over1k_part3 partition(s,t,i) select si,b,f,s,t,i from over1k where t=27 and s="foo";
+insert overwrite table over1k_part3 partition(s,t,i) select si,b,f,s,t,i from over1k where i=100 and t=27 and s="foo";
+
+select sum(hash(*)) from over1k_part3;

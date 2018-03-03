@@ -28,10 +28,10 @@ import java.util.List;
 import java.util.ListIterator;
 import java.util.NoSuchElementException;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.hive.ql.metadata.HiveException;
-import org.apache.hadoop.hive.serde2.SerDe;
+import org.apache.hadoop.hive.serde2.AbstractSerDe;
 import org.apache.hadoop.hive.serde2.SerDeException;
 import org.apache.hadoop.hive.serde2.io.ShortWritable;
 import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspectorUtils;
@@ -45,7 +45,7 @@ public class FlatRowContainer extends AbstractCollection<Object>
   private static final Object[] EMPTY_OBJECT_ARRAY = new Object[0];
   private static final int UNKNOWN = Integer.MAX_VALUE;
 
-  private static Log LOG = LogFactory.getLog(FlatRowContainer.class);
+  private static Logger LOG = LoggerFactory.getLogger(FlatRowContainer.class);
 
   /**
    * In lazy mode, 0s element contains context for deserialization and all the other
@@ -69,7 +69,7 @@ public class FlatRowContainer extends AbstractCollection<Object>
   /** Called when loading the hashtable. */
   public void add(MapJoinObjectSerDeContext context,
       BytesWritable value) throws HiveException {
-    SerDe serde = context.getSerDe();
+    AbstractSerDe serde = context.getSerDe();
     isAliasFilterSet = !context.hasFilterTag(); // has tag => need to set later
     if (rowLength == UNKNOWN) {
       try {
@@ -197,7 +197,7 @@ public class FlatRowContainer extends AbstractCollection<Object>
     }
   }
 
-  private void read(SerDe serde, Writable writable, int rowOffset) throws HiveException {
+  private void read(AbstractSerDe serde, Writable writable, int rowOffset) throws HiveException {
     try {
       ObjectInspectorUtils.copyStructToArray(
           serde.deserialize(writable), serde.getObjectInspector(),

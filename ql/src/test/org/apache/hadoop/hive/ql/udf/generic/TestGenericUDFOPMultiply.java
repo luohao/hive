@@ -215,7 +215,7 @@ public class TestGenericUDFOPMultiply extends AbstractTestGenericUDFOPNumeric {
 
     verifyReturnType(new GenericUDFOPMultiply(), "float", "float", "float");
     verifyReturnType(new GenericUDFOPMultiply(), "float", "double", "double");
-    verifyReturnType(new GenericUDFOPMultiply(), "float", "decimal(10,2)", "double");
+    verifyReturnType(new GenericUDFOPMultiply(), "float", "decimal(10,2)", "float");
 
     verifyReturnType(new GenericUDFOPMultiply(), "double", "double", "double");
     verifyReturnType(new GenericUDFOPMultiply(), "double", "decimal(10,2)", "double");
@@ -237,11 +237,17 @@ public class TestGenericUDFOPMultiply extends AbstractTestGenericUDFOPNumeric {
 
     verifyReturnType(new GenericUDFOPMultiply(), "float", "float", "float");
     verifyReturnType(new GenericUDFOPMultiply(), "float", "double", "double");
-    verifyReturnType(new GenericUDFOPMultiply(), "float", "decimal(10,2)", "double");
+    verifyReturnType(new GenericUDFOPMultiply(), "float", "decimal(10,2)", "float");
 
     verifyReturnType(new GenericUDFOPMultiply(), "double", "double", "double");
     verifyReturnType(new GenericUDFOPMultiply(), "double", "decimal(10,2)", "double");
 
     verifyReturnType(new GenericUDFOPMultiply(), "decimal(10,2)", "decimal(10,2)", "decimal(21,4)");
+
+    verifyReturnType(new GenericUDFOPMultiply(), "decimal(38,18)", "decimal(38,18)", "decimal(38,6)");
+    verifyReturnType(new GenericUDFOPMultiply(), "decimal(38,38)", "decimal(38,38)", "decimal(38,37)");
+    verifyReturnType(new GenericUDFOPMultiply(), "decimal(38,0)", "decimal(38,0)", "decimal(38,0)");
+    verifyReturnType(new GenericUDFOPMultiply(), "decimal(38,38)", "decimal(38,0)", "decimal(38,6)");
+    verifyReturnType(new GenericUDFOPMultiply(), "decimal(20,2)", "decimal(20,0)", "decimal(38,2)");
   }
 }

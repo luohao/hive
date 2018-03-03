@@ -23,10 +23,11 @@ import org.apache.hive.service.cli.HiveSQLException;
 import org.apache.hive.service.cli.OperationHandle;
 import org.apache.hive.service.cli.operation.ExecuteStatementOperation;
 import org.apache.hive.service.cli.operation.OperationManager;
-import org.apache.hive.service.cli.thrift.TProtocolVersion;
+import org.apache.hive.service.rpc.thrift.TProtocolVersion;
 import org.junit.Assert;
 import org.junit.Test;
 import org.mockito.Mockito;
+import static org.mockito.Matchers.*;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -47,14 +48,14 @@ public class TestHiveSessionImpl {
     String password = "";
     HiveConf serverhiveConf = new HiveConf();
     String ipAddress = null;
-    HiveSessionImpl session = new HiveSessionImpl(protocol, username, password,
+    HiveSessionImpl session = new HiveSessionImpl(null, protocol, username, password,
       serverhiveConf, ipAddress) {
       @Override
-      protected synchronized void acquire(boolean userAccess) {
+      protected synchronized void acquire(boolean userAccess, boolean isOperation) {
       }
 
       @Override
-      protected synchronized void release(boolean userAccess) {
+      protected synchronized void release(boolean userAccess, boolean isOperation) {
       }
     };
 
@@ -68,12 +69,13 @@ public class TestHiveSessionImpl {
     Mockito.when(operation.getHandle()).thenReturn(opHandle);
     Map<String, String> confOverlay = new HashMap<String, String>();
     String hql = "drop table if exists table_not_exists";
-    Mockito.when(operationManager.newExecuteStatementOperation(session, hql, confOverlay,
-            true)).thenReturn(operation);
+    Mockito.when(operationManager.newExecuteStatementOperation(same(session), eq(hql),
+        (Map<String, String>)Mockito.any(), eq(true), eq(0L))).thenReturn(operation);
 
     try {
 
       //Running a normal async query with no exceptions,then no need to close opHandle
+      session.open(new HashMap<String, String>());
       session.executeStatementAsync(hql, confOverlay);
       Mockito.verify(operationManager, Mockito.times(0)).closeOperation(opHandle);
 

@@ -27,9 +27,16 @@ import java.util.Properties;
 import java.util.Set;
 
 import org.apache.commons.compress.utils.CharsetNames;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
+import org.apache.hadoop.hive.common.LogUtils;
+import org.apache.hadoop.hive.ql.exec.Utilities;
+import org.apache.hadoop.hive.ql.session.SessionState;
+import org.apache.hive.spark.client.SparkClientUtilities;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.apache.hadoop.hbase.HBaseConfiguration;
 import org.apache.hadoop.hive.conf.HiveConf;
+import org.apache.hadoop.hive.conf.HiveConfUtil;
 import org.apache.hadoop.hive.ql.exec.vector.VectorizedRowBatch;
 import org.apache.hadoop.hive.ql.io.HiveKey;
 import org.apache.hadoop.io.BytesWritable;
@@ -43,13 +50,16 @@ import com.google.common.base.Strings;
 import com.google.common.collect.Sets;
 
 public class HiveSparkClientFactory {
-  protected static final transient Log LOG = LogFactory.getLog(HiveSparkClientFactory.class);
+  protected static final transient Logger LOG = LoggerFactory.getLogger(HiveSparkClientFactory.class);
 
   private static final String SPARK_DEFAULT_CONF_FILE = "spark-defaults.conf";
-  private static final String SPARK_DEFAULT_MASTER = "yarn-cluster";
+  private static final String SPARK_DEFAULT_MASTER = "yarn";
+  private static final String SPARK_DEFAULT_DEPLOY_MODE = "cluster";
   private static final String SPARK_DEFAULT_APP_NAME = "Hive on Spark";
   private static final String SPARK_DEFAULT_SERIALIZER = "org.apache.spark.serializer.KryoSerializer";
   private static final String SPARK_DEFAULT_REFERENCE_TRACKING = "false";
+  private static final String SPARK_WAIT_APP_COMPLETE = "spark.yarn.submit.waitAppCompletion";
+  private static final String SPARK_DEPLOY_MODE = "spark.submit.deployMode";
 
   public static HiveSparkClient createHiveSparkClient(HiveConf hiveconf) throws Exception {
     Map<String, String> sparkConf = initiateSparkConf(hiveconf);
@@ -66,10 +76,16 @@ public class HiveSparkClientFactory {
 
   public static Map<String, String> initiateSparkConf(HiveConf hiveConf) {
     Map<String, String> sparkConf = new HashMap<String, String>();
+    HBaseConfiguration.addHbaseResources(hiveConf);
 
     // set default spark configurations.
     sparkConf.put("spark.master", SPARK_DEFAULT_MASTER);
-    sparkConf.put("spark.app.name", SPARK_DEFAULT_APP_NAME);
+    final String appNameKey = "spark.app.name";
+    String appName = hiveConf.get(appNameKey);
+    if (appName == null) {
+      appName = SPARK_DEFAULT_APP_NAME;
+    }
+    sparkConf.put(appNameKey, appName);
     sparkConf.put("spark.serializer", SPARK_DEFAULT_SERIALIZER);
     sparkConf.put("spark.kryo.referenceTracking", SPARK_DEFAULT_REFERENCE_TRACKING);
 
@@ -88,7 +104,7 @@ public class HiveSparkClientFactory {
             sparkConf.put(propertyName, properties.getProperty(propertyName));
             LOG.info(String.format(
               "load spark property from %s (%s -> %s).",
-              SPARK_DEFAULT_CONF_FILE, propertyName, value));
+              SPARK_DEFAULT_CONF_FILE, propertyName, LogUtils.maskIfPassword(propertyName,value)));
           }
         }
       }
@@ -112,7 +128,27 @@ public class HiveSparkClientFactory {
       sparkMaster = sparkConf.get("spark.master");
       hiveConf.set("spark.master", sparkMaster);
     }
-    if (sparkMaster.equals("yarn-cluster")) {
+    String deployMode = null;
+    if (!SparkClientUtilities.isLocalMaster(sparkMaster)) {
+      deployMode = hiveConf.get(SPARK_DEPLOY_MODE);
+      if (deployMode == null) {
+        deployMode = sparkConf.get(SPARK_DEPLOY_MODE);
+        if (deployMode == null) {
+          deployMode = SparkClientUtilities.getDeployModeFromMaster(sparkMaster);
+        }
+        if (deployMode == null) {
+          deployMode = SPARK_DEFAULT_DEPLOY_MODE;
+        }
+        hiveConf.set(SPARK_DEPLOY_MODE, deployMode);
+      }
+    }
+    if (SessionState.get() != null && SessionState.get().getConf() != null) {
+      SessionState.get().getConf().set("spark.master", sparkMaster);
+      if (deployMode != null) {
+        SessionState.get().getConf().set(SPARK_DEPLOY_MODE, deployMode);
+      }
+    }
+    if (SparkClientUtilities.isYarnClusterMode(sparkMaster, deployMode)) {
       sparkConf.put("spark.yarn.maxAppAttempts", "1");
     }
     for (Map.Entry<String, String> entry : hiveConf) {
@@ -122,9 +158,9 @@ public class HiveSparkClientFactory {
         sparkConf.put(propertyName, value);
         LOG.info(String.format(
           "load spark property from hive configuration (%s -> %s).",
-          propertyName, value));
+          propertyName, LogUtils.maskIfPassword(propertyName,value)));
       } else if (propertyName.startsWith("yarn") &&
-        (sparkMaster.equals("yarn-client") || sparkMaster.equals("yarn-cluster"))) {
+          SparkClientUtilities.isYarnMaster(sparkMaster)) {
         String value = hiveConf.get(propertyName);
         // Add spark.hadoop prefix for yarn properties as SparkConf only accept properties
         // started with spark prefix, Spark would remove spark.hadoop prefix lately and add
@@ -132,14 +168,33 @@ public class HiveSparkClientFactory {
         sparkConf.put("spark.hadoop." + propertyName, value);
         LOG.info(String.format(
           "load yarn property from hive configuration in %s mode (%s -> %s).",
-          sparkMaster, propertyName, value));
+          sparkMaster, propertyName, LogUtils.maskIfPassword(propertyName,value)));
+      } else if (propertyName.equals(CommonConfigurationKeysPublic.FS_DEFAULT_NAME_KEY)) {
+        String value = hiveConf.get(propertyName);
+        if (value != null && !value.isEmpty()) {
+          sparkConf.put("spark.hadoop." + propertyName, value);
+        }
+      } else if (propertyName.startsWith("hbase") || propertyName.startsWith("zookeeper.znode")) {
+        // Add HBase related configuration to Spark because in security mode, Spark needs it
+        // to generate hbase delegation token for Spark. This is a temp solution to deal with
+        // Spark problem.
+        String value = hiveConf.get(propertyName);
+        sparkConf.put("spark.hadoop." + propertyName, value);
+        LOG.info(String.format(
+          "load HBase configuration (%s -> %s).", propertyName, LogUtils.maskIfPassword(propertyName,value)));
+      } else if (propertyName.startsWith("oozie")) {
+        String value = hiveConf.get(propertyName);
+        sparkConf.put("spark." + propertyName, value);
+        LOG.info(String.format(
+          "Pass Oozie configuration (%s -> %s).", propertyName, LogUtils.maskIfPassword(propertyName,value)));
       }
+
       if (RpcConfiguration.HIVE_SPARK_RSC_CONFIGS.contains(propertyName)) {
         String value = RpcConfiguration.getValue(hiveConf, propertyName);
         sparkConf.put(propertyName, value);
         LOG.info(String.format(
           "load RPC property from hive configuration (%s -> %s).",
-          propertyName, value));
+          propertyName, LogUtils.maskIfPassword(propertyName,value)));
       }
     }
 
@@ -152,7 +207,35 @@ public class HiveSparkClientFactory {
     classes.add(HiveKey.class.getName());
     sparkConf.put("spark.kryo.classesToRegister", Joiner.on(",").join(classes));
 
+    // set yarn queue name
+    final String sparkQueueNameKey = "spark.yarn.queue";
+    if (SparkClientUtilities.isYarnMaster(sparkMaster) && hiveConf.get(sparkQueueNameKey) == null) {
+      String queueName = hiveConf.get("mapreduce.job.queuename");
+      if (queueName != null) {
+        sparkConf.put(sparkQueueNameKey, queueName);
+      }
+    }
+
+    // Disable it to avoid verbose app state report in yarn-cluster mode
+    if (SparkClientUtilities.isYarnClusterMode(sparkMaster, deployMode) &&
+        sparkConf.get(SPARK_WAIT_APP_COMPLETE) == null) {
+      sparkConf.put(SPARK_WAIT_APP_COMPLETE, "false");
+    }
+
+    // Set the credential provider passwords if found, if there is job specific password
+    // the credential provider location is set directly in the execute method of LocalSparkClient
+    // and submit method of RemoteHiveSparkClient when the job config is created
+    String password = HiveConfUtil.getJobCredentialProviderPassword(hiveConf);
+    if(password != null) {
+      addCredentialProviderPassword(sparkConf, password);
+    }
     return sparkConf;
+  }
+
+  private static void addCredentialProviderPassword(Map<String, String> sparkConf,
+      String jobCredstorePassword) {
+    sparkConf.put("spark.yarn.appMasterEnv.HADOOP_CREDSTORE_PASSWORD", jobCredstorePassword);
+    sparkConf.put("spark.executorEnv.HADOOP_CREDSTORE_PASSWORD", jobCredstorePassword);
   }
 
   static SparkConf generateSparkConf(Map<String, String> conf) {

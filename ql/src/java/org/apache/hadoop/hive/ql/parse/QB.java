@@ -21,16 +21,18 @@ package org.apache.hadoop.hive.ql.parse;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hive.ql.metadata.Table;
 import org.apache.hadoop.hive.ql.plan.CreateTableDesc;
+import org.apache.hadoop.hive.ql.plan.CreateViewDesc;
 
 /**
  * Implementation of the query block.
@@ -39,7 +41,7 @@ import org.apache.hadoop.hive.ql.plan.CreateTableDesc;
 
 public class QB {
 
-  private static final Log LOG = LogFactory.getLog("hive.ql.parse.QB");
+  private static final Logger LOG = LoggerFactory.getLogger("hive.ql.parse.QB");
 
   private final int numJoins = 0;
   private final int numGbys = 0;
@@ -47,6 +49,7 @@ public class QB {
   private int numSelDi = 0;
   private HashMap<String, String> aliasToTabs;
   private HashMap<String, QBExpr> aliasToSubq;
+  private HashMap<String, Table> viewAliasToViewSchema;
   private HashMap<String, Map<String, String>> aliasToProps;
   private List<String> aliases;
   private QBParseInfo qbp;
@@ -58,6 +61,11 @@ public class QB {
   private CreateTableDesc tblDesc = null; // table descriptor of the final
   private CreateTableDesc directoryDesc = null ;
   private List<Path> encryptedTargetTablePaths;
+  private boolean insideView;
+  private Set<String> aliasInsideView;
+
+  // If this is a materialized view, this stores the view descriptor
+  private CreateViewDesc viewDesc;
 
   // used by PTFs
   /*
@@ -110,6 +118,7 @@ public class QB {
     // Must be deterministic order maps - see HIVE-8707
     aliasToTabs = new LinkedHashMap<String, String>();
     aliasToSubq = new LinkedHashMap<String, QBExpr>();
+    viewAliasToViewSchema = new LinkedHashMap<String, Table>();
     aliasToProps = new LinkedHashMap<String, Map<String, String>>();
     aliases = new ArrayList<String>();
     if (alias != null) {
@@ -121,6 +130,7 @@ public class QB {
     ptfNodeToSpec = new LinkedHashMap<ASTNode, PTFInvocationSpec>();
     destToWindowingSpec = new LinkedHashMap<String, WindowingSpec>();
     id = getAppendedAliasFromId(outer_id, alias);
+    aliasInsideView = new HashSet<>();
   }
 
   // For sub-queries, the id. and alias should be appended since same aliases can be re-used
@@ -231,15 +241,18 @@ public class QB {
     return aliasToProps.get(alias.toLowerCase());
   }
 
-  public void rewriteViewToSubq(String alias, String viewName, QBExpr qbexpr) {
+  public void rewriteViewToSubq(String alias, String viewName, QBExpr qbexpr, Table tab) {
     alias = alias.toLowerCase();
     String tableName = aliasToTabs.remove(alias);
     assert (viewName.equals(tableName));
     aliasToSubq.put(alias, qbexpr);
+    if (tab != null) {
+      viewAliasToViewSchema.put(alias, tab);
+    }
   }
 
   public void rewriteCTEToSubq(String alias, String cteName, QBExpr qbexpr) {
-    rewriteViewToSubq(alias, cteName, qbexpr);
+    rewriteViewToSubq(alias, cteName, qbexpr, null);
   }
 
   public QBJoinTree getQbJoinTree() {
@@ -254,6 +267,11 @@ public class QB {
     this.isQuery = isQuery;
   }
 
+  /**
+   * Set to true in SemanticAnalyzer.getMetadataForDestFile,
+   * if destination is a file and query is not CTAS
+   * @return
+   */
   public boolean getIsQuery() {
     return isQuery;
   }
@@ -390,6 +408,22 @@ public class QB {
     return havingClauseSubQueryPredicate;
   }
 
+  public CreateViewDesc getViewDesc() {
+    return viewDesc;
+  }
+
+  public void setViewDesc(CreateViewDesc viewDesc) {
+    this.viewDesc = viewDesc;
+  }
+
+  public boolean isMaterializedView() {
+    return viewDesc != null && viewDesc.isMaterialized();
+  }
+
+  public boolean isView() {
+    return viewDesc != null && !viewDesc.isMaterialized();
+  }
+
   void addEncryptedTargetTablePath(Path p) {
     if(encryptedTargetTablePaths == null) {
       encryptedTargetTablePaths = new ArrayList<>();
@@ -405,5 +439,35 @@ public class QB {
       return Collections.emptyList();
     }
     return encryptedTargetTablePaths;
+  }
+
+  public HashMap<String, Table> getViewToTabSchema() {
+    return viewAliasToViewSchema;
+  }
+
+  public boolean isInsideView() {
+    return insideView;
+  }
+
+  public void setInsideView(boolean insideView) {
+    this.insideView = insideView;
+  }
+
+  public Set<String> getAliasInsideView() {
+    return aliasInsideView;
+  }
+
+  /**
+   * returns true, if the query block contains any query, or subquery without a source table
+   * Like select current_user(), select current_database()
+   * @return true, if the query block contains any query without a source table
+   */
+  public boolean containsQueryWithoutSourceTable() {
+    for (QBExpr qbexpr : aliasToSubq.values()) {
+      if (qbexpr.containsQueryWithoutSourceTable()) {
+        return true;
+      }
+    }
+    return aliasToTabs.size()==0 && aliasToSubq.size()==0;
   }
 }

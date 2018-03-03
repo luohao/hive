@@ -31,6 +31,9 @@ import org.apache.hadoop.hive.conf.HiveConf;
   }
   
   protected boolean allowQuotedId() {
+    if(hiveConf == null){
+      return false;
+    }
     String supportedQIds = HiveConf.getVar(hiveConf, HiveConf.ConfVars.HIVE_QUOTEDID_SUPPORT);
     return !"none".equals(supportedQIds);
   }
@@ -52,6 +55,8 @@ KW_EXISTS : 'EXISTS';
 
 KW_ASC : 'ASC';
 KW_DESC : 'DESC';
+KW_NULLS : 'NULLS';
+KW_LAST : 'LAST';
 KW_ORDER : 'ORDER';
 KW_GROUP : 'GROUP';
 KW_BY : 'BY';
@@ -91,6 +96,7 @@ KW_CLUSTER: 'CLUSTER';
 KW_DISTRIBUTE: 'DISTRIBUTE';
 KW_SORT: 'SORT';
 KW_UNION: 'UNION';
+KW_EXCEPT: 'EXCEPT';
 KW_LOAD: 'LOAD';
 KW_EXPORT: 'EXPORT';
 KW_IMPORT: 'IMPORT';
@@ -115,10 +121,11 @@ KW_COMMENT: 'COMMENT';
 KW_BOOLEAN: 'BOOLEAN';
 KW_TINYINT: 'TINYINT';
 KW_SMALLINT: 'SMALLINT';
-KW_INT: 'INT';
+KW_INT: 'INT' | 'INTEGER';
 KW_BIGINT: 'BIGINT';
 KW_FLOAT: 'FLOAT';
 KW_DOUBLE: 'DOUBLE';
+KW_PRECISION: 'PRECISION';
 KW_DATE: 'DATE';
 KW_DATETIME: 'DATETIME';
 KW_TIMESTAMP: 'TIMESTAMP';
@@ -185,6 +192,7 @@ KW_DEFERRED: 'DEFERRED';
 KW_SERDEPROPERTIES: 'SERDEPROPERTIES';
 KW_DBPROPERTIES: 'DBPROPERTIES';
 KW_LIMIT: 'LIMIT';
+KW_OFFSET: 'OFFSET';
 KW_SET: 'SET';
 KW_UNSET: 'UNSET';
 KW_TBLPROPERTIES: 'TBLPROPERTIES';
@@ -199,7 +207,6 @@ KW_ELSE: 'ELSE';
 KW_END: 'END';
 KW_MAPJOIN: 'MAPJOIN';
 KW_STREAMTABLE: 'STREAMTABLE';
-KW_HOLD_DDLTIME: 'HOLD_DDLTIME';
 KW_CLUSTERSTATUS: 'CLUSTERSTATUS';
 KW_UTC: 'UTC';
 KW_UTCTIMESTAMP: 'UTC_TMESTAMP';
@@ -210,6 +217,7 @@ KW_MINUS: 'MINUS';
 KW_FETCH: 'FETCH';
 KW_INTERSECT: 'INTERSECT';
 KW_VIEW: 'VIEW';
+KW_VIEWS: 'VIEWS';
 KW_IN: 'IN';
 KW_DATABASE: 'DATABASE';
 KW_DATABASES: 'DATABASES';
@@ -295,12 +303,15 @@ KW_AUTHORIZATION: 'AUTHORIZATION';
 KW_CONF: 'CONF';
 KW_VALUES: 'VALUES';
 KW_RELOAD: 'RELOAD';
-KW_YEAR: 'YEAR';
-KW_MONTH: 'MONTH';
-KW_DAY: 'DAY';
-KW_HOUR: 'HOUR';
-KW_MINUTE: 'MINUTE';
-KW_SECOND: 'SECOND';
+KW_YEAR: 'YEAR' | 'YEARS';
+KW_QUARTER: 'QUARTER';
+KW_MONTH: 'MONTH' | 'MONTHS';
+KW_WEEK: 'WEEK' | 'WEEKS';
+KW_DAY: 'DAY' | 'DAYS';
+KW_DOW: 'DAYOFWEEK';
+KW_HOUR: 'HOUR' | 'HOURS';
+KW_MINUTE: 'MINUTE' | 'MINUTES';
+KW_SECOND: 'SECOND' | 'SECONDS';
 KW_START: 'START';
 KW_TRANSACTION: 'TRANSACTION';
 KW_COMMIT: 'COMMIT';
@@ -312,6 +323,30 @@ KW_ISOLATION: 'ISOLATION';
 KW_LEVEL: 'LEVEL';
 KW_SNAPSHOT: 'SNAPSHOT';
 KW_AUTOCOMMIT: 'AUTOCOMMIT';
+KW_CACHE: 'CACHE';
+KW_PRIMARY: 'PRIMARY';
+KW_FOREIGN: 'FOREIGN';
+KW_REFERENCES: 'REFERENCES';
+KW_CONSTRAINT: 'CONSTRAINT';
+KW_VALIDATE: 'VALIDATE';
+KW_NOVALIDATE: 'NOVALIDATE';
+KW_RELY: 'RELY';
+KW_NORELY: 'NORELY';
+KW_KEY: 'KEY';
+KW_ABORT: 'ABORT';
+KW_EXTRACT: 'EXTRACT';
+KW_FLOOR: 'FLOOR';
+KW_MERGE: 'MERGE';
+KW_MATCHED: 'MATCHED';
+KW_REPL: 'REPL';
+KW_DUMP: 'DUMP';
+KW_STATUS: 'STATUS';
+KW_VECTORIZATION: 'VECTORIZATION';
+KW_SUMMARY: 'SUMMARY';
+KW_OPERATOR: 'OPERATOR';
+KW_EXPRESSION: 'EXPRESSION';
+KW_DETAIL: 'DETAIL';
+KW_WAIT: 'WAIT';
 
 // Operators
 // NOTE: if you add a new function/operator, add it to sysFuncNames so that describe function _FUNC_ will work.
@@ -346,6 +381,7 @@ DIV : 'DIV';
 AMPERSAND : '&';
 TILDE : '~';
 BITWISEOR : '|';
+CONCATENATE : '||';
 BITWISEXOR : '^';
 QUESTION : '?';
 DOLLAR : '$';
@@ -378,7 +414,7 @@ RegexComponent
     : 'a'..'z' | 'A'..'Z' | '0'..'9' | '_'
     | PLUS | STAR | QUESTION | MINUS | DOT
     | LPAREN | RPAREN | LSQUARE | RSQUARE | LCURLY | RCURLY
-    | BITWISEXOR | BITWISEOR | DOLLAR
+    | BITWISEXOR | BITWISEOR | DOLLAR | '!'
     ;
 
 StringLiteral
@@ -394,24 +430,14 @@ CharSetLiteral
     | '0' 'X' (HexDigit|Digit)+
     ;
 
-BigintLiteral
+IntegralLiteral
     :
-    (Digit)+ 'L'
+    (Digit)+ ('L' | 'S' | 'Y')
     ;
 
-SmallintLiteral
+NumberLiteral
     :
-    (Digit)+ 'S'
-    ;
-
-TinyintLiteral
-    :
-    (Digit)+ 'Y'
-    ;
-
-DecimalLiteral
-    :
-    Number 'B' 'D'
+    Number ('D' | 'B' 'D')
     ;
 
 ByteLengthLiteral
@@ -467,8 +493,10 @@ CharSetName
 WS  :  (' '|'\r'|'\t'|'\n') {$channel=HIDDEN;}
     ;
 
-COMMENT
-  : '--' (~('\n'|'\r'))*
-    { $channel=HIDDEN; }
-  ;
+LINE_COMMENT
+    : '--' (~('\n'|'\r'))* { $channel=HIDDEN; }
+    ;
 
+QUERY_HINT
+    : '/*' (options { greedy=false; } : QUERY_HINT|.)* '*/' { if(getText().charAt(2) != '+') { $channel=HIDDEN; } else { setText(getText().substring(3, getText().length() - 2)); } }
+    ;

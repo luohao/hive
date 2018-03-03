@@ -26,8 +26,8 @@ import java.util.Properties;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hive.common.type.HiveChar;
 import org.apache.hadoop.hive.common.type.HiveDecimal;
@@ -74,7 +74,7 @@ import com.google.common.collect.Lists;
     RegexSerDe.INPUT_REGEX, RegexSerDe.INPUT_REGEX_CASE_SENSITIVE })
 public class RegexSerDe extends AbstractSerDe {
 
-  public static final Log LOG = LogFactory.getLog(RegexSerDe.class.getName());
+  public static final Logger LOG = LoggerFactory.getLogger(RegexSerDe.class.getName());
 
   public static final String INPUT_REGEX = "input.regex";
   public static final String INPUT_REGEX_CASE_SENSITIVE = "input.regex.case.insensitive";
@@ -121,8 +121,9 @@ public class RegexSerDe extends AbstractSerDe {
           "This table does not have serde property \"input.regex\"!");
     }
 
-
-    List<String> columnNames = Arrays.asList(columnNameProperty.split(","));
+    final String columnNameDelimiter = tbl.containsKey(serdeConstants.COLUMN_NAME_DELIMITER) ? tbl
+        .getProperty(serdeConstants.COLUMN_NAME_DELIMITER) : String.valueOf(SerDeUtils.COMMA);
+    List<String> columnNames = Arrays.asList(columnNameProperty.split(columnNameDelimiter));
     columnTypes = TypeInfoUtils
         .getTypeInfosFromTypeString(columnTypeProperty);
     assert columnNames.size() == columnTypes.size();

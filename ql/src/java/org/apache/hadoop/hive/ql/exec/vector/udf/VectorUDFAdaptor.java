@@ -21,6 +21,7 @@ import java.sql.Date;
 import java.sql.Timestamp;
 
 import org.apache.hadoop.hive.common.type.HiveDecimal;
+import org.apache.hadoop.hive.ql.exec.MapredContext;
 import org.apache.hadoop.hive.ql.exec.UDFArgumentException;
 import org.apache.hadoop.hive.ql.exec.vector.*;
 import org.apache.hadoop.hive.ql.exec.vector.expressions.StringExpr;
@@ -37,6 +38,8 @@ import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspector;
 import org.apache.hadoop.hive.serde2.objectinspector.primitive.*;
 import org.apache.hadoop.hive.serde2.typeinfo.CharTypeInfo;
 import org.apache.hadoop.hive.serde2.typeinfo.VarcharTypeInfo;
+import org.apache.hadoop.hive.serde2.objectinspector.primitive.WritableBinaryObjectInspector;
+import org.apache.hadoop.io.BytesWritable;
 import org.apache.hadoop.io.Text;
 
 /**
@@ -83,6 +86,10 @@ public class VectorUDFAdaptor extends VectorExpression {
     writers = VectorExpressionWriterFactory.getExpressionWriters(expr.getChildren());
     for (int i = 0; i < childrenOIs.length; i++) {
       childrenOIs[i] = writers[i].getObjectInspector();
+    }
+    MapredContext context = MapredContext.get();
+    if (context != null) {
+      context.setup(genericUDF);
     }
     outputOI = VectorExpressionWriterFactory.genVectorExpressionWritable(expr)
         .getObjectInspector();
@@ -292,23 +299,14 @@ public class VectorUDFAdaptor extends VectorExpression {
         lv.vector[i] = ((WritableByteObjectInspector) outputOI).get(value);
       }
     } else if (outputOI instanceof WritableTimestampObjectInspector) {
-      LongColumnVector lv = (LongColumnVector) colVec;
+      TimestampColumnVector tv = (TimestampColumnVector) colVec;
       Timestamp ts;
       if (value instanceof Timestamp) {
         ts = (Timestamp) value;
       } else {
         ts = ((WritableTimestampObjectInspector) outputOI).getPrimitiveJavaObject(value);
       }
-      /* Calculate the number of nanoseconds since the epoch as a long integer. By convention
-       * that is how Timestamp values are operated on in a vector.
-       */
-      long l = ts.getTime() * 1000000  // Shift the milliseconds value over by 6 digits
-                                       // to scale for nanosecond precision.
-                                       // The milliseconds digits will by convention be all 0s.
-            + ts.getNanos() % 1000000; // Add on the remaining nanos.
-                                       // The % 1000000 operation removes the ms values
-                                       // so that the milliseconds are not counted twice.
-      lv.vector[i] = l;
+      tv.set(i, ts);
     } else if (outputOI instanceof WritableDateObjectInspector) {
       LongColumnVector lv = (LongColumnVector) colVec;
       Date ts;
@@ -334,8 +332,14 @@ public class VectorUDFAdaptor extends VectorExpression {
         HiveDecimal hd = ((WritableHiveDecimalObjectInspector) outputOI).getPrimitiveJavaObject(value);
         dcv.set(i, hd);
       }
+    } else if (outputOI instanceof WritableBinaryObjectInspector) {
+      BytesWritable bw = (BytesWritable) value;
+      BytesColumnVector bv = (BytesColumnVector) colVec;
+      bv.setVal(i, bw.getBytes(), 0, bw.getLength());
     } else {
-      throw new RuntimeException("Unhandled object type " + outputOI.getTypeName());
+      throw new RuntimeException("Unhandled object type " + outputOI.getTypeName() +
+          " inspector class " + outputOI.getClass().getName() +
+          " value class " + value.getClass().getName());
     }
   }
 
@@ -375,6 +379,11 @@ public class VectorUDFAdaptor extends VectorExpression {
 
   public void setExpr(ExprNodeGenericFuncDesc expr) {
     this.expr = expr;
+  }
+
+  @Override
+  public String vectorExpressionParameters() {
+    return expr.getExprString();
   }
 
   @Override

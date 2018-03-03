@@ -1,3 +1,4 @@
+set hive.mapred.mode=nonstrict;
 USE default;
 
 set hive.input.format=org.apache.hadoop.hive.ql.io.CombineHiveInputFormat;
@@ -9,9 +10,6 @@ set hive.exec.dynamic.partition=true;
 set hive.exec.dynamic.partition.mode=nonstrict;
 set mapred.cache.shared.enabled=false;
 set hive.merge.smallfiles.avgsize=0;
-
--- EXCLUDE_OS_WINDOWS
--- excluded on windows because of difference in file name encoding logic
 
 -- SORT_QUERY_RESULTS
 

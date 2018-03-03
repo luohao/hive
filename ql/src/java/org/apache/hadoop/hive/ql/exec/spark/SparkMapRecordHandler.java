@@ -22,8 +22,10 @@ import java.io.IOException;
 import java.util.Iterator;
 import java.util.List;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.apache.hadoop.hive.ql.CompilationOpContext;
+import org.apache.hadoop.hive.ql.exec.AbstractMapOperator;
 import org.apache.hadoop.hive.ql.exec.MapOperator;
 import org.apache.hadoop.hive.ql.exec.MapredContext;
 import org.apache.hadoop.hive.ql.exec.Operator;
@@ -53,9 +55,8 @@ import org.apache.hadoop.mapred.Reporter;
  *
  */
 public class SparkMapRecordHandler extends SparkRecordHandler {
-  private static final Log LOG = LogFactory.getLog(SparkMapRecordHandler.class);
-  private static final String PLAN_KEY = "__MAP_PLAN__";
-  private MapOperator mo;
+  private static final Logger LOG = LoggerFactory.getLogger(SparkMapRecordHandler.class);
+  private AbstractMapOperator mo;
   private MapredLocalWork localWork = null;
   private boolean isLogInfoEnabled = false;
   private ExecMapperContext execContext;
@@ -73,10 +74,11 @@ public class SparkMapRecordHandler extends SparkRecordHandler {
       // create map and fetch operators
       MapWork mrwork = Utilities.getMapWork(job);
 
+      CompilationOpContext runtimeCtx = new CompilationOpContext();
       if (mrwork.getVectorMode()) {
-        mo = new VectorMapOperator();
+        mo = new VectorMapOperator(runtimeCtx);
       } else {
-        mo = new MapOperator();
+        mo = new MapOperator(runtimeCtx);
       }
       mo.setConf(mrwork);
 
@@ -143,7 +145,7 @@ public class SparkMapRecordHandler extends SparkRecordHandler {
         throw (OutOfMemoryError) e;
       } else {
         String msg = "Error processing row: " + e;
-        LOG.fatal(msg, e);
+        LOG.error(msg, e);
         throw new RuntimeException(msg, e);
       }
     }
@@ -196,7 +198,7 @@ public class SparkMapRecordHandler extends SparkRecordHandler {
       }
     } finally {
       MapredContext.close();
-      Utilities.clearWorkMap();
+      Utilities.clearWorkMap(jc);
     }
   }
 

@@ -44,6 +44,11 @@ public class TestHplsqlLocal {
   }
 
   @Test
+  public void testBool() throws Exception {
+    run("bool");
+  }
+  
+  @Test
   public void testBoolExpr() throws Exception {
     run("bool_expr");
   }
@@ -61,6 +66,11 @@ public class TestHplsqlLocal {
   @Test
   public void testCast() throws Exception {
     run("cast");
+  }
+  
+  @Test
+  public void testCast2() throws Exception {
+    run("cast2");
   }
 
   @Test
@@ -87,12 +97,57 @@ public class TestHplsqlLocal {
   public void testCreateFunction2() throws Exception {
     run("create_function2");
   }
+  
+  @Test
+  public void testCreateFunction3() throws Exception {
+    run("create_function3");
+  }
+  
+  @Test
+  public void testCreateFunction4() throws Exception {
+    run("create_function4");
+  }
+
+  @Test
+  public void testCreatePackage() throws Exception {
+    run("create_package");
+  }
+  
+  @Test
+  public void testCreatePackage2() throws Exception {
+    run("create_package2");
+  }
+  
+  @Test
+  public void testCreatePackage3() throws Exception {
+    run("create_package3");
+  }
 
   @Test
   public void testCreateProcedure() throws Exception {
     run("create_procedure");
   }
+  
+  @Test
+  public void testCreateProcedure2() throws Exception {
+    run("create_procedure2");
+  }
+  
+  @Test
+  public void testCreateProcedure3() throws Exception {
+    run("create_procedure3");
+  }
+  
+  @Test
+  public void testCreateProcedureNoParams() throws Exception {
+    run("create_procedure_no_params");
+  }
 
+  @Test
+  public void testDatatypes() throws Exception {
+    run("datatypes");
+  }
+  
   @Test
   public void testDate() throws Exception {
     run("date");
@@ -108,6 +163,16 @@ public class TestHplsqlLocal {
     run("declare");
   }
 
+  @Test
+  public void testDeclare2() throws Exception {
+    run("declare2");
+  }
+  
+  @Test
+  public void testDeclare3() throws Exception {
+    run("declare3");
+  }
+  
   @Test
   public void testDeclareCondition() throws Exception {
     run("declare_condition");
@@ -149,6 +214,11 @@ public class TestHplsqlLocal {
   }
 
   @Test
+  public void testFloat() throws Exception {
+    run("float");
+  }
+  
+  @Test
   public void testForRange() throws Exception {
     run("for_range");
   }
@@ -157,7 +227,21 @@ public class TestHplsqlLocal {
   public void testIf() throws Exception {
     run("if");
   }
+  
+  @Test
+  public void testIf2() throws Exception {
+    run("if2");
+  }
+  
+  @Test
+  public void testIf3Bteq() throws Exception {
+    run("if3_bteq");
+  }
 
+  @Test
+  public void testInclude() throws Exception {
+    run("include");
+  }
   @Test
   public void testInstr() throws Exception {
     run("instr");
@@ -194,6 +278,11 @@ public class TestHplsqlLocal {
   }
 
   @Test
+  public void testMultDiv() throws Exception {
+    run("mult_div");
+  }
+
+  @Test
   public void testNvl() throws Exception {
     run("nvl");
   }
@@ -208,6 +297,11 @@ public class TestHplsqlLocal {
     run("print");
   }
 
+  @Test
+  public void testReplace() throws Exception {
+    run("replace");
+  }
+  
   @Test
   public void testReturn() throws Exception {
     run("return");
@@ -272,6 +366,16 @@ public class TestHplsqlLocal {
   public void testValuesInto() throws Exception {
     run("values_into");
   }
+  
+  @Test
+  public void testVarScope() throws Exception {
+    run("var_scope");
+  }
+  
+  @Test
+  public void testVarScope2() throws Exception {
+    run("var_scope2");
+  }
 
   @Test
   public void testWhile() throws Exception {
@@ -301,7 +405,7 @@ public class TestHplsqlLocal {
     BufferedReader reader = new BufferedReader(new StringReader(s));
     String line = null;
     while ((line = reader.readLine()) != null) {
-      if (!line.startsWith("log4j:")) {
+      if (!line.startsWith("log4j:") && !line.contains("INFO Log4j")) {
         sb.append(line);
         sb.append("\n");
       }

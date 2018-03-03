@@ -20,7 +20,9 @@ package org.apache.hive.service.cli.session;
 
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.Future;
 
+import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.metastore.IMetaStoreClient;
 import org.apache.hadoop.hive.ql.metadata.Hive;
 import org.apache.hive.service.auth.HiveAuthFactory;
@@ -56,8 +58,18 @@ public interface HiveSession extends HiveSessionBase {
    * @return
    * @throws HiveSQLException
    */
-  OperationHandle executeStatement(String statement,
-      Map<String, String> confOverlay) throws HiveSQLException;
+  OperationHandle executeStatement(String statement, Map<String, String> confOverlay) throws HiveSQLException;
+
+  /**
+   * execute operation handler
+   * @param statement
+   * @param confOverlay
+   * @param queryTimeout
+   * @return
+   * @throws HiveSQLException
+   */
+  OperationHandle executeStatement(String statement, Map<String, String> confOverlay,
+      long queryTimeout) throws HiveSQLException;
 
   /**
    * execute operation handler
@@ -66,8 +78,18 @@ public interface HiveSession extends HiveSessionBase {
    * @return
    * @throws HiveSQLException
    */
-  OperationHandle executeStatementAsync(String statement,
-      Map<String, String> confOverlay) throws HiveSQLException;
+  OperationHandle executeStatementAsync(String statement, Map<String, String> confOverlay) throws HiveSQLException;
+
+  /**
+   * execute operation handler
+   * @param statement
+   * @param confOverlay
+   * @param queryTimeout
+   * @return
+   * @throws HiveSQLException
+   */
+  OperationHandle executeStatementAsync(String statement, Map<String, String> confOverlay,
+      long queryTimeout) throws HiveSQLException;
 
   /**
    * getTypeInfo operation handler
@@ -136,6 +158,41 @@ public interface HiveSession extends HiveSessionBase {
       String functionName) throws HiveSQLException;
 
   /**
+   * getPrimaryKeys operation handler
+   * @param catalog
+   * @param schema
+   * @param table
+   * @return
+   * @throws HiveSQLException
+   */
+  OperationHandle getPrimaryKeys(String catalog, String schema, String table)
+    throws HiveSQLException;
+
+
+  /**
+   * getCrossReference operation handler
+   * @param primaryCatalog
+   * @param primarySchema
+   * @param primaryTable
+   * @param foreignCatalog
+   * @param foreignSchema
+   * @param foreignTable
+   * @return
+   * @throws HiveSQLException
+   */
+  OperationHandle getCrossReference(String primaryCatalog,
+	      String primarySchema, String primaryTable, String foreignCatalog,
+	      String foreignSchema, String foreignTable) 
+    throws HiveSQLException;
+
+  /**
+   *
+   * @return
+   * @throws HiveSQLException
+   */
+  HiveConf getSessionConf() throws HiveSQLException;
+
+  /**
    * close the session
    * @throws HiveSQLException
    */
@@ -163,4 +220,6 @@ public interface HiveSession extends HiveSessionBase {
   void closeExpiredOperations();
 
   long getNoOperationTime();
+
+  Future<?> submitBackgroundOperation(Runnable work);
 }

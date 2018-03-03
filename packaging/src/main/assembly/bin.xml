@@ -42,8 +42,31 @@
         <exclude>org.apache.hadoop:*</exclude>
         <exclude>org.apache.hive.hcatalog:*</exclude>
         <exclude>org.slf4j:*</exclude>
+        <exclude>log4j:*</exclude>
+        <exclude>junit:*</exclude>
+        <exclude>co.cask.tephra:*</exclude>
         <exclude>commons-configuration:commons-configuration</exclude>
+        <exclude>org.apache.hive:hive-jdbc:*:standalone</exclude>
       </excludes>
+    </dependencySet>
+    <dependencySet>
+      <outputDirectory>jdbc/</outputDirectory>
+      <unpack>false</unpack>
+      <useProjectArtifact>false</useProjectArtifact>
+      <useStrictFiltering>true</useStrictFiltering>
+      <includes>
+        <include>org.apache.hive:hive-jdbc:*:standalone</include>
+      </includes>
+    </dependencySet>
+    <dependencySet>
+      <outputDirectory>lib</outputDirectory>
+      <unpack>false</unpack>
+      <useProjectArtifact>false</useProjectArtifact>
+      <useStrictFiltering>true</useStrictFiltering>
+      <includes>
+        <include>org.apache.hive.hcatalog:hive-hcatalog-core</include>
+        <include>org.apache.hive.hcatalog:hive-hcatalog-server-extensions</include>
+      </includes>
     </dependencySet>
     <dependencySet>
       <outputDirectory>hcatalog/share/hcatalog</outputDirectory>
@@ -66,6 +89,9 @@
       <useProjectArtifact>false</useProjectArtifact>
       <useStrictFiltering>true</useStrictFiltering>
       <useTransitiveFiltering>true</useTransitiveFiltering>
+      <excludes>
+        <exclude>org.apache.hadoop:*</exclude>
+      </excludes>
       <includes>
         <include>org.apache.hive.hcatalog:hive-webhcat:*</include>
       </includes>
@@ -105,10 +131,24 @@
     </fileSet>
 
     <fileSet>
+      <directory>${project.parent.basedir}/binary-package-licenses</directory>
+      <includes>
+        <include>/*</include>
+      </includes>
+      <excludes>
+        <exclude>/README</exclude>
+      </excludes>
+      <outputDirectory>binary-package-licenses</outputDirectory>
+    </fileSet>
+
+    <fileSet>
       <directory>${project.parent.basedir}/data/files</directory>
       <includes>
         <include>/*.*</include>
       </includes>
+      <excludes>
+        <exclude>/*.jar</exclude>
+      </excludes>
       <outputDirectory>examples/files</outputDirectory>
     </fileSet>
 
@@ -125,14 +165,47 @@
       <directory>${project.parent.basedir}/bin</directory>
       <includes>
         <include>hive</include>
+        <include>llap/**/*</include>
         <include>metatool</include>
+        <include>hplsql</include>
         <include>schematool</include>
         <include>beeline</include>
         <include>hiveserver2</include>
         <include>hive-config.sh</include>
+        <include>hive-config.cmd</include>
+        <include>hive.cmd</include>
+        <include>hplsql.cmd</include>
+        <include>beeline.cmd</include>
         <include>ext/**/*</include>
       </includes>
       <outputDirectory>bin</outputDirectory>
+    </fileSet>
+
+    <fileSet>
+      <fileMode>755</fileMode>
+      <directory>${project.parent.basedir}/llap-server/bin</directory>
+      <includes>
+        <include>**/*</include>
+      </includes>
+      <outputDirectory>scripts/llap/bin</outputDirectory>
+    </fileSet>
+
+    <fileSet>
+      <fileMode>666</fileMode>
+      <directory>${project.parent.basedir}/llap-server/scripts</directory>
+      <includes>
+        <include>**/*</include>
+      </includes>
+      <outputDirectory>scripts/llap/sql/</outputDirectory>
+    </fileSet>
+
+    <fileSet>
+      <directory>${project.parent.basedir}/llap-server/src/main/resources/</directory>
+      <includes>
+        <include>**/*.py</include>
+        <include>**/*.xml</include>
+      </includes>
+      <outputDirectory>scripts/llap/slider</outputDirectory>
     </fileSet>
 
     <fileSet>
@@ -275,7 +348,7 @@
       <fileMode>644</fileMode>
       <includes>
         <include>webhcat-default.xml</include>
-        <include>webhcat-log4j2.xml</include>
+        <include>webhcat-log4j2.properties</include>
       </includes>
       <filtered>true</filtered>
       <outputDirectory>hcatalog/etc/webhcat</outputDirectory>
@@ -323,19 +396,34 @@
 
   <files>
     <file>
-      <source>${project.parent.basedir}/common/src/main/resources/hive-log4j2.xml</source>
+      <source>${project.parent.basedir}/common/src/main/resources/hive-log4j2.properties</source>
       <outputDirectory>conf</outputDirectory>
-      <destName>hive-log4j2.xml.template</destName>
+      <destName>hive-log4j2.properties.template</destName>
     </file>
     <file>
-      <source>${project.parent.basedir}/ql/src/main/resources/hive-exec-log4j2.xml</source>
+      <source>${project.parent.basedir}/ql/src/main/resources/hive-exec-log4j2.properties</source>
       <outputDirectory>conf</outputDirectory>
-      <destName>hive-exec-log4j2.xml.template</destName>
+      <destName>hive-exec-log4j2.properties.template</destName>
     </file>
     <file>
-      <source>${project.parent.basedir}/beeline/src/main/resources/beeline-log4j2.xml</source>
+      <source>${project.parent.basedir}/beeline/src/main/resources/beeline-log4j2.properties</source>
       <outputDirectory>conf</outputDirectory>
-      <destName>beeline-log4j2.xml.template</destName>
+      <destName>beeline-log4j2.properties.template</destName>
+    </file>
+    <file>
+      <source>${project.parent.basedir}/llap-server/src/main/resources/llap-daemon-log4j2.properties</source>
+      <outputDirectory>conf</outputDirectory>
+      <destName>llap-daemon-log4j2.properties.template</destName>
+    </file>
+    <file>
+      <source>${project.parent.basedir}/llap-server/src/main/resources/llap-cli-log4j2.properties</source>
+      <outputDirectory>conf</outputDirectory>
+      <destName>llap-cli-log4j2.properties.template</destName>
+    </file>
+    <file>
+      <source>${project.parent.basedir}/common/src/main/resources/parquet-logging.properties</source>
+      <outputDirectory>conf</outputDirectory>
+      <destName>parquet-logging.properties</destName>
     </file>
     <file>
       <source>${project.parent.basedir}/hcatalog/README.txt</source>

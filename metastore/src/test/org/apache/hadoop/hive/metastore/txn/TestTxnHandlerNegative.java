@@ -17,14 +17,16 @@
  */
 package org.apache.hadoop.hive.metastore.txn;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.hive.conf.HiveConf;
-import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.junit.Test;
 
+import static junit.framework.Assert.assertNotNull;
+import static junit.framework.Assert.assertTrue;
+
 public class TestTxnHandlerNegative {
-  static final private Log LOG = LogFactory.getLog(TestTxnHandlerNegative.class);
+  static final private Logger LOG = LoggerFactory.getLogger(TestTxnHandlerNegative.class);
 
   /**
    * this intentionally sets a bad URL for connection to test error handling logic
@@ -35,15 +37,18 @@ public class TestTxnHandlerNegative {
   public void testBadConnection() throws Exception {
     HiveConf conf = new HiveConf();
     conf.setVar(HiveConf.ConfVars.METASTORECONNECTURLKEY, "blah");
-    TxnHandler txnHandler1 = new TxnHandler(conf);
-    MetaException e = null;
+    RuntimeException e = null;
     try {
-      txnHandler1.getOpenTxns();
+      TxnUtils.getTxnStore(conf);
     }
-    catch(MetaException ex) {
+    catch(RuntimeException ex) {
       LOG.info("Expected error: " + ex.getMessage(), ex);
       e = ex;
     }
-    assert e != null : "did not get exception";
+    assertNotNull(e);
+    assertTrue(
+        e.getMessage().contains("No suitable driver found for blah")
+        || e.getMessage().contains("Failed to get driver instance for jdbcUrl=blah")
+    );
   }
 }

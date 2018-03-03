@@ -18,13 +18,8 @@
 
 package org.apache.hadoop.hive.ql.plan;
 
-import java.io.Serializable;
-import java.util.Enumeration;
-import java.util.LinkedHashMap;
-import java.util.Map;
-import java.util.Properties;
-
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hive.common.StringInternUtils;
 import org.apache.hadoop.hive.metastore.api.hive_metastoreConstants;
 import org.apache.hadoop.hive.ql.exec.Utilities;
 import org.apache.hadoop.hive.ql.io.HiveFileFormatUtils;
@@ -34,15 +29,25 @@ import org.apache.hadoop.hive.serde2.Deserializer;
 import org.apache.hadoop.hive.serde2.SerDeUtils;
 import org.apache.hadoop.mapred.InputFormat;
 import org.apache.hadoop.mapred.OutputFormat;
-
 import org.apache.hive.common.util.HiveStringUtils;
 import org.apache.hive.common.util.ReflectionUtil;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.io.Serializable;
+import java.util.Enumeration;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.Properties;
 
 /**
  * TableDesc.
  *
  */
 public class TableDesc implements Serializable, Cloneable {
+
+  private static final Logger LOG = LoggerFactory.getLogger(TableDesc.class);
+
   private static final long serialVersionUID = 1L;
   private Class<? extends InputFormat> inputFileFormatClass;
   private Class<? extends OutputFormat> outputFileFormatClass;
@@ -63,7 +68,7 @@ public class TableDesc implements Serializable, Cloneable {
     this.inputFileFormatClass = inputFormatClass;
     outputFileFormatClass = HiveFileFormatUtils
         .getOutputFormatSubstitute(outputFormatClass);
-    this.properties = properties;
+    setProperties(properties);
   }
 
   public Class<? extends Deserializer> getDeserializerClass() {
@@ -125,6 +130,7 @@ public class TableDesc implements Serializable, Cloneable {
   }
 
   public void setProperties(final Properties properties) {
+    StringInternUtils.internValuesInMap((Map) properties);
     this.properties = properties;
   }
 
@@ -140,7 +146,7 @@ public class TableDesc implements Serializable, Cloneable {
   /**
    * @return the serdeClassName
    */
-  @Explain(displayName = "serde", explainLevels = { Level.USER, Level.DEFAULT, Level.EXTENDED })
+  @Explain(displayName = "serde")
   public String getSerdeClassName() {
     return properties.getProperty(serdeConstants.SERIALIZATION_LIB);
   }
@@ -151,12 +157,12 @@ public class TableDesc implements Serializable, Cloneable {
         .getProperty(hive_metastoreConstants.META_TABLE_NAME);
   }
 
-  @Explain(displayName = "input format", explainLevels = { Level.USER, Level.DEFAULT, Level.EXTENDED })
+  @Explain(displayName = "input format")
   public String getInputFileFormatClassName() {
     return getInputFileFormatClass().getName();
   }
 
-  @Explain(displayName = "output format", explainLevels = { Level.USER, Level.DEFAULT, Level.EXTENDED })
+  @Explain(displayName = "output format")
   public String getOutputFileFormatClassName() {
     return getOutputFileFormatClass().getName();
   }
@@ -199,6 +205,10 @@ public class TableDesc implements Serializable, Cloneable {
 
   @Override
   public boolean equals(Object o) {
+    if (o == this) {
+      return true;
+    }
+
     if (!(o instanceof TableDesc)) {
       return false;
     }

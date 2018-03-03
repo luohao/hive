@@ -18,10 +18,12 @@
 
 package org.apache.hadoop.hive.ql.lockmgr;
 
-import java.util.Arrays;
 import java.util.Map;
 
+import org.apache.commons.lang.StringUtils;
 import org.apache.commons.lang.builder.HashCodeBuilder;
+import org.apache.hadoop.hive.common.StringInternUtils;
+import org.apache.hadoop.hive.metastore.MetaStoreUtils;
 import org.apache.hadoop.hive.ql.metadata.DummyPartition;
 import org.apache.hadoop.hive.ql.metadata.Hive;
 import org.apache.hadoop.hive.ql.metadata.HiveException;
@@ -52,9 +54,10 @@ public class HiveLockObject {
         String lockMode,
         String queryStr) {
       this.queryId = removeDelimiter(queryId);
-      this.lockTime = removeDelimiter(lockTime);
+      this.lockTime = StringInternUtils.internIfNotNull(removeDelimiter(lockTime));
       this.lockMode = removeDelimiter(lockMode);
-      this.queryStr = removeDelimiter(queryStr == null ? null : queryStr.trim());
+      this.queryStr = StringInternUtils.internIfNotNull(
+          removeDelimiter(queryStr == null ? null : queryStr.trim()));
     }
 
     /**
@@ -70,9 +73,9 @@ public class HiveLockObject {
 
       String[] elem = data.split(":");
       queryId = elem[0];
-      lockTime = elem[1];
+      lockTime = StringInternUtils.internIfNotNull(elem[1]);
       lockMode = elem[2];
-      queryStr = elem[3];
+      queryStr = StringInternUtils.internIfNotNull(elem[3]);
       if (elem.length >= 5) {
         clientIp = elem[4];
       }
@@ -177,22 +180,22 @@ public class HiveLockObject {
 
   public HiveLockObject(String path, HiveLockObjectData lockData) {
     this.pathNames = new String[1];
-    this.pathNames[0] = path;
+    this.pathNames[0] = StringInternUtils.internIfNotNull(path);
     this.data = lockData;
   }
 
   public HiveLockObject(String[] paths, HiveLockObjectData lockData) {
-    this.pathNames = paths;
+    this.pathNames = StringInternUtils.internStringsInArray(paths);
     this.data = lockData;
   }
 
   public HiveLockObject(Table tbl, HiveLockObjectData lockData) {
-    this(new String[] {tbl.getDbName(), tbl.getTableName()}, lockData);
+    this(new String[] {tbl.getDbName(), MetaStoreUtils.encodeTableName(tbl.getTableName())}, lockData);
   }
 
   public HiveLockObject(Partition par, HiveLockObjectData lockData) {
     this(new String[] {par.getTable().getDbName(),
-        par.getTable().getTableName(), par.getName()}, lockData);
+        MetaStoreUtils.encodeTableName(par.getTable().getTableName()), par.getName()}, lockData);
   }
 
   public HiveLockObject(DummyPartition par, HiveLockObjectData lockData) {
@@ -288,9 +291,8 @@ public class HiveLockObject {
     }
 
     HiveLockObject tgt = (HiveLockObject) o;
-    return Arrays.equals(pathNames, tgt.pathNames) &&
-        data == null ? tgt.getData() == null :
-        tgt.getData() != null && data.equals(tgt.getData());
+    return StringUtils.equals(this.getName(), tgt.getName()) &&
+        (data == null ? tgt.getData() == null : data.equals(tgt.getData()));
   }
 
   @Override

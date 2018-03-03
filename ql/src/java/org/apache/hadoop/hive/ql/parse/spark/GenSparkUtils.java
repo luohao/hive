@@ -28,9 +28,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
-import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.metastore.api.hive_metastoreConstants;
@@ -41,11 +38,12 @@ import org.apache.hadoop.hive.ql.exec.GroupByOperator;
 import org.apache.hadoop.hive.ql.exec.HashTableDummyOperator;
 import org.apache.hadoop.hive.ql.exec.JoinOperator;
 import org.apache.hadoop.hive.ql.exec.Operator;
+import org.apache.hadoop.hive.ql.exec.OperatorUtils;
 import org.apache.hadoop.hive.ql.exec.ReduceSinkOperator;
 import org.apache.hadoop.hive.ql.exec.SMBMapJoinOperator;
+import org.apache.hadoop.hive.ql.exec.SerializationUtilities;
 import org.apache.hadoop.hive.ql.exec.TableScanOperator;
 import org.apache.hadoop.hive.ql.exec.UnionOperator;
-import org.apache.hadoop.hive.ql.exec.Utilities;
 import org.apache.hadoop.hive.ql.exec.spark.SparkUtilities;
 import org.apache.hadoop.hive.ql.optimizer.GenMapRedUtils;
 import org.apache.hadoop.hive.ql.optimizer.spark.SparkPartitionPruningSinkDesc;
@@ -60,17 +58,19 @@ import org.apache.hadoop.hive.ql.plan.OperatorDesc;
 import org.apache.hadoop.hive.ql.plan.ReduceWork;
 import org.apache.hadoop.hive.ql.plan.SparkEdgeProperty;
 import org.apache.hadoop.hive.ql.plan.SparkWork;
+import org.apache.hadoop.hive.ql.plan.TableDesc;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import com.google.common.base.Preconditions;
 import com.google.common.base.Strings;
-import org.apache.hadoop.hive.ql.plan.TableDesc;
 
 /**
  * GenSparkUtils is a collection of shared helper methods to produce SparkWork
  * Cloned from GenTezUtils.
  */
 public class GenSparkUtils {
-  private static final Log LOG = LogFactory.getLog(GenSparkUtils.class.getName());
+  private static final Logger LOG = LoggerFactory.getLogger(GenSparkUtils.class.getName());
 
   // sequence number is used to name vertices (e.g.: Map 1, Reduce 14, ...)
   private int sequenceNumber = 0;
@@ -102,21 +102,21 @@ public class GenSparkUtils {
     reduceWork.setReducer(root);
     reduceWork.setNeedsTagging(GenMapRedUtils.needsTagging(reduceWork));
 
-    // All parents should be reduce sinks. We pick the one we just walked
-    // to choose the number of reducers. In the join/union case they will
-    // all be -1. In sort/order case where it matters there will be only
-    // one parent.
-    Preconditions.checkArgument(context.parentOfRoot instanceof ReduceSinkOperator,
-      "AssertionError: expected context.parentOfRoot to be an instance of ReduceSinkOperator, but was "
-      + context.parentOfRoot.getClass().getName());
+    // Pick the maximum # reducers across all parents as the # of reduce tasks.
+    int maxExecutors = -1;
+    for (Operator<? extends OperatorDesc> parentOfRoot : root.getParentOperators()) {
+      Preconditions.checkArgument(parentOfRoot instanceof ReduceSinkOperator,
+          "AssertionError: expected parentOfRoot to be an "
+              + "instance of ReduceSinkOperator, but was "
+              + parentOfRoot.getClass().getName());
+      ReduceSinkOperator reduceSink = (ReduceSinkOperator) parentOfRoot;
+      maxExecutors = Math.max(maxExecutors, reduceSink.getConf().getNumReducers());
+    }
+    reduceWork.setNumReduceTasks(maxExecutors);
+
     ReduceSinkOperator reduceSink = (ReduceSinkOperator) context.parentOfRoot;
-
-    reduceWork.setNumReduceTasks(reduceSink.getConf().getNumReducers());
-
     setupReduceSink(context, reduceWork, reduceSink);
-
     sparkWork.add(reduceWork);
-
     SparkEdgeProperty edgeProp = getEdgeProperty(reduceSink, reduceWork);
 
     sparkWork.connect(context.preceedingWork, reduceWork, edgeProp);
@@ -160,7 +160,7 @@ public class GenSparkUtils {
     String alias = ((TableScanOperator) root).getConf().getAlias();
 
     if (!deferSetup) {
-      setupMapWork(mapWork, context, partitions, root, alias);
+      setupMapWork(mapWork, context, partitions,(TableScanOperator) root, alias);
     }
 
     // add new item to the Spark work
@@ -171,7 +171,7 @@ public class GenSparkUtils {
 
   // this method's main use is to help unit testing this class
   protected void setupMapWork(MapWork mapWork, GenSparkProcContext context,
-      PrunedPartitionList partitions, Operator<? extends OperatorDesc> root,
+      PrunedPartitionList partitions, TableScanOperator root,
       String alias) throws SemanticException {
     // All the setup is done in GenMapRedUtils
     GenMapRedUtils.setMapWork(mapWork, context.parseContext,
@@ -188,8 +188,7 @@ public class GenSparkUtils {
   }
 
   // removes any union operator and clones the plan
-  public void removeUnionOperators(Configuration conf, GenSparkProcContext context,
-      BaseWork work)
+  public void removeUnionOperators(GenSparkProcContext context, BaseWork work)
     throws SemanticException {
 
     List<Operator<?>> roots = new ArrayList<Operator<?>>();
@@ -207,7 +206,7 @@ public class GenSparkUtils {
     }
 
     // need to clone the plan.
-    List<Operator<?>> newRoots = Utilities.cloneOperatorTree(conf, roots);
+    List<Operator<?>> newRoots = SerializationUtilities.cloneOperatorTree(roots);
 
     // Build a map to map the original FileSinkOperator and the cloned FileSinkOperators
     // This map is used for set the stats flag for the cloned FileSinkOperators in later process
@@ -332,7 +331,6 @@ public class GenSparkUtils {
       for (FileSinkOperator fsOp : fileSinkList) {
         fsOp.getConf().setGatherStats(fileSink.getConf().isGatherStats());
         fsOp.getConf().setStatsReliable(fileSink.getConf().isStatsReliable());
-        fsOp.getConf().setMaxStatsKeyPrefixLength(fileSink.getConf().getMaxStatsKeyPrefixLength());
       }
     }
 
@@ -443,7 +441,7 @@ public class GenSparkUtils {
     if (fso != null) {
       String bucketCount = fso.getConf().getTableInfo().getProperties().getProperty(
           hive_metastoreConstants.BUCKET_COUNT);
-      if (bucketCount != null && Integer.valueOf(bucketCount) > 1) {
+      if (bucketCount != null && Integer.parseInt(bucketCount) > 1) {
         edgeProperty.setMRShuffle();
       }
     }
@@ -576,7 +574,7 @@ public class GenSparkUtils {
    */
   public BaseWork getEnclosingWork(Operator<?> op, GenSparkProcContext procCtx) {
     List<Operator<?>> ops = new ArrayList<Operator<?>>();
-    findRoots(op, ops);
+    OperatorUtils.findRoots(op, ops);
     for (Operator<?> r : ops) {
       BaseWork work = procCtx.rootToWorkMap.get(r);
       if (work != null) {
@@ -584,19 +582,5 @@ public class GenSparkUtils {
       }
     }
     return null;
-  }
-
-  /*
-   * findRoots returns all root operators (in ops) that result in operator op
-   */
-  private void findRoots(Operator<?> op, List<Operator<?>> ops) {
-    List<Operator<?>> parents = op.getParentOperators();
-    if (parents == null || parents.isEmpty()) {
-      ops.add(op);
-      return;
-    }
-    for (Operator<?> p : parents) {
-      findRoots(p, ops);
-    }
   }
 }

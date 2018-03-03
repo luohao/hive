@@ -19,6 +19,7 @@
 package org.apache.hadoop.hive.ql.exec.vector;
 
 import java.io.IOException;
+import java.sql.Date;
 import java.sql.Timestamp;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -26,10 +27,13 @@ import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.apache.commons.lang.ArrayUtils;
+import org.apache.commons.lang.StringUtils;
 import org.apache.hadoop.hive.common.ObjectPair;
 import org.apache.hadoop.hive.common.type.HiveChar;
+import org.apache.hadoop.hive.common.type.HiveDecimal;
 import org.apache.hadoop.hive.common.type.HiveIntervalDayTime;
 import org.apache.hadoop.hive.common.type.HiveIntervalYearMonth;
 import org.apache.hadoop.hive.common.type.HiveVarchar;
@@ -45,17 +49,27 @@ import org.apache.hadoop.hive.serde2.io.HiveIntervalYearMonthWritable;
 import org.apache.hadoop.hive.serde2.io.HiveVarcharWritable;
 import org.apache.hadoop.hive.serde2.io.ShortWritable;
 import org.apache.hadoop.hive.serde2.io.TimestampWritable;
+import org.apache.hadoop.hive.serde2.objectinspector.ListObjectInspector;
+import org.apache.hadoop.hive.serde2.objectinspector.MapObjectInspector;
 import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspector;
 import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspector.Category;
+import org.apache.hadoop.hive.serde2.objectinspector.PrimitiveObjectInspector.PrimitiveCategory;
 import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspectorFactory;
 import org.apache.hadoop.hive.serde2.objectinspector.PrimitiveObjectInspector;
 import org.apache.hadoop.hive.serde2.objectinspector.StandardStructObjectInspector;
 import org.apache.hadoop.hive.serde2.objectinspector.StructField;
 import org.apache.hadoop.hive.serde2.objectinspector.StructObjectInspector;
+import org.apache.hadoop.hive.serde2.objectinspector.UnionObjectInspector;
+import org.apache.hadoop.hive.serde2.typeinfo.CharTypeInfo;
 import org.apache.hadoop.hive.serde2.typeinfo.DecimalTypeInfo;
+import org.apache.hadoop.hive.serde2.typeinfo.ListTypeInfo;
+import org.apache.hadoop.hive.serde2.typeinfo.MapTypeInfo;
 import org.apache.hadoop.hive.serde2.typeinfo.PrimitiveTypeInfo;
+import org.apache.hadoop.hive.serde2.typeinfo.StructTypeInfo;
 import org.apache.hadoop.hive.serde2.typeinfo.TypeInfo;
 import org.apache.hadoop.hive.serde2.typeinfo.TypeInfoUtils;
+import org.apache.hadoop.hive.serde2.typeinfo.UnionTypeInfo;
+import org.apache.hadoop.hive.serde2.typeinfo.VarcharTypeInfo;
 import org.apache.hadoop.io.BooleanWritable;
 import org.apache.hadoop.io.BytesWritable;
 import org.apache.hadoop.io.DataOutputBuffer;
@@ -63,10 +77,11 @@ import org.apache.hadoop.io.FloatWritable;
 import org.apache.hadoop.io.IntWritable;
 import org.apache.hadoop.io.LongWritable;
 import org.apache.hadoop.io.Text;
+import org.apache.hadoop.io.Writable;
 import org.apache.hive.common.util.DateUtils;
 
 public class VectorizedBatchUtil {
-  private static final Log LOG = LogFactory.getLog(VectorizedBatchUtil.class);
+  private static final Logger LOG = LoggerFactory.getLogger(VectorizedBatchUtil.class);
 
   /**
    * Sets the IsNull value for ColumnVector at specified index
@@ -111,137 +126,92 @@ public class VectorizedBatchUtil {
     batch.size = size;
   }
 
-  /**
-   * Walk through the object inspector and add column vectors
-   *
-   * @param oi
-   * @param cvList
-   *          ColumnVectors are populated in this list
-   */
-  private static void allocateColumnVector(StructObjectInspector oi,
-      List<ColumnVector> cvList) throws HiveException {
-    if (cvList == null) {
-      throw new HiveException("Null columnvector list");
+  public static ColumnVector createColumnVector(String typeName) {
+    typeName = typeName.toLowerCase();
+
+    // Allow undecorated CHAR and VARCHAR to support scratch column type names.
+    if (typeName.equals("char") || typeName.equals("varchar")) {
+      return new BytesColumnVector(VectorizedRowBatch.DEFAULT_SIZE);
     }
-    if (oi == null) {
-      return;
-    }
-    final List<? extends StructField> fields = oi.getAllStructFieldRefs();
-    for(StructField field : fields) {
-      ObjectInspector fieldObjectInspector = field.getFieldObjectInspector();
-      switch(fieldObjectInspector.getCategory()) {
-      case PRIMITIVE:
-        PrimitiveObjectInspector poi = (PrimitiveObjectInspector) fieldObjectInspector;
-        switch(poi.getPrimitiveCategory()) {
-        case BOOLEAN:
-        case BYTE:
-        case SHORT:
-        case INT:
-        case LONG:
-        case TIMESTAMP:
-        case DATE:
-        case INTERVAL_YEAR_MONTH:
-        case INTERVAL_DAY_TIME:
-          cvList.add(new LongColumnVector(VectorizedRowBatch.DEFAULT_SIZE));
-          break;
-        case FLOAT:
-        case DOUBLE:
-          cvList.add(new DoubleColumnVector(VectorizedRowBatch.DEFAULT_SIZE));
-          break;
-        case BINARY:
-        case STRING:
-        case CHAR:
-        case VARCHAR:
-          cvList.add(new BytesColumnVector(VectorizedRowBatch.DEFAULT_SIZE));
-          break;
-        case DECIMAL:
-          DecimalTypeInfo tInfo = (DecimalTypeInfo) poi.getTypeInfo();
-          cvList.add(new DecimalColumnVector(VectorizedRowBatch.DEFAULT_SIZE,
-              tInfo.precision(), tInfo.scale()));
-          break;
-        default:
-          throw new HiveException("Vectorizaton is not supported for datatype:"
-              + poi.getPrimitiveCategory());
+
+    TypeInfo typeInfo = (TypeInfo) TypeInfoUtils.getTypeInfoFromTypeString(typeName);
+    return createColumnVector(typeInfo);
+  }
+
+  public static ColumnVector createColumnVector(TypeInfo typeInfo) {
+    switch(typeInfo.getCategory()) {
+    case PRIMITIVE:
+      {
+        PrimitiveTypeInfo primitiveTypeInfo = (PrimitiveTypeInfo) typeInfo;
+        switch(primitiveTypeInfo.getPrimitiveCategory()) {
+          case BOOLEAN:
+          case BYTE:
+          case SHORT:
+          case INT:
+          case LONG:
+          case DATE:
+          case INTERVAL_YEAR_MONTH:
+            return new LongColumnVector(VectorizedRowBatch.DEFAULT_SIZE);
+          case TIMESTAMP:
+            return new TimestampColumnVector(VectorizedRowBatch.DEFAULT_SIZE);
+          case INTERVAL_DAY_TIME:
+            return new IntervalDayTimeColumnVector(VectorizedRowBatch.DEFAULT_SIZE);
+          case FLOAT:
+          case DOUBLE:
+            return new DoubleColumnVector(VectorizedRowBatch.DEFAULT_SIZE);
+          case BINARY:
+          case STRING:
+          case CHAR:
+          case VARCHAR:
+            return new BytesColumnVector(VectorizedRowBatch.DEFAULT_SIZE);
+          case DECIMAL:
+            DecimalTypeInfo tInfo = (DecimalTypeInfo) primitiveTypeInfo;
+            return new DecimalColumnVector(VectorizedRowBatch.DEFAULT_SIZE,
+                tInfo.precision(), tInfo.scale());
+          default:
+            throw new RuntimeException("Vectorizaton is not supported for datatype:"
+                + primitiveTypeInfo.getPrimitiveCategory());
         }
-        break;
-      case STRUCT:
-        throw new HiveException("Struct not supported");
-      default:
-        throw new HiveException("Flattening is not supported for datatype:"
-            + fieldObjectInspector.getCategory());
       }
+    case STRUCT:
+      {
+        StructTypeInfo structTypeInfo = (StructTypeInfo) typeInfo;
+        List<TypeInfo> typeInfoList = structTypeInfo.getAllStructFieldTypeInfos();
+        ColumnVector[] children = new ColumnVector[typeInfoList.size()];
+        for(int i=0; i < children.length; ++i) {
+          children[i] =
+              createColumnVector(typeInfoList.get(i));
+        }
+        return new StructColumnVector(VectorizedRowBatch.DEFAULT_SIZE,
+            children);
+      }
+    case UNION:
+      {
+        UnionTypeInfo unionTypeInfo = (UnionTypeInfo) typeInfo;
+        List<TypeInfo> typeInfoList = unionTypeInfo.getAllUnionObjectTypeInfos();
+        ColumnVector[] children = new ColumnVector[typeInfoList.size()];
+        for(int i=0; i < children.length; ++i) {
+          children[i] = createColumnVector(typeInfoList.get(i));
+        }
+        return new UnionColumnVector(VectorizedRowBatch.DEFAULT_SIZE, children);
+      }
+    case LIST:
+      {
+        ListTypeInfo listTypeInfo = (ListTypeInfo) typeInfo;
+        return new ListColumnVector(VectorizedRowBatch.DEFAULT_SIZE,
+            createColumnVector(listTypeInfo.getListElementTypeInfo()));
+      }
+    case MAP:
+      {
+        MapTypeInfo mapTypeInfo = (MapTypeInfo) typeInfo;
+        return new MapColumnVector(VectorizedRowBatch.DEFAULT_SIZE,
+            createColumnVector(mapTypeInfo.getMapKeyTypeInfo()),
+            createColumnVector(mapTypeInfo.getMapValueTypeInfo()));
+      }
+    default:
+      throw new RuntimeException("Vectorization is not supported for datatype:"
+          + typeInfo.getCategory());
     }
-  }
-
-
-  /**
-   * Create VectorizedRowBatch from ObjectInspector
-   *
-   * @param oi
-   * @return
-   * @throws HiveException
-   */
-  public static VectorizedRowBatch constructVectorizedRowBatch(
-      StructObjectInspector oi) throws HiveException {
-    final List<ColumnVector> cvList = new LinkedList<ColumnVector>();
-    allocateColumnVector(oi, cvList);
-    final VectorizedRowBatch result = new VectorizedRowBatch(cvList.size());
-    int i = 0;
-    for(ColumnVector cv : cvList) {
-      result.cols[i++] = cv;
-    }
-    return result;
-  }
-
-  /**
-   * Create VectorizedRowBatch from key and value object inspectors
-   * The row object inspector used by ReduceWork needs to be a **standard**
-   * struct object inspector, not just any struct object inspector.
-   * @param keyInspector
-   * @param valueInspector
-   * @param vectorScratchColumnTypeMap
-   * @return VectorizedRowBatch, OI
-   * @throws HiveException
-   */
-  public static ObjectPair<VectorizedRowBatch, StandardStructObjectInspector> constructVectorizedRowBatch(
-      StructObjectInspector keyInspector, StructObjectInspector valueInspector, Map<Integer, String> vectorScratchColumnTypeMap)
-          throws HiveException {
-
-    ArrayList<String> colNames = new ArrayList<String>();
-    ArrayList<ObjectInspector> ois = new ArrayList<ObjectInspector>();
-    List<? extends StructField> fields = keyInspector.getAllStructFieldRefs();
-    for (StructField field: fields) {
-      colNames.add(Utilities.ReduceField.KEY.toString() + "." + field.getFieldName());
-      ois.add(field.getFieldObjectInspector());
-    }
-    fields = valueInspector.getAllStructFieldRefs();
-    for (StructField field: fields) {
-      colNames.add(Utilities.ReduceField.VALUE.toString() + "." + field.getFieldName());
-      ois.add(field.getFieldObjectInspector());
-    }
-    StandardStructObjectInspector rowObjectInspector = ObjectInspectorFactory.getStandardStructObjectInspector(colNames, ois);
-
-    VectorizedRowBatchCtx batchContext = new VectorizedRowBatchCtx();
-    batchContext.init(vectorScratchColumnTypeMap, rowObjectInspector);
-    return new ObjectPair<>(batchContext.createVectorizedRowBatch(), rowObjectInspector);
-  }
-
-  /**
-   * Iterates through all columns in a given row and populates the batch
-   *
-   * @param row
-   * @param oi
-   * @param rowIndex
-   * @param batch
-   * @param buffer
-   * @throws HiveException
-   */
-  public static void addRowToBatch(Object row, StructObjectInspector oi,
-          int rowIndex,
-          VectorizedRowBatch batch,
-          DataOutputBuffer buffer
-          ) throws HiveException {
-    addRowToBatchFrom(row, oi, rowIndex, 0, batch, buffer);
   }
 
   /**
@@ -433,13 +403,12 @@ public class VectorizedBatchUtil {
     }
       break;
     case TIMESTAMP: {
-      LongColumnVector lcv = (LongColumnVector) batch.cols[offset + colIndex];
+      TimestampColumnVector lcv = (TimestampColumnVector) batch.cols[offset + colIndex];
       if (writableCol != null) {
-        Timestamp t = ((TimestampWritable) writableCol).getTimestamp();
-        lcv.vector[rowIndex] = TimestampUtils.getTimeNanoSec(t);
+        lcv.set(rowIndex, ((TimestampWritable) writableCol).getTimestamp());
         lcv.isNull[rowIndex] = false;
       } else {
-        lcv.vector[rowIndex] = 1;
+        lcv.setNullValue(rowIndex);
         setNullColIsNullValue(lcv, rowIndex);
       }
     }
@@ -457,14 +426,14 @@ public class VectorizedBatchUtil {
     }
       break;
     case INTERVAL_DAY_TIME: {
-      LongColumnVector lcv = (LongColumnVector) batch.cols[offset + colIndex];
+      IntervalDayTimeColumnVector icv = (IntervalDayTimeColumnVector) batch.cols[offset + colIndex];
       if (writableCol != null) {
-        HiveIntervalDayTime i = ((HiveIntervalDayTimeWritable) writableCol).getHiveIntervalDayTime();
-        lcv.vector[rowIndex] = DateUtils.getIntervalDayTimeTotalNanos(i);
-        lcv.isNull[rowIndex] = false;
+        HiveIntervalDayTime idt = ((HiveIntervalDayTimeWritable) writableCol).getHiveIntervalDayTime();
+        icv.set(rowIndex, idt);
+        icv.isNull[rowIndex] = false;
       } else {
-        lcv.vector[rowIndex] = 1;
-        setNullColIsNullValue(lcv, rowIndex);
+        icv.setNullValue(rowIndex);
+        setNullColIsNullValue(icv, rowIndex);
       }
     }
       break;
@@ -584,31 +553,76 @@ public class VectorizedBatchUtil {
     return ObjectInspectorFactory.getStandardStructObjectInspector(columnNames,oids);
   }
 
-  public static PrimitiveTypeInfo[] primitiveTypeInfosFromStructObjectInspector(
+  public static String[] columnNamesFromStructObjectInspector(
       StructObjectInspector structObjectInspector) throws HiveException {
 
     List<? extends StructField> fields = structObjectInspector.getAllStructFieldRefs();
-    PrimitiveTypeInfo[] result = new PrimitiveTypeInfo[fields.size()];
+    String[] result = new String[fields.size()];
 
     int i = 0;
     for(StructField field : fields) {
-      TypeInfo typeInfo = TypeInfoUtils.getTypeInfoFromTypeString(
-          field.getFieldObjectInspector().getTypeName());
-      result[i++] =  (PrimitiveTypeInfo) typeInfo;
+      result[i++] =  field.getFieldName();
     }
     return result;
   }
 
-  public static PrimitiveTypeInfo[] primitiveTypeInfosFromTypeNames(
-      String[] typeNames) throws HiveException {
+  public static TypeInfo[] typeInfosFromTypeNames(String[] typeNames) throws HiveException {
+    ArrayList<TypeInfo> typeInfoList =
+        TypeInfoUtils.typeInfosFromTypeNames(Arrays.asList(typeNames));
+    return typeInfoList.toArray(new TypeInfo[0]);
+  }
 
-    PrimitiveTypeInfo[] result = new PrimitiveTypeInfo[typeNames.length];
+  public static TypeInfo[] typeInfosFromStructObjectInspector(
+      StructObjectInspector structObjectInspector) {
+    ArrayList<TypeInfo> typeInfoList =
+        TypeInfoUtils.typeInfosFromStructObjectInspector(structObjectInspector);
+    return typeInfoList.toArray(new TypeInfo[0]);
+  }
 
-    for(int i = 0; i < typeNames.length; i++) {
-      TypeInfo typeInfo = TypeInfoUtils.getTypeInfoFromTypeString(typeNames[i]);
-      result[i] =  (PrimitiveTypeInfo) typeInfo;
-    }
-    return result;
+  static ColumnVector cloneColumnVector(ColumnVector source
+                                        ) throws HiveException{
+    if (source instanceof LongColumnVector) {
+      return new LongColumnVector(((LongColumnVector) source).vector.length);
+    } else if (source instanceof DoubleColumnVector) {
+      return new DoubleColumnVector(((DoubleColumnVector) source).vector.length);
+    } else if (source instanceof BytesColumnVector) {
+      return new BytesColumnVector(((BytesColumnVector) source).vector.length);
+    } else if (source instanceof DecimalColumnVector) {
+      DecimalColumnVector decColVector = (DecimalColumnVector) source;
+      return new DecimalColumnVector(decColVector.vector.length,
+          decColVector.precision,
+          decColVector.scale);
+    } else if (source instanceof TimestampColumnVector) {
+      return new TimestampColumnVector(((TimestampColumnVector) source).getLength());
+    } else if (source instanceof IntervalDayTimeColumnVector) {
+      return new IntervalDayTimeColumnVector(((IntervalDayTimeColumnVector) source).getLength());
+    } else if (source instanceof ListColumnVector) {
+      ListColumnVector src = (ListColumnVector) source;
+      ColumnVector child = cloneColumnVector(src.child);
+      return new ListColumnVector(src.offsets.length, child);
+    } else if (source instanceof MapColumnVector) {
+      MapColumnVector src = (MapColumnVector) source;
+      ColumnVector keys = cloneColumnVector(src.keys);
+      ColumnVector values = cloneColumnVector(src.values);
+      return new MapColumnVector(src.offsets.length, keys, values);
+    } else if (source instanceof StructColumnVector) {
+      StructColumnVector src = (StructColumnVector) source;
+      ColumnVector[] copy = new ColumnVector[src.fields.length];
+      for(int i=0; i < copy.length; ++i) {
+        copy[i] = cloneColumnVector(src.fields[i]);
+      }
+      return new StructColumnVector(VectorizedRowBatch.DEFAULT_SIZE, copy);
+    } else if (source instanceof UnionColumnVector) {
+      UnionColumnVector src = (UnionColumnVector) source;
+      ColumnVector[] copy = new ColumnVector[src.fields.length];
+      for(int i=0; i < copy.length; ++i) {
+        copy[i] = cloneColumnVector(src.fields[i]);
+      }
+      return new UnionColumnVector(src.tags.length, copy);
+    } else
+      throw new HiveException("Column vector class " +
+          source.getClass().getName() +
+          " is not supported!");
   }
 
   /**
@@ -620,30 +634,57 @@ public class VectorizedBatchUtil {
   public static VectorizedRowBatch makeLike(VectorizedRowBatch batch) throws HiveException {
     VectorizedRowBatch newBatch = new VectorizedRowBatch(batch.numCols);
     for (int i = 0; i < batch.numCols; i++) {
-      ColumnVector colVector = batch.cols[i];
-      if (colVector != null) {
-        ColumnVector newColVector;
-        if (colVector instanceof LongColumnVector) {
-          newColVector = new LongColumnVector();
-        } else if (colVector instanceof DoubleColumnVector) {
-          newColVector = new DoubleColumnVector();
-        } else if (colVector instanceof BytesColumnVector) {
-          newColVector = new BytesColumnVector();
-        } else if (colVector instanceof DecimalColumnVector) {
-          DecimalColumnVector decColVector = (DecimalColumnVector) colVector;
-          newColVector = new DecimalColumnVector(decColVector.precision, decColVector.scale);
-        } else {
-          throw new HiveException("Column vector class " + colVector.getClass().getName() +
-          " is not supported!");
-        }
-        newBatch.cols[i] = newColVector;
+      if (batch.cols[i] != null) {
+        newBatch.cols[i] = cloneColumnVector(batch.cols[i]);
         newBatch.cols[i].init();
       }
     }
-    newBatch.projectedColumns = Arrays.copyOf(batch.projectedColumns, batch.projectedColumns.length);
+    newBatch.projectedColumns = Arrays.copyOf(batch.projectedColumns,
+        batch.projectedColumns.length);
     newBatch.projectionSize = batch.projectionSize;
     newBatch.reset();
     return newBatch;
+  }
+
+  public static Writable getPrimitiveWritable(PrimitiveCategory primitiveCategory) {
+    switch (primitiveCategory) {
+    case VOID:
+      return null;
+    case BOOLEAN:
+      return new BooleanWritable(false);
+    case BYTE:
+      return new ByteWritable((byte) 0);
+    case SHORT:
+      return new ShortWritable((short) 0);
+    case INT:
+      return new IntWritable(0);
+    case LONG:
+      return new LongWritable(0);
+    case TIMESTAMP:
+      return new TimestampWritable(new Timestamp(0));
+    case DATE:
+      return new DateWritable(new Date(0));
+    case FLOAT:
+      return new FloatWritable(0);
+    case DOUBLE:
+      return new DoubleWritable(0);
+    case BINARY:
+      return new BytesWritable(ArrayUtils.EMPTY_BYTE_ARRAY);
+    case STRING:
+      return new Text(ArrayUtils.EMPTY_BYTE_ARRAY);
+    case VARCHAR:
+      return new HiveVarcharWritable(new HiveVarchar(StringUtils.EMPTY, -1));
+    case CHAR:
+      return new HiveCharWritable(new HiveChar(StringUtils.EMPTY, -1));
+    case DECIMAL:
+      return new HiveDecimalWritable();
+    case INTERVAL_YEAR_MONTH:
+      return new HiveIntervalYearMonthWritable();
+    case INTERVAL_DAY_TIME:
+      return new HiveIntervalDayTimeWritable();
+    default:
+      throw new RuntimeException("Primitive category " + primitiveCategory.name() + " not supported");
+    }
   }
 
   public static String displayBytes(byte[] bytes, int start, int length) {
@@ -661,13 +702,23 @@ public class VectorizedBatchUtil {
 
   public static void debugDisplayOneRow(VectorizedRowBatch batch, int index, String prefix) {
     StringBuilder sb = new StringBuilder();
+    LOG.info(debugFormatOneRow(batch, index, prefix, sb).toString());
+  }
+
+  public static StringBuilder debugFormatOneRow(VectorizedRowBatch batch,
+      int index, String prefix, StringBuilder sb) {
     sb.append(prefix + " row " + index + " ");
-    for (int column = 0; column < batch.cols.length; column++) {
+    for (int p = 0; p < batch.projectionSize; p++) {
+      int column = batch.projectedColumns[p];
+      sb.append("(" + p + "," + column + ") ");
       ColumnVector colVector = batch.cols[column];
       if (colVector == null) {
-        sb.append("(null colVector " + column + ")");
+        sb.append("(null ColumnVector)");
       } else {
         boolean isRepeating = colVector.isRepeating;
+        if (isRepeating) {
+          sb.append("(repeating)");
+        }
         index = (isRepeating ? 0 : index);
         if (colVector.noNulls || !colVector.isNull[index]) {
           if (colVector instanceof LongColumnVector) {
@@ -686,6 +737,13 @@ public class VectorizedBatchUtil {
             }
           } else if (colVector instanceof DecimalColumnVector) {
             sb.append(((DecimalColumnVector) colVector).vector[index].toString());
+          } else if (colVector instanceof TimestampColumnVector) {
+            Timestamp timestamp = new Timestamp(0);
+            ((TimestampColumnVector) colVector).timestampUpdate(timestamp, index);
+            sb.append(timestamp.toString());
+          } else if (colVector instanceof IntervalDayTimeColumnVector) {
+            HiveIntervalDayTime intervalDayTime = ((IntervalDayTimeColumnVector) colVector).asScratchIntervalDayTime(index);
+            sb.append(intervalDayTime.toString());
           } else {
             sb.append("Unknown");
           }
@@ -695,10 +753,10 @@ public class VectorizedBatchUtil {
       }
       sb.append(" ");
     }
-    LOG.info(sb.toString());
+    return sb;
   }
 
-  public static void debugDisplayBatch(VectorizedRowBatch batch, String prefix) throws HiveException {
+  public static void debugDisplayBatch(VectorizedRowBatch batch, String prefix) {
     for (int i = 0; i < batch.size; i++) {
       int index = (batch.selectedInUse ? batch.selected[i] : i);
       debugDisplayOneRow(batch, index, prefix);

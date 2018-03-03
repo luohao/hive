@@ -22,8 +22,8 @@ import java.io.IOException;
 import java.sql.Date;
 import java.sql.Timestamp;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.hive.common.type.HiveChar;
 import org.apache.hadoop.hive.common.type.HiveDecimal;
 import org.apache.hadoop.hive.common.type.HiveIntervalDayTime;
@@ -46,7 +46,7 @@ import org.apache.hive.common.util.DateUtils;
  * This is an alternative way to serialize than what is provided by LazyBinarySerDe.
   */
 public class LazyBinarySerializeWrite implements SerializeWrite {
-  public static final Log LOG = LogFactory.getLog(LazyBinarySerializeWrite.class.getName());
+  public static final Logger LOG = LoggerFactory.getLogger(LazyBinarySerializeWrite.class.getName());
 
   private Output output;
 
@@ -56,14 +56,17 @@ public class LazyBinarySerializeWrite implements SerializeWrite {
   private long nullOffset;
 
   // For thread safety, we allocate private writable objects for our use only.
-  private HiveDecimalWritable hiveDecimalWritable;
   private TimestampWritable timestampWritable;
   private HiveIntervalYearMonthWritable hiveIntervalYearMonthWritable;
   private HiveIntervalDayTimeWritable hiveIntervalDayTimeWritable;
   private HiveIntervalDayTime hiveIntervalDayTime;
+  private byte[] vLongBytes;
+  private long[] scratchLongs;
+  private byte[] scratchBuffer;
 
   public LazyBinarySerializeWrite(int fieldCount) {
     this();
+    vLongBytes = new byte[LazyBinaryUtils.VLONG_BYTES_LEN];
     this.fieldCount = fieldCount;
   }
 
@@ -269,7 +272,7 @@ public class LazyBinarySerializeWrite implements SerializeWrite {
     // Set bit in NULL byte when a field is NOT NULL.
     nullByte |= 1 << (fieldIndex % 8);
 
-    LazyBinaryUtils.writeVInt(output, v);
+    writeVInt(v);
 
     fieldIndex++;
 
@@ -300,7 +303,7 @@ public class LazyBinarySerializeWrite implements SerializeWrite {
     // Set bit in NULL byte when a field is NOT NULL.
     nullByte |= 1 << (fieldIndex % 8);
 
-    LazyBinaryUtils.writeVLong(output, v);
+    writeVLong(v);
 
     fieldIndex++;
 
@@ -401,7 +404,7 @@ public class LazyBinarySerializeWrite implements SerializeWrite {
     nullByte |= 1 << (fieldIndex % 8);
 
     int length = v.length;
-    LazyBinaryUtils.writeVInt(output, length);
+    writeVInt(length);
 
     output.write(v, 0, length);
 
@@ -431,7 +434,7 @@ public class LazyBinarySerializeWrite implements SerializeWrite {
     // Set bit in NULL byte when a field is NOT NULL.
     nullByte |= 1 << (fieldIndex % 8);
 
-    LazyBinaryUtils.writeVInt(output, length);
+    writeVInt(length);
 
     output.write(v, start, length);
 
@@ -497,7 +500,7 @@ public class LazyBinarySerializeWrite implements SerializeWrite {
     // Set bit in NULL byte when a field is NOT NULL.
     nullByte |= 1 << (fieldIndex % 8);
 
-    LazyBinaryUtils.writeVInt(output, DateWritable.dateToDays(date));
+    writeVInt(DateWritable.dateToDays(date));
 
     fieldIndex++;
 
@@ -526,7 +529,7 @@ public class LazyBinarySerializeWrite implements SerializeWrite {
     // Set bit in NULL byte when a field is NOT NULL.
     nullByte |= 1 << (fieldIndex % 8);
 
-    LazyBinaryUtils.writeVInt(output, dateAsDays);
+    writeVInt(dateAsDays);
 
     fieldIndex++;
 
@@ -673,8 +676,14 @@ public class LazyBinarySerializeWrite implements SerializeWrite {
     }
   }
 
+  /*
+   * DECIMAL.
+   *
+   * NOTE: The scale parameter is for text serialization (e.g. HiveDecimal.toFormatString) that
+   * creates trailing zeroes output decimals.
+   */
   @Override
-  public void writeHiveIntervalDayTime(long totalNanos) throws IOException {
+  public void writeHiveDecimal(HiveDecimal dec, int scale) throws IOException {
 
     // Every 8 fields we write a NULL byte.
     if ((fieldIndex % 8) == 0) {
@@ -691,15 +700,51 @@ public class LazyBinarySerializeWrite implements SerializeWrite {
     // Set bit in NULL byte when a field is NOT NULL.
     nullByte |= 1 << (fieldIndex % 8);
 
-    if (hiveIntervalDayTime == null) {
-      hiveIntervalDayTime = new HiveIntervalDayTime();
+    if (scratchLongs == null) {
+      scratchLongs = new long[HiveDecimal.SCRATCH_LONGS_LEN];
+      scratchBuffer = new byte[HiveDecimal.SCRATCH_BUFFER_LEN_BIG_INTEGER_BYTES];
     }
-    if (hiveIntervalDayTimeWritable == null) {
-      hiveIntervalDayTimeWritable = new HiveIntervalDayTimeWritable();
+    LazyBinarySerDe.writeToByteStream(
+        output,
+        dec,
+        scratchLongs,
+        scratchBuffer);
+
+    fieldIndex++;
+
+    if (fieldIndex == fieldCount) {
+      // Write back the final NULL byte before the last fields.
+      output.writeByte(nullOffset, nullByte);
     }
-    DateUtils.setIntervalDayTimeTotalNanos(hiveIntervalDayTime, totalNanos);
-    hiveIntervalDayTimeWritable.set(hiveIntervalDayTime);
-    hiveIntervalDayTimeWritable.writeToByteStream(output);
+  }
+
+  @Override
+  public void writeHiveDecimal(HiveDecimalWritable decWritable, int scale) throws IOException {
+
+    // Every 8 fields we write a NULL byte.
+    if ((fieldIndex % 8) == 0) {
+      if (fieldIndex > 0) {
+        // Write back previous 8 field's NULL byte.
+        output.writeByte(nullOffset, nullByte);
+        nullByte = 0;
+        nullOffset = output.getLength();
+      }
+      // Allocate next NULL byte.
+      output.reserve(1);
+    }
+
+    // Set bit in NULL byte when a field is NOT NULL.
+    nullByte |= 1 << (fieldIndex % 8);
+
+    if (scratchLongs == null) {
+      scratchLongs = new long[HiveDecimal.SCRATCH_LONGS_LEN];
+      scratchBuffer = new byte[HiveDecimal.SCRATCH_BUFFER_LEN_BIG_INTEGER_BYTES];
+    }
+    LazyBinarySerDe.writeToByteStream(
+        output,
+        decWritable,
+        scratchLongs,
+        scratchBuffer);
 
     fieldIndex++;
 
@@ -710,37 +755,16 @@ public class LazyBinarySerializeWrite implements SerializeWrite {
   }
 
   /*
-   * DECIMAL.
+   * Write a VInt using our temporary byte buffer instead of paying the thread local performance
+   * cost of LazyBinaryUtils.writeVInt
    */
-  @Override
-  public void writeHiveDecimal(HiveDecimal v) throws IOException {
+  private void writeVInt(int v) {
+    final int len = LazyBinaryUtils.writeVLongToByteArray(vLongBytes, v);
+    output.write(vLongBytes, 0, len);
+  }
 
-    // Every 8 fields we write a NULL byte.
-    if ((fieldIndex % 8) == 0) {
-      if (fieldIndex > 0) {
-        // Write back previous 8 field's NULL byte.
-        output.writeByte(nullOffset, nullByte);
-        nullByte = 0;
-        nullOffset = output.getLength();
-      }
-      // Allocate next NULL byte.
-      output.reserve(1);
-    }
-
-    // Set bit in NULL byte when a field is NOT NULL.
-    nullByte |= 1 << (fieldIndex % 8);
-
-    if (hiveDecimalWritable == null) {
-      hiveDecimalWritable = new HiveDecimalWritable();
-    }
-    hiveDecimalWritable.set(v);
-    LazyBinarySerDe.writeToByteStream(output, hiveDecimalWritable);
-
-    fieldIndex++;
-
-    if (fieldIndex == fieldCount) {
-      // Write back the final NULL byte before the last fields.
-      output.writeByte(nullOffset, nullByte);
-    }
+  private void writeVLong(long v) {
+    final int len = LazyBinaryUtils.writeVLongToByteArray(vLongBytes, v);
+    output.write(vLongBytes, 0, len);
   }
 }

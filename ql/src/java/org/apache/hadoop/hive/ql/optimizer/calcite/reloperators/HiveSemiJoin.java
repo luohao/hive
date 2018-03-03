@@ -21,27 +21,22 @@ import java.util.ArrayList;
 import java.util.List;
 
 import org.apache.calcite.plan.RelOptCluster;
-import org.apache.calcite.plan.RelOptCost;
-import org.apache.calcite.plan.RelOptPlanner;
 import org.apache.calcite.plan.RelTraitSet;
 import org.apache.calcite.rel.InvalidRelException;
 import org.apache.calcite.rel.RelNode;
 import org.apache.calcite.rel.core.JoinInfo;
 import org.apache.calcite.rel.core.JoinRelType;
-import org.apache.calcite.rel.core.RelFactories.SemiJoinFactory;
 import org.apache.calcite.rel.core.SemiJoin;
-import org.apache.calcite.rel.metadata.RelMetadataQuery;
 import org.apache.calcite.rel.type.RelDataTypeField;
 import org.apache.calcite.rex.RexNode;
 import org.apache.calcite.util.ImmutableIntList;
 import org.apache.hadoop.hive.ql.optimizer.calcite.CalciteSemanticException;
 import org.apache.hadoop.hive.ql.optimizer.calcite.HiveRelOptUtil;
+import org.apache.hadoop.hive.ql.optimizer.calcite.rules.HiveRulesRegistry;
 
 import com.google.common.collect.ImmutableList;
 
 public class HiveSemiJoin extends SemiJoin implements HiveRelNode {
-
-  public static final SemiJoinFactory HIVE_SEMIJOIN_FACTORY = new HiveSemiJoinFactoryImpl();
 
   private final RexNode joinFilter;
 
@@ -90,8 +85,14 @@ public class HiveSemiJoin extends SemiJoin implements HiveRelNode {
           RelNode left, RelNode right, JoinRelType joinType, boolean semiJoinDone) {
     try {
       final JoinInfo joinInfo = JoinInfo.of(left, right, condition);
-      return new HiveSemiJoin(getCluster(), traitSet, left, right, condition,
+      HiveSemiJoin semijoin = new HiveSemiJoin(getCluster(), traitSet, left, right, condition,
               joinInfo.leftKeys, joinInfo.rightKeys);
+      // If available, copy state to registry for optimization rules
+      HiveRulesRegistry registry = semijoin.getCluster().getPlanner().getContext().unwrap(HiveRulesRegistry.class);
+      if (registry != null) {
+        registry.copyPushedPredicates(this, semijoin);
+      }
+      return semijoin;
     } catch (InvalidRelException | CalciteSemanticException e) {
       // Semantic error not possible. Must be a bug. Convert to
       // internal error.
@@ -103,24 +104,4 @@ public class HiveSemiJoin extends SemiJoin implements HiveRelNode {
   public void implement(Implementor implementor) {
   }
 
-  @Override
-  public RelOptCost computeSelfCost(RelOptPlanner planner) {
-    return RelMetadataQuery.getNonCumulativeCost(this);
-  }
-
-  /**
-   * Implementation of {@link SemiJoinFactory} that returns
-   * {@link org.apache.hadoop.hive.ql.optimizer.calcite.reloperators.HiveSemiJoin}
-   * .
-   */
-  private static class HiveSemiJoinFactoryImpl implements SemiJoinFactory {
-    @Override
-    public RelNode createSemiJoin(RelNode left, RelNode right,
-            RexNode condition) {
-      final JoinInfo joinInfo = JoinInfo.of(left, right, condition);
-      final RelOptCluster cluster = left.getCluster();
-      return getSemiJoin(cluster, left.getTraitSet(), left, right, condition,
-          joinInfo.leftKeys, joinInfo.rightKeys);
-    }
-  }
 }

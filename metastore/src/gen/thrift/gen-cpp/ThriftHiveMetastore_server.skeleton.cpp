@@ -112,6 +112,26 @@ class ThriftHiveMetastoreHandler : virtual public ThriftHiveMetastoreIf {
     printf("create_table_with_environment_context\n");
   }
 
+  void create_table_with_constraints(const Table& tbl, const std::vector<SQLPrimaryKey> & primaryKeys, const std::vector<SQLForeignKey> & foreignKeys) {
+    // Your implementation goes here
+    printf("create_table_with_constraints\n");
+  }
+
+  void drop_constraint(const DropConstraintRequest& req) {
+    // Your implementation goes here
+    printf("drop_constraint\n");
+  }
+
+  void add_primary_key(const AddPrimaryKeyRequest& req) {
+    // Your implementation goes here
+    printf("add_primary_key\n");
+  }
+
+  void add_foreign_key(const AddForeignKeyRequest& req) {
+    // Your implementation goes here
+    printf("add_foreign_key\n");
+  }
+
   void drop_table(const std::string& dbname, const std::string& name, const bool deleteData) {
     // Your implementation goes here
     printf("drop_table\n");
@@ -127,6 +147,16 @@ class ThriftHiveMetastoreHandler : virtual public ThriftHiveMetastoreIf {
     printf("get_tables\n");
   }
 
+  void get_tables_by_type(std::vector<std::string> & _return, const std::string& db_name, const std::string& pattern, const std::string& tableType) {
+    // Your implementation goes here
+    printf("get_tables_by_type\n");
+  }
+
+  void get_table_meta(std::vector<TableMeta> & _return, const std::string& db_patterns, const std::string& tbl_patterns, const std::vector<std::string> & tbl_types) {
+    // Your implementation goes here
+    printf("get_table_meta\n");
+  }
+
   void get_all_tables(std::vector<std::string> & _return, const std::string& db_name) {
     // Your implementation goes here
     printf("get_all_tables\n");
@@ -140,6 +170,16 @@ class ThriftHiveMetastoreHandler : virtual public ThriftHiveMetastoreIf {
   void get_table_objects_by_name(std::vector<Table> & _return, const std::string& dbname, const std::vector<std::string> & tbl_names) {
     // Your implementation goes here
     printf("get_table_objects_by_name\n");
+  }
+
+  void get_table_req(GetTableResult& _return, const GetTableRequest& req) {
+    // Your implementation goes here
+    printf("get_table_req\n");
+  }
+
+  void get_table_objects_by_name_req(GetTablesResult& _return, const GetTablesRequest& req) {
+    // Your implementation goes here
+    printf("get_table_objects_by_name_req\n");
   }
 
   void get_table_names_by_filter(std::vector<std::string> & _return, const std::string& dbname, const std::string& filter, const int16_t max_tables) {
@@ -242,6 +282,11 @@ class ThriftHiveMetastoreHandler : virtual public ThriftHiveMetastoreIf {
     printf("exchange_partition\n");
   }
 
+  void exchange_partitions(std::vector<Partition> & _return, const std::map<std::string, std::string> & partitionSpecs, const std::string& source_db, const std::string& source_table_name, const std::string& dest_db, const std::string& dest_table_name) {
+    // Your implementation goes here
+    printf("exchange_partitions\n");
+  }
+
   void get_partition_with_auth(Partition& _return, const std::string& db_name, const std::string& tbl_name, const std::vector<std::string> & part_vals, const std::string& user_name, const std::vector<std::string> & group_names) {
     // Your implementation goes here
     printf("get_partition_with_auth\n");
@@ -302,6 +347,11 @@ class ThriftHiveMetastoreHandler : virtual public ThriftHiveMetastoreIf {
     printf("get_partitions_by_expr\n");
   }
 
+  int32_t get_num_partitions_by_filter(const std::string& db_name, const std::string& tbl_name, const std::string& filter) {
+    // Your implementation goes here
+    printf("get_num_partitions_by_filter\n");
+  }
+
   void get_partitions_by_names(std::vector<Partition> & _return, const std::string& db_name, const std::string& tbl_name, const std::vector<std::string> & names) {
     // Your implementation goes here
     printf("get_partitions_by_names\n");
@@ -315,6 +365,11 @@ class ThriftHiveMetastoreHandler : virtual public ThriftHiveMetastoreIf {
   void alter_partitions(const std::string& db_name, const std::string& tbl_name, const std::vector<Partition> & new_parts) {
     // Your implementation goes here
     printf("alter_partitions\n");
+  }
+
+  void alter_partitions_with_environment_context(const std::string& db_name, const std::string& tbl_name, const std::vector<Partition> & new_parts, const EnvironmentContext& environment_context) {
+    // Your implementation goes here
+    printf("alter_partitions_with_environment_context\n");
   }
 
   void alter_partition_with_environment_context(const std::string& db_name, const std::string& tbl_name, const Partition& new_part, const EnvironmentContext& environment_context) {
@@ -385,6 +440,16 @@ class ThriftHiveMetastoreHandler : virtual public ThriftHiveMetastoreIf {
   void get_index_names(std::vector<std::string> & _return, const std::string& db_name, const std::string& tbl_name, const int16_t max_indexes) {
     // Your implementation goes here
     printf("get_index_names\n");
+  }
+
+  void get_primary_keys(PrimaryKeysResponse& _return, const PrimaryKeysRequest& request) {
+    // Your implementation goes here
+    printf("get_primary_keys\n");
+  }
+
+  void get_foreign_keys(ForeignKeysResponse& _return, const ForeignKeysRequest& request) {
+    // Your implementation goes here
+    printf("get_foreign_keys\n");
   }
 
   bool update_table_column_statistics(const ColumnStatistics& stats_obj) {
@@ -557,6 +622,46 @@ class ThriftHiveMetastoreHandler : virtual public ThriftHiveMetastoreIf {
     printf("cancel_delegation_token\n");
   }
 
+  bool add_token(const std::string& token_identifier, const std::string& delegation_token) {
+    // Your implementation goes here
+    printf("add_token\n");
+  }
+
+  bool remove_token(const std::string& token_identifier) {
+    // Your implementation goes here
+    printf("remove_token\n");
+  }
+
+  void get_token(std::string& _return, const std::string& token_identifier) {
+    // Your implementation goes here
+    printf("get_token\n");
+  }
+
+  void get_all_token_identifiers(std::vector<std::string> & _return) {
+    // Your implementation goes here
+    printf("get_all_token_identifiers\n");
+  }
+
+  int32_t add_master_key(const std::string& key) {
+    // Your implementation goes here
+    printf("add_master_key\n");
+  }
+
+  void update_master_key(const int32_t seq_number, const std::string& key) {
+    // Your implementation goes here
+    printf("update_master_key\n");
+  }
+
+  bool remove_master_key(const int32_t key_seq) {
+    // Your implementation goes here
+    printf("remove_master_key\n");
+  }
+
+  void get_master_keys(std::vector<std::string> & _return) {
+    // Your implementation goes here
+    printf("get_master_keys\n");
+  }
+
   void get_open_txns(GetOpenTxnsResponse& _return) {
     // Your implementation goes here
     printf("get_open_txns\n");
@@ -575,6 +680,11 @@ class ThriftHiveMetastoreHandler : virtual public ThriftHiveMetastoreIf {
   void abort_txn(const AbortTxnRequest& rqst) {
     // Your implementation goes here
     printf("abort_txn\n");
+  }
+
+  void abort_txns(const AbortTxnsRequest& rqst) {
+    // Your implementation goes here
+    printf("abort_txns\n");
   }
 
   void commit_txn(const CommitTxnRequest& rqst) {
@@ -617,6 +727,11 @@ class ThriftHiveMetastoreHandler : virtual public ThriftHiveMetastoreIf {
     printf("compact\n");
   }
 
+  void compact2(CompactionResponse& _return, const CompactionRequest& rqst) {
+    // Your implementation goes here
+    printf("compact2\n");
+  }
+
   void show_compact(ShowCompactResponse& _return, const ShowCompactRequest& rqst) {
     // Your implementation goes here
     printf("show_compact\n");
@@ -640,6 +755,36 @@ class ThriftHiveMetastoreHandler : virtual public ThriftHiveMetastoreIf {
   void fire_listener_event(FireEventResponse& _return, const FireEventRequest& rqst) {
     // Your implementation goes here
     printf("fire_listener_event\n");
+  }
+
+  void flushCache() {
+    // Your implementation goes here
+    printf("flushCache\n");
+  }
+
+  void get_file_metadata_by_expr(GetFileMetadataByExprResult& _return, const GetFileMetadataByExprRequest& req) {
+    // Your implementation goes here
+    printf("get_file_metadata_by_expr\n");
+  }
+
+  void get_file_metadata(GetFileMetadataResult& _return, const GetFileMetadataRequest& req) {
+    // Your implementation goes here
+    printf("get_file_metadata\n");
+  }
+
+  void put_file_metadata(PutFileMetadataResult& _return, const PutFileMetadataRequest& req) {
+    // Your implementation goes here
+    printf("put_file_metadata\n");
+  }
+
+  void clear_file_metadata(ClearFileMetadataResult& _return, const ClearFileMetadataRequest& req) {
+    // Your implementation goes here
+    printf("clear_file_metadata\n");
+  }
+
+  void cache_file_metadata(CacheFileMetadataResult& _return, const CacheFileMetadataRequest& req) {
+    // Your implementation goes here
+    printf("cache_file_metadata\n");
   }
 
 };

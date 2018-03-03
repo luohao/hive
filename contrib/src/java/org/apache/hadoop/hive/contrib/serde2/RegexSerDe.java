@@ -25,14 +25,15 @@ import java.util.Properties;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hive.serde.serdeConstants;
 import org.apache.hadoop.hive.serde2.AbstractSerDe;
 import org.apache.hadoop.hive.serde2.SerDeException;
 import org.apache.hadoop.hive.serde2.SerDeSpec;
 import org.apache.hadoop.hive.serde2.SerDeStats;
+import org.apache.hadoop.hive.serde2.SerDeUtils;
 import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspector;
 import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspectorFactory;
 import org.apache.hadoop.hive.serde2.objectinspector.StructField;
@@ -77,7 +78,7 @@ import org.apache.hadoop.io.Writable;
     RegexSerDe.INPUT_REGEX_CASE_SENSITIVE })
 public class RegexSerDe extends AbstractSerDe {
 
-  public static final Log LOG = LogFactory.getLog(RegexSerDe.class.getName());
+  public static final Logger LOG = LoggerFactory.getLogger(RegexSerDe.class.getName());
 
   public static final String INPUT_REGEX = "input.regex";
   public static final String OUTPUT_FORMAT_STRING = "output.format.string";
@@ -113,7 +114,9 @@ public class RegexSerDe extends AbstractSerDe {
     } else {
       inputPattern = null;
     }
-    List<String> columnNames = Arrays.asList(columnNameProperty.split(","));
+    final String columnNameDelimiter = tbl.containsKey(serdeConstants.COLUMN_NAME_DELIMITER) ? tbl
+        .getProperty(serdeConstants.COLUMN_NAME_DELIMITER) : String.valueOf(SerDeUtils.COMMA);
+    List<String> columnNames = Arrays.asList(columnNameProperty.split(columnNameDelimiter));
     List<TypeInfo> columnTypes = TypeInfoUtils
         .getTypeInfosFromTypeString(columnTypeProperty);
     assert columnNames.size() == columnTypes.size();

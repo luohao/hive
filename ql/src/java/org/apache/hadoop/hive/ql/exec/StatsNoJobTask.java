@@ -27,26 +27,29 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.fs.PathFilter;
+import org.apache.hadoop.hive.common.HiveStatsUtils;
 import org.apache.hadoop.hive.common.StatsSetupConst;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.conf.HiveConf.ConfVars;
+import org.apache.hadoop.hive.metastore.api.EnvironmentContext;
 import org.apache.hadoop.hive.metastore.api.InvalidOperationException;
+import org.apache.hadoop.hive.ql.CompilationOpContext;
 import org.apache.hadoop.hive.ql.DriverContext;
 import org.apache.hadoop.hive.ql.QueryPlan;
+import org.apache.hadoop.hive.ql.QueryState;
 import org.apache.hadoop.hive.ql.io.StatsProvidingRecordReader;
+import org.apache.hadoop.hive.ql.metadata.Hive;
 import org.apache.hadoop.hive.ql.metadata.HiveException;
 import org.apache.hadoop.hive.ql.metadata.Partition;
 import org.apache.hadoop.hive.ql.metadata.Table;
 import org.apache.hadoop.hive.ql.parse.BaseSemanticAnalyzer.TableSpec;
 import org.apache.hadoop.hive.ql.plan.StatsNoJobWork;
 import org.apache.hadoop.hive.ql.plan.api.StageType;
-import org.apache.hadoop.hive.shims.ShimLoader;
 import org.apache.hadoop.mapred.FileSplit;
 import org.apache.hadoop.mapred.InputFormat;
 import org.apache.hadoop.mapred.InputSplit;
@@ -71,19 +74,20 @@ import com.google.common.util.concurrent.ThreadFactoryBuilder;
 public class StatsNoJobTask extends Task<StatsNoJobWork> implements Serializable {
 
   private static final long serialVersionUID = 1L;
-  private static transient final Log LOG = LogFactory.getLog(StatsNoJobTask.class);
-  private static ConcurrentMap<String, Partition> partUpdates;
-  private static Table table;
-  private static String tableFullName;
-  private static JobConf jc = null;
+  private static transient final Logger LOG = LoggerFactory.getLogger(StatsNoJobTask.class);
+  private ConcurrentMap<String, Partition> partUpdates;
+  private Table table;
+  private String tableFullName;
+  private JobConf jc = null;
 
   public StatsNoJobTask() {
     super();
   }
 
   @Override
-  public void initialize(HiveConf conf, QueryPlan queryPlan, DriverContext driverContext) {
-    super.initialize(conf, queryPlan, driverContext);
+  public void initialize(QueryState queryState, QueryPlan queryPlan, DriverContext driverContext,
+      CompilationOpContext opContext) {
+    super.initialize(queryState, queryPlan, driverContext, opContext);
     jc = new JobConf(conf);
   }
 
@@ -94,6 +98,7 @@ public class StatsNoJobTask extends Task<StatsNoJobWork> implements Serializable
 
     String tableName = "";
     ExecutorService threadPool = null;
+    Hive db = getHive();
     try {
       tableName = work.getTableSpecs().tableName;
       table = db.getTable(tableName);
@@ -109,7 +114,7 @@ public class StatsNoJobTask extends Task<StatsNoJobWork> implements Serializable
       console.printError("Cannot get table " + tableName, e.toString());
     }
 
-    return aggregateStats(threadPool);
+    return aggregateStats(threadPool, db);
   }
 
   @Override
@@ -124,7 +129,7 @@ public class StatsNoJobTask extends Task<StatsNoJobWork> implements Serializable
 
   class StatsCollection implements Runnable {
 
-    private Partition partn;
+    private final Partition partn;
 
     public StatsCollection(Partition part) {
       this.partn = part;
@@ -144,18 +149,16 @@ public class StatsNoJobTask extends Task<StatsNoJobWork> implements Serializable
         long fileSize = 0;
         long numFiles = 0;
         FileSystem fs = dir.getFileSystem(conf);
-        List<FileStatus> fileList = 
-          ShimLoader.getHadoopShims().listLocatedStatus(fs, dir,
-                                                        hiddenFileFilter);
+        FileStatus[] fileList = HiveStatsUtils.getFileStatusRecurse(dir, -1, fs);
+
         boolean statsAvailable = false;
         for(FileStatus file: fileList) {
           if (!file.isDir()) {
-            InputFormat<?, ?> inputFormat = (InputFormat<?, ?>) ReflectionUtil.newInstance(
+            InputFormat<?, ?> inputFormat = ReflectionUtil.newInstance(
                 partn.getInputFormatClass(), jc);
             InputSplit dummySplit = new FileSplit(file.getPath(), 0, 0,
                 new String[] { partn.getLocation() });
             org.apache.hadoop.mapred.RecordReader<?, ?> recordReader =
-                (org.apache.hadoop.mapred.RecordReader<?, ?>)
                 inputFormat.getRecordReader(dummySplit, jc, Reporter.NULL);
             StatsProvidingRecordReader statsRR;
             if (recordReader instanceof StatsProvidingRecordReader) {
@@ -175,7 +178,6 @@ public class StatsNoJobTask extends Task<StatsNoJobWork> implements Serializable
           parameters.put(StatsSetupConst.RAW_DATA_SIZE, String.valueOf(rawDataSize));
           parameters.put(StatsSetupConst.TOTAL_SIZE, String.valueOf(fileSize));
           parameters.put(StatsSetupConst.NUM_FILES, String.valueOf(numFiles));
-          parameters.put(StatsSetupConst.STATS_GENERATED_VIA_STATS_TASK, StatsSetupConst.TRUE);
 
           partUpdates.put(tPart.getSd().getLocation(), new Partition(table, tPart));
 
@@ -196,7 +198,7 @@ public class StatsNoJobTask extends Task<StatsNoJobWork> implements Serializable
             "Failed with exception " + e.getMessage() + "\n" + StringUtils.stringifyException(e));
 
         // Before updating the partition params, if any partition params is null
-        // and if statsReliable is true then updatePartition() function  will fail 
+        // and if statsReliable is true then updatePartition() function  will fail
         // the task by returning 1
         if (work.isStatsReliable()) {
           partUpdates.put(tPart.getSd().getLocation(), null);
@@ -220,7 +222,7 @@ public class StatsNoJobTask extends Task<StatsNoJobWork> implements Serializable
 
   }
 
-  private int aggregateStats(ExecutorService threadPool) {
+  private int aggregateStats(ExecutorService threadPool, Hive db) {
     int ret = 0;
 
     try {
@@ -242,28 +244,32 @@ public class StatsNoJobTask extends Task<StatsNoJobWork> implements Serializable
           long fileSize = 0;
           long numFiles = 0;
           FileSystem fs = dir.getFileSystem(conf);
-          List<FileStatus> fileList = 
-            ShimLoader.getHadoopShims().listLocatedStatus(fs, dir,
-                                                          hiddenFileFilter);
+          FileStatus[] fileList = HiveStatsUtils.getFileStatusRecurse(dir, -1, fs);
+
           boolean statsAvailable = false;
           for(FileStatus file: fileList) {
             if (!file.isDir()) {
-              InputFormat<?, ?> inputFormat = (InputFormat<?, ?>) ReflectionUtil.newInstance(
+              InputFormat<?, ?> inputFormat = ReflectionUtil.newInstance(
                   table.getInputFormatClass(), jc);
               InputSplit dummySplit = new FileSplit(file.getPath(), 0, 0, new String[] { table
                   .getDataLocation().toString() });
-              org.apache.hadoop.mapred.RecordReader<?, ?> recordReader = (org.apache.hadoop.mapred.RecordReader<?, ?>) inputFormat
-                  .getRecordReader(dummySplit, jc, Reporter.NULL);
-              StatsProvidingRecordReader statsRR;
-              if (recordReader instanceof StatsProvidingRecordReader) {
-                statsRR = (StatsProvidingRecordReader) recordReader;
-                numRows += statsRR.getStats().getRowCount();
-                rawDataSize += statsRR.getStats().getRawDataSize();
-                fileSize += file.getLen();
+              if (file.getLen() == 0) {
                 numFiles += 1;
                 statsAvailable = true;
+              } else {
+                org.apache.hadoop.mapred.RecordReader<?, ?> recordReader =
+                    inputFormat.getRecordReader(dummySplit, jc, Reporter.NULL);
+                StatsProvidingRecordReader statsRR;
+                if (recordReader instanceof StatsProvidingRecordReader) {
+                  statsRR = (StatsProvidingRecordReader) recordReader;
+                  numRows += statsRR.getStats().getRowCount();
+                  rawDataSize += statsRR.getStats().getRawDataSize();
+                  fileSize += file.getLen();
+                  numFiles += 1;
+                  statsAvailable = true;
+                }
+                recordReader.close();
               }
-              recordReader.close();
             }
           }
 
@@ -272,9 +278,10 @@ public class StatsNoJobTask extends Task<StatsNoJobWork> implements Serializable
             parameters.put(StatsSetupConst.RAW_DATA_SIZE, String.valueOf(rawDataSize));
             parameters.put(StatsSetupConst.TOTAL_SIZE, String.valueOf(fileSize));
             parameters.put(StatsSetupConst.NUM_FILES, String.valueOf(numFiles));
-            parameters.put(StatsSetupConst.STATS_GENERATED_VIA_STATS_TASK, StatsSetupConst.TRUE);
+            EnvironmentContext environmentContext = new EnvironmentContext();
+            environmentContext.putToProperties(StatsSetupConst.STATS_GENERATED, StatsSetupConst.TASK);
 
-            db.alterTable(tableFullName, new Table(tTable));
+            db.alterTable(tableFullName, new Table(tTable), environmentContext);
 
             String msg = "Table " + tableFullName + " stats: [" + toString(parameters) + ']';
             LOG.debug(msg);
@@ -298,7 +305,7 @@ public class StatsNoJobTask extends Task<StatsNoJobWork> implements Serializable
         shutdownAndAwaitTermination(threadPool);
         LOG.debug("Stats collection threadpool shutdown successful.");
 
-        ret = updatePartitions();
+        ret = updatePartitions(db);
       }
 
     } catch (Exception e) {
@@ -313,7 +320,7 @@ public class StatsNoJobTask extends Task<StatsNoJobWork> implements Serializable
     return ret;
   }
 
-  private int updatePartitions() throws InvalidOperationException, HiveException {
+  private int updatePartitions(Hive db) throws InvalidOperationException, HiveException {
     if (!partUpdates.isEmpty()) {
       List<Partition> updatedParts = Lists.newArrayList(partUpdates.values());
       if (updatedParts.contains(null) && work.isStatsReliable()) {
@@ -321,7 +328,10 @@ public class StatsNoJobTask extends Task<StatsNoJobWork> implements Serializable
         return -1;
       } else {
         LOG.debug("Bulk updating partitions..");
-        db.alterPartitions(tableFullName, Lists.newArrayList(partUpdates.values()));
+        EnvironmentContext environmentContext = new EnvironmentContext();
+        environmentContext.putToProperties(StatsSetupConst.STATS_GENERATED, StatsSetupConst.TASK);
+        db.alterPartitions(tableFullName, Lists.newArrayList(partUpdates.values()),
+            environmentContext);
         LOG.debug("Bulk updated " + partUpdates.values().size() + " partitions.");
       }
     }
@@ -335,14 +345,15 @@ public class StatsNoJobTask extends Task<StatsNoJobWork> implements Serializable
     try {
 
       // Wait a while for existing tasks to terminate
-      if (!threadPool.awaitTermination(100, TimeUnit.SECONDS)) {
-        // Cancel currently executing tasks
-        threadPool.shutdownNow();
+      while (!threadPool.awaitTermination(10, TimeUnit.SECONDS)) {
+        LOG.debug("Waiting for all stats tasks to finish...");
+      }
+      // Cancel currently executing tasks
+      threadPool.shutdownNow();
 
-        // Wait a while for tasks to respond to being cancelled
-        if (!threadPool.awaitTermination(100, TimeUnit.SECONDS)) {
-          LOG.debug("Stats collection thread pool did not terminate");
-        }
+      // Wait a while for tasks to respond to being cancelled
+      if (!threadPool.awaitTermination(100, TimeUnit.SECONDS)) {
+        LOG.debug("Stats collection thread pool did not terminate");
       }
     } catch (InterruptedException ie) {
 
@@ -353,13 +364,6 @@ public class StatsNoJobTask extends Task<StatsNoJobWork> implements Serializable
       Thread.currentThread().interrupt();
     }
   }
-
-  private static final PathFilter hiddenFileFilter = new PathFilter() {
-    public boolean accept(Path p) {
-      String name = p.getName();
-      return !name.startsWith("_") && !name.startsWith(".");
-    }
-  };
 
   private String toString(Map<String, String> parameters) {
     StringBuilder builder = new StringBuilder();

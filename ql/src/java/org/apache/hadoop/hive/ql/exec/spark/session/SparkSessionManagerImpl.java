@@ -24,8 +24,9 @@ import java.util.Iterator;
 import java.util.Map;
 import java.util.Set;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hive.common.util.ShutdownHookManager;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.ql.exec.spark.HiveSparkClientFactory;
 import org.apache.hadoop.hive.ql.metadata.HiveException;
@@ -38,7 +39,7 @@ import org.apache.hive.spark.client.SparkClientFactory;
  *   - SparkSession is reused if the userName in new conf and user name in session conf match.
  */
 public class SparkSessionManagerImpl implements SparkSessionManager {
-  private static final Log LOG = LogFactory.getLog(SparkSessionManagerImpl.class);
+  private static final Logger LOG = LoggerFactory.getLogger(SparkSessionManagerImpl.class);
 
   private Set<SparkSession> createdSessions = Collections.synchronizedSet(new HashSet<SparkSession>());
   private volatile boolean inited = false;
@@ -46,7 +47,7 @@ public class SparkSessionManagerImpl implements SparkSessionManager {
   private static SparkSessionManagerImpl instance;
 
   static {
-    Runtime.getRuntime().addShutdownHook(new Thread() {
+    ShutdownHookManager.addShutdownHook(new Runnable() {
       @Override
       public void run() {
         try {

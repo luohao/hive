@@ -23,8 +23,8 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Properties;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hive.contrib.util.typedbytes.Type;
 import org.apache.hadoop.hive.contrib.util.typedbytes.TypedBytesWritableInput;
@@ -77,7 +77,7 @@ import org.apache.hadoop.io.Writable;
 @SerDeSpec(schemaProps = {serdeConstants.LIST_COLUMNS, serdeConstants.LIST_COLUMN_TYPES})
 public class TypedBytesSerDe extends AbstractSerDe {
 
-  public static final Log LOG = LogFactory.getLog(TypedBytesSerDe.class
+  public static final Logger LOG = LoggerFactory.getLogger(TypedBytesSerDe.class
       .getName());
 
   int numColumns;
@@ -109,8 +109,9 @@ public class TypedBytesSerDe extends AbstractSerDe {
     // Read the configuration parameters
     String columnNameProperty = tbl.getProperty(serdeConstants.LIST_COLUMNS);
     String columnTypeProperty = tbl.getProperty(serdeConstants.LIST_COLUMN_TYPES);
-
-    columnNames = Arrays.asList(columnNameProperty.split(","));
+    final String columnNameDelimiter = tbl.containsKey(serdeConstants.COLUMN_NAME_DELIMITER) ? tbl
+        .getProperty(serdeConstants.COLUMN_NAME_DELIMITER) : String.valueOf(SerDeUtils.COMMA);
+    columnNames = Arrays.asList(columnNameProperty.split(columnNameDelimiter));
     columnTypes = null;
     if (columnTypeProperty.length() == 0) {
       columnTypes = new ArrayList<TypeInfo>();

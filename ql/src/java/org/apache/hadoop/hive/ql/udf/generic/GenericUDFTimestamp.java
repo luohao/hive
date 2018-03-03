@@ -17,16 +17,16 @@
  */
 package org.apache.hadoop.hive.ql.udf.generic;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.hive.conf.HiveConf.ConfVars;
 import org.apache.hadoop.hive.ql.exec.Description;
 import org.apache.hadoop.hive.ql.exec.UDFArgumentException;
 import org.apache.hadoop.hive.ql.exec.UDFArgumentLengthException;
 import org.apache.hadoop.hive.ql.exec.vector.VectorizedExpressions;
 import org.apache.hadoop.hive.ql.exec.vector.expressions.CastDecimalToTimestamp;
-import org.apache.hadoop.hive.ql.exec.vector.expressions.gen.CastDoubleToTimestampViaDoubleToLong;
-import org.apache.hadoop.hive.ql.exec.vector.expressions.gen.CastLongToTimestampViaLongToLong;
+import org.apache.hadoop.hive.ql.exec.vector.expressions.CastDoubleToTimestamp;
+import org.apache.hadoop.hive.ql.exec.vector.expressions.CastLongToTimestamp;
 import org.apache.hadoop.hive.ql.metadata.HiveException;
 import org.apache.hadoop.hive.ql.session.SessionState;
 import org.apache.hadoop.hive.ql.session.SessionState.LogHelper;
@@ -47,8 +47,8 @@ import org.apache.hadoop.hive.serde2.objectinspector.primitive.PrimitiveObjectIn
  */
 @Description(name = "timestamp",
 value = "cast(date as timestamp) - Returns timestamp")
-@VectorizedExpressions({CastLongToTimestampViaLongToLong.class,
-  CastDoubleToTimestampViaDoubleToLong.class, CastDecimalToTimestamp.class})
+@VectorizedExpressions({CastLongToTimestamp.class,
+  CastDoubleToTimestamp.class, CastDecimalToTimestamp.class})
 public class GenericUDFTimestamp extends GenericUDF {
 
   private transient PrimitiveObjectInspector argumentOI;

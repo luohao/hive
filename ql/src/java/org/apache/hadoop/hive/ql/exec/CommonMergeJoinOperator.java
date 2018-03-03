@@ -20,22 +20,19 @@ package org.apache.hadoop.hive.ql.exec;
 
 import java.io.Serializable;
 import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Set;
 import java.util.TreeSet;
-import java.util.concurrent.Future;
-
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hive.conf.HiveConf;
+import org.apache.hadoop.hive.ql.CompilationOpContext;
 import org.apache.hadoop.hive.ql.exec.persistence.RowContainer;
+import org.apache.hadoop.hive.ql.exec.tez.InterruptibleProcessing;
 import org.apache.hadoop.hive.ql.exec.tez.RecordSource;
-import org.apache.hadoop.hive.ql.exec.tez.ReduceRecordSource;
 import org.apache.hadoop.hive.ql.exec.tez.TezContext;
 import org.apache.hadoop.hive.ql.metadata.HiveException;
 import org.apache.hadoop.hive.ql.plan.CommonMergeJoinDesc;
@@ -69,7 +66,7 @@ public class CommonMergeJoinOperator extends AbstractMapJoinOperator<CommonMerge
 
   private static final long serialVersionUID = 1L;
   private boolean isBigTableWork;
-  private static final Log LOG = LogFactory.getLog(CommonMergeJoinOperator.class.getName());
+  private static final Logger LOG = LoggerFactory.getLogger(CommonMergeJoinOperator.class.getName());
   transient List<Object>[] keyWritables;
   transient List<Object>[] nextKeyWritables;
   transient RowContainer<List<Object>>[] nextGroupStorage;
@@ -90,14 +87,22 @@ public class CommonMergeJoinOperator extends AbstractMapJoinOperator<CommonMerge
       new ArrayList<Operator<? extends OperatorDesc>>();
   transient Set<Integer> fetchInputAtClose;
 
-  public CommonMergeJoinOperator() {
+  // A field because we cannot multi-inherit.
+  transient InterruptibleProcessing interruptChecker;
+
+  /** Kryo ctor. */
+  protected CommonMergeJoinOperator() {
     super();
+  }
+
+  public CommonMergeJoinOperator(CompilationOpContext ctx) {
+    super(ctx);
   }
 
   @SuppressWarnings("unchecked")
   @Override
-  public Collection<Future<?>> initializeOp(Configuration hconf) throws HiveException {
-    Collection<Future<?>> result = super.initializeOp(hconf);
+  public void initializeOp(Configuration hconf) throws HiveException {
+    super.initializeOp(hconf);
     firstFetchHappened = false;
     fetchInputAtClose = getFetchInputAtCloseList();
 
@@ -143,13 +148,19 @@ public class CommonMergeJoinOperator extends AbstractMapJoinOperator<CommonMerge
 
     for (byte pos = 0; pos < order.length; pos++) {
       if (pos != posBigTable) {
-        fetchDone[pos] = false;
+        if ((parentOperators != null) && (parentOperators.isEmpty() == false)
+            && (parentOperators.get(pos) instanceof TezDummyStoreOperator)) {
+          TezDummyStoreOperator dummyStoreOp = (TezDummyStoreOperator) parentOperators.get(pos);
+          fetchDone[pos] = dummyStoreOp.getFetchDone();
+        } else {
+          fetchDone[pos] = false;
+        }
       }
       foundNextKeyGroup[pos] = false;
     }
 
     sources = ((TezContext) MapredContext.get()).getRecordSources();
-    return result;
+    interruptChecker = new InterruptibleProcessing();
   }
 
   /*
@@ -368,21 +379,31 @@ public class CommonMergeJoinOperator extends AbstractMapJoinOperator<CommonMerge
 
     // for tables other than the big table, we need to fetch more data until reach a new group or
     // done.
+    interruptChecker.startAbortChecks(); // Reset the time, we only want to count it in the loop.
     while (!foundNextKeyGroup[t]) {
       if (fetchDone[t]) {
         break;
       }
       fetchOneRow(t);
+      try {
+        interruptChecker.addRowAndMaybeCheckAbort();
+      } catch (InterruptedException e) {
+        throw new HiveException(e);
+      }
     }
     if (!foundNextKeyGroup[t] && fetchDone[t]) {
       this.nextKeyWritables[t] = null;
     }
   }
+  
+  @Override
+  public void close(boolean abort) throws HiveException {
+    joinFinalLeftData(); // Do this WITHOUT checking for parents
+    super.close(abort);
+  }
 
   @Override
   public void closeOp(boolean abort) throws HiveException {
-    joinFinalLeftData();
-
     super.closeOp(abort);
 
     // clean up
@@ -440,7 +461,6 @@ public class CommonMergeJoinOperator extends AbstractMapJoinOperator<CommonMerge
       if (posBigTable != lastPos
           && (fetchInputAtClose.contains(lastPos)) && (fetchDone[lastPos] == false)) {
         // Do the join. It does fetching of next row groups itself.
-        LOG.debug("Calling joinOneGroup once again");
         ret = joinOneGroup();
       }
 
@@ -457,7 +477,7 @@ public class CommonMergeJoinOperator extends AbstractMapJoinOperator<CommonMerge
     while (dataInCache) {
       for (byte pos = 0; pos < order.length; pos++) {
         if (this.foundNextKeyGroup[pos] && this.nextKeyWritables[pos] != null) {
-          promoteNextGroupToCandidate(pos);
+          fetchNextGroup(pos);
         }
       }
       joinOneGroup();
@@ -627,17 +647,19 @@ public class CommonMergeJoinOperator extends AbstractMapJoinOperator<CommonMerge
     if (parent == null) {
       throw new HiveException("No valid parents.");
     }
-    Map<Integer, DummyStoreOperator> dummyOps =
-        ((TezContext) (MapredContext.get())).getDummyOpsMap();
-    for (Entry<Integer, DummyStoreOperator> connectOp : dummyOps.entrySet()) {
-      if (connectOp.getValue().getChildOperators() == null
-          || connectOp.getValue().getChildOperators().isEmpty()) {
-        parentOperators.add(connectOp.getKey(), connectOp.getValue());
-        connectOp.getValue().getChildOperators().add(this);
+
+    if (parentOperators.size() == 1) {
+      Map<Integer, DummyStoreOperator> dummyOps =
+          ((TezContext) (MapredContext.get())).getDummyOpsMap();
+      for (Entry<Integer, DummyStoreOperator> connectOp : dummyOps.entrySet()) {
+        if (connectOp.getValue().getChildOperators() == null
+            || connectOp.getValue().getChildOperators().isEmpty()) {
+          parentOperators.add(connectOp.getKey(), connectOp.getValue());
+          connectOp.getValue().getChildOperators().add(this);
+        }
       }
     }
     super.initializeLocalWork(hconf);
-    return;
   }
 
   public boolean isBigTableWork() {

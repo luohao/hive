@@ -34,8 +34,9 @@ public class HiveDecimalUtils {
       return null;
     }
 
-    HiveDecimal dec = enforcePrecisionScale(writable.getHiveDecimal(), typeInfo);
-    return dec == null ? null : new HiveDecimalWritable(dec);
+    HiveDecimalWritable result = new HiveDecimalWritable(writable);
+    result.mutateEnforcePrecisionScale(typeInfo.precision(), typeInfo.scale());
+    return (result.isSet() ? result : null);
   }
 
   public static void validateParameter(int precision, int scale) {
@@ -77,7 +78,7 @@ public class HiveDecimalUtils {
     case VOID:
       return 1;
     default:
-      return HiveDecimal.MAX_PRECISION;
+      return HiveDecimal.SYSTEM_DEFAULT_PRECISION;
     }
   }
 
@@ -100,7 +101,7 @@ public class HiveDecimalUtils {
     case VOID:
       return 0;
     default:
-      return HiveDecimal.MAX_SCALE;
+      return HiveDecimal.SYSTEM_DEFAULT_SCALE;
     }
   }
 

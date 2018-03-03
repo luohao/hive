@@ -26,6 +26,7 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.List;
 import java.io.FileOutputStream;
+import java.io.OutputStream;
 import java.io.IOException;
 
 import org.apache.hadoop.fs.FileSystem;
@@ -165,8 +166,8 @@ public class Copy {
     exec.returnConnection(targetConn, conn);
     exec.setRowCount(rows);
     long elapsed = timer.stop();
-    if (trace) {
-      trace(ctx, "COPY completed: " + rows + " row(s), " + timer.format() + ", " + rows/(elapsed/1000) + " rows/sec");
+    if (info) {
+      info(ctx, "COPY completed: " + rows + " row(s), " + timer.format() + ", " + rows/(elapsed/1000) + " rows/sec");
     }
   }
   
@@ -192,16 +193,36 @@ public class Copy {
     byte[] nullstr = "NULL".getBytes();
     int cols = rm.getColumnCount();
     int rows = 0;
-    if (trace) {
-      trace(ctx, "SELECT executed: " + cols + " columns, output file: " + filename);
-    } 
-    java.io.File file = new java.io.File(filename);
-    FileOutputStream out = null;
-    try {      
-      if (!file.exists()) {
-        file.createNewFile();
+    long bytes = 0;
+    if (trace || info) {
+      String mes = "Query executed: " + cols + " columns, output file: " + filename;
+      if (trace) {
+        trace(ctx, mes);
       }
-      out = new FileOutputStream(file, false /*append*/);
+      else {
+        info(ctx, mes);
+      }
+    } 
+    java.io.File file = null;
+    File hdfsFile = null;
+    if (ctx.T_HDFS() == null) {
+      file = new java.io.File(filename);
+    }
+    else {
+      hdfsFile = new File();
+    }     
+    OutputStream out = null;
+    timer.start();
+    try {      
+      if (file != null) {
+        if (!file.exists()) {
+          file.createNewFile();
+        }
+        out = new FileOutputStream(file, false /*append*/);
+      }
+      else {
+        out = hdfsFile.create(filename, true /*overwrite*/);
+      }
       String col;
       String sql = "";
       if (sqlInsert) {
@@ -215,19 +236,23 @@ public class Copy {
         for (int i = 1; i <= cols; i++) {
           if (i > 1) {
             out.write(del);
+            bytes += del.length;
           }
           col = rs.getString(i);
           if (col != null) {
             if (sqlInsert) {
               col = Utils.quoteString(col);
             }
-            out.write(col.getBytes());
+            byte[] b = col.getBytes();
+            out.write(b);
+            bytes += b.length;
           }
           else if (sqlInsert) {
             out.write(nullstr);
           }
         }
         out.write(rowdel);
+        bytes += rowdel.length;
         rows++;
       }
       exec.setRowCount(rows);
@@ -237,8 +262,9 @@ public class Copy {
         out.close();
       }
     }
-    if (trace) {
-      trace(ctx, "COPY rows: " + rows);
+    long elapsed = timer.stop();
+    if (info) {
+      info(ctx, "COPY completed: " + rows + " row(s), " + Utils.formatSizeInBytes(bytes) + ", " + timer.format() + ", " + rows/elapsed/1000 + " rows/sec");
     }
   }
   
@@ -248,14 +274,19 @@ public class Copy {
   public Integer runFromLocal(HplsqlParser.Copy_from_local_stmtContext ctx) { 
     trace(ctx, "COPY FROM LOCAL");
     initFileOptions(ctx.copy_file_option());
-    HashMap<String, Pair<String, Long>> src = new HashMap<String, Pair<String, Long>>();  
-    int cnt = ctx.copy_source().size();
-    for (int i = 0; i < cnt; i++) {
-      createLocalFileList(src, evalPop(ctx.copy_source(i)).toString(), null);
-    }
+    HashMap<String, Pair<String, Long>> srcFiles = new HashMap<String, Pair<String, Long>>();  
+    String src = evalPop(ctx.copy_source(0)).toString();
     String dest = evalPop(ctx.copy_target()).toString();
+    int srcItems = ctx.copy_source().size();
+    for (int i = 0; i < srcItems; i++) {
+      createLocalFileList(srcFiles, evalPop(ctx.copy_source(i)).toString(), null);
+    }
     if (info) {
-      info(ctx, "Files to copy: " + src.size() + " (" + Utils.formatSizeInBytes(srcSizeInBytes) + ")");
+      info(ctx, "Files to copy: " + srcFiles.size() + " (" + Utils.formatSizeInBytes(srcSizeInBytes) + ")");
+    }
+    if (srcFiles.size() == 0) {
+      exec.setHostCode(2);
+      return 2;
     }
     timer.start();
     File file = new File();
@@ -266,10 +297,10 @@ public class Copy {
     try {
       fs = file.createFs();
       boolean multi = false;
-      if (src.size() > 1) {
+      if (srcFiles.size() > 1) {
         multi = true;
       }
-      for (Map.Entry<String, Pair<String, Long>> i : src.entrySet()) {
+      for (Map.Entry<String, Pair<String, Long>> i : srcFiles.entrySet()) {
         try {
           Path s = new Path(i.getKey());           
           Path d = null;
@@ -279,11 +310,18 @@ public class Copy {
               d = new Path(dest, s.getName());
             }
             else {
-              d = new Path(dest, relativePath + java.io.File.separator + s.getName()); 
+              d = new Path(dest, relativePath + Path.SEPARATOR + s.getName()); 
             }
           }
           else {
-            d = new Path(dest);
+            // Path to file is specified (can be relative), so treat target as a file name (hadoop fs -put behavior)
+            if (srcItems == 1 && i.getKey().endsWith(src)) {
+              d = new Path(dest);
+            }
+            // Source directory is specified, so treat the target as a directory 
+            else {
+              d = new Path(dest + Path.SEPARATOR + s.getName());
+            }
           }
           fs.copyFromLocalFile(delete, overwrite, s, d);
           succeed++;
@@ -376,7 +414,12 @@ public class Copy {
       }
       else if (option.T_AT() != null) {
         targetConn = option.ident().getText();
-        sqlInsertName = ctx.copy_target().ident().getText();
+        if (ctx.copy_target().expr() != null) {
+          sqlInsertName = evalPop(ctx.copy_target().expr()).toString();
+        }
+        else {
+          sqlInsertName = ctx.copy_target().getText();
+        }
       }
       else if (option.T_BATCHSIZE() != null) {
         batchSize = evalPop(option.expr()).intValue();

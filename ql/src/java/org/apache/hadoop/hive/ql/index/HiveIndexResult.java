@@ -25,8 +25,8 @@ import java.util.Map;
 import java.util.SortedSet;
 import java.util.TreeSet;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
@@ -45,10 +45,10 @@ import org.apache.hadoop.mapred.LineRecordReader.LineReader;
  * HiveIndexResult parses the input stream from an index query
  * to generate a list of file splits to query.
  */
-public class HiveIndexResult {
+public class HiveIndexResult implements IndexResult {
 
-  public static final Log l4j =
-    LogFactory.getLog(HiveIndexResult.class.getSimpleName());
+  public static final Logger l4j =
+    LoggerFactory.getLogger(HiveIndexResult.class.getSimpleName());
 
   // IndexBucket
   static class IBucket {
@@ -182,6 +182,7 @@ public class HiveIndexResult {
     bucket.getOffsets().add(Long.parseLong(one_offset));
   }
 
+  @Override
   public boolean contains(FileSplit split) throws HiveException {
 
     if (buckets == null) {

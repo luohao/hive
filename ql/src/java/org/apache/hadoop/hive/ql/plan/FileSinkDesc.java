@@ -25,7 +25,7 @@ import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hive.ql.io.AcidUtils;
 import org.apache.hadoop.hive.ql.metadata.Table;
 import org.apache.hadoop.hive.ql.plan.Explain.Level;
-
+import org.apache.hadoop.hive.ql.plan.Explain.Vectorization;
 
 /**
  * FileSinkDesc.
@@ -51,6 +51,7 @@ public class FileSinkDesc extends AbstractOperatorDesc {
   private String compressType;
   private boolean multiFileSpray;
   private boolean temporary;
+  private boolean materialization;
   // Whether the files output by this FileSink can be merged, e.g. if they are to be put into a
   // bucketed or sorted table/partition they cannot be merged.
   private boolean canBeMerged;
@@ -85,9 +86,7 @@ public class FileSinkDesc extends AbstractOperatorDesc {
 
   private boolean statsReliable;
   private ListBucketingCtx lbCtx;
-  private int maxStatsKeyPrefixLength = -1;
-
-  private boolean statsCollectRawDataSize;
+  private String statsTmpDir;
 
   // Record what type of write this is.  Default is non-ACID (ie old style).
   private AcidUtils.Operation writeType = AcidUtils.Operation.NOT_ACID;
@@ -96,6 +95,13 @@ public class FileSinkDesc extends AbstractOperatorDesc {
 
   private transient Table table;
   private Path destPath;
+  private boolean isHiveServerQuery;
+
+  /**
+   * Whether is a HiveServer query, and the destination table is
+   * indeed written using ThriftJDBCBinarySerDe
+   */
+  private boolean isUsingThriftJDBCBinarySerDe = false;
 
   public FileSinkDesc() {
   }
@@ -151,12 +157,27 @@ public class FileSinkDesc extends AbstractOperatorDesc {
     ret.setParentDir(parentDir);
     ret.setLinkedFileSinkDesc(linkedFileSinkDesc);
     ret.setStatsReliable(statsReliable);
-    ret.setMaxStatsKeyPrefixLength(maxStatsKeyPrefixLength);
-    ret.setStatsCollectRawDataSize(statsCollectRawDataSize);
     ret.setDpSortState(dpSortState);
     ret.setWriteType(writeType);
     ret.setTransactionId(txnId);
-    return (Object) ret;
+    ret.setStatsTmpDir(statsTmpDir);
+    return ret;
+  }
+
+  public boolean isHiveServerQuery() {
+	  return this.isHiveServerQuery;
+  }
+
+  public void setHiveServerQuery(boolean isHiveServerQuery) {
+	  this.isHiveServerQuery = isHiveServerQuery;
+  }
+
+  public boolean isUsingThriftJDBCBinarySerDe() {
+	  return this.isUsingThriftJDBCBinarySerDe;
+  }
+
+  public void setIsUsingThriftJDBCBinarySerDe(boolean isUsingThriftJDBCBinarySerDe) {
+	  this.isUsingThriftJDBCBinarySerDe = isUsingThriftJDBCBinarySerDe;
   }
 
   @Explain(displayName = "directory", explainLevels = { Level.EXTENDED })
@@ -181,7 +202,7 @@ public class FileSinkDesc extends AbstractOperatorDesc {
     this.tableInfo = tableInfo;
   }
 
-  @Explain(displayName = "compressed", explainLevels = { Level.USER, Level.DEFAULT, Level.EXTENDED })
+  @Explain(displayName = "compressed")
   public boolean getCompressed() {
     return compressed;
   }
@@ -229,7 +250,7 @@ public class FileSinkDesc extends AbstractOperatorDesc {
   public void setMultiFileSpray(boolean multiFileSpray) {
     this.multiFileSpray = multiFileSpray;
   }
-  
+
   /**
    * @return destination is temporary
    */
@@ -239,6 +260,14 @@ public class FileSinkDesc extends AbstractOperatorDesc {
 
   public void setTemporary(boolean temporary) {
     this.temporary = temporary;
+  }
+
+  public boolean isMaterialization() {
+    return materialization;
+  }
+
+  public void setMaterialization(boolean materialization) {
+    this.materialization = materialization;
   }
 
 
@@ -398,22 +427,6 @@ public class FileSinkDesc extends AbstractOperatorDesc {
     this.linkedFileSinkDesc = linkedFileSinkDesc;
   }
 
-  public int getMaxStatsKeyPrefixLength() {
-    return maxStatsKeyPrefixLength;
-  }
-
-  public void setMaxStatsKeyPrefixLength(int maxStatsKeyPrefixLength) {
-    this.maxStatsKeyPrefixLength = maxStatsKeyPrefixLength;
-  }
-
-  public boolean isStatsCollectRawDataSize() {
-    return statsCollectRawDataSize;
-  }
-
-  public void setStatsCollectRawDataSize(boolean statsCollectRawDataSize) {
-    this.statsCollectRawDataSize = statsCollectRawDataSize;
-  }
-
   public boolean isRemovedReduceSinkBucketSort() {
     return removedReduceSinkBucketSort;
   }
@@ -425,7 +438,10 @@ public class FileSinkDesc extends AbstractOperatorDesc {
   public DPSortState getDpSortState() {
     return dpSortState;
   }
-
+  @Explain(displayName = "Dp Sort State")
+  public String getDpSortStateString() {
+    return getDpSortState() == DPSortState.NONE ? null : getDpSortState().toString();
+  }
   public void setDpSortState(DPSortState dpSortState) {
     this.dpSortState = dpSortState;
   }
@@ -437,7 +453,10 @@ public class FileSinkDesc extends AbstractOperatorDesc {
   public AcidUtils.Operation getWriteType() {
     return writeType;
   }
-
+  @Explain(displayName = "Write Type")
+  public String getWriteTypeString() {
+    return getWriteType() == AcidUtils.Operation.NOT_ACID ? null : getWriteType().toString();
+  }
   public void setTransactionId(long id) {
     txnId = id;
   }
@@ -464,5 +483,30 @@ public class FileSinkDesc extends AbstractOperatorDesc {
 
   public void setTable(Table table) {
     this.table = table;
+  }
+
+
+  public String getStatsTmpDir() {
+    return statsTmpDir;
+  }
+
+  public void setStatsTmpDir(String statsCollectionTempDir) {
+    this.statsTmpDir = statsCollectionTempDir;
+  }
+
+  public class FileSinkOperatorExplainVectorization extends OperatorExplainVectorization {
+
+    public FileSinkOperatorExplainVectorization(VectorDesc vectorDesc) {
+      // Native vectorization not supported.
+      super(vectorDesc, false);
+    }
+  }
+
+  @Explain(vectorization = Vectorization.OPERATOR, displayName = "File Sink Vectorization", explainLevels = { Level.DEFAULT, Level.EXTENDED })
+  public FileSinkOperatorExplainVectorization getFileSinkVectorization() {
+    if (vectorDesc == null) {
+      return null;
+    }
+    return new FileSinkOperatorExplainVectorization(vectorDesc);
   }
 }

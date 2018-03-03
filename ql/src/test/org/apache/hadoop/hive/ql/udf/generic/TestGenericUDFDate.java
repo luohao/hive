@@ -23,6 +23,7 @@ import java.sql.Timestamp;
 
 import junit.framework.TestCase;
 
+import org.apache.hadoop.hive.ql.exec.UDFArgumentException;
 import org.apache.hadoop.hive.ql.metadata.HiveException;
 import org.apache.hadoop.hive.ql.udf.generic.GenericUDF.DeferredJavaObject;
 import org.apache.hadoop.hive.ql.udf.generic.GenericUDF.DeferredObject;
@@ -42,13 +43,13 @@ public class TestGenericUDFDate extends TestCase {
     udf.initialize(arguments);
     DeferredObject valueObj = new DeferredJavaObject(new Text("2009-07-30"));
     DeferredObject[] args = {valueObj};
-    Text output = (Text) udf.evaluate(args);
+    DateWritable output = (DateWritable) udf.evaluate(args);
 
     assertEquals("to_date() test for STRING failed ", "2009-07-30", output.toString());
 
     // Try with null args
     DeferredObject[] nullArgs = { new DeferredJavaObject(null) };
-    output = (Text) udf.evaluate(nullArgs);
+    output = (DateWritable) udf.evaluate(nullArgs);
     assertNull("to_date() with null STRING", output);
   }
 
@@ -61,13 +62,13 @@ public class TestGenericUDFDate extends TestCase {
     DeferredObject valueObj = new DeferredJavaObject(new TimestampWritable(new Timestamp(109, 06,
         30, 4, 17, 52, 0)));
     DeferredObject[] args = {valueObj};
-    Text output = (Text) udf.evaluate(args);
+    DateWritable output = (DateWritable) udf.evaluate(args);
 
     assertEquals("to_date() test for TIMESTAMP failed ", "2009-07-30", output.toString());
 
     // Try with null args
     DeferredObject[] nullArgs = { new DeferredJavaObject(null) };
-    output = (Text) udf.evaluate(nullArgs);
+    output = (DateWritable) udf.evaluate(nullArgs);
     assertNull("to_date() with null TIMESTAMP", output);
   }
 
@@ -79,14 +80,36 @@ public class TestGenericUDFDate extends TestCase {
     udf.initialize(arguments);
     DeferredObject valueObj = new DeferredJavaObject(new DateWritable(new Date(109, 06, 30)));
     DeferredObject[] args = {valueObj};
-    Text output = (Text) udf.evaluate(args);
+    DateWritable output = (DateWritable) udf.evaluate(args);
 
     assertEquals("to_date() test for DATEWRITABLE failed ", "2009-07-30", output.toString());
 
     // Try with null args
     DeferredObject[] nullArgs = { new DeferredJavaObject(null) };
-    output = (Text) udf.evaluate(nullArgs);
+    output = (DateWritable) udf.evaluate(nullArgs);
     assertNull("to_date() with null DATE", output);
+  }
+
+  public void testVoidToDate() throws HiveException {
+    GenericUDFDate udf = new GenericUDFDate();
+    ObjectInspector valueOI = PrimitiveObjectInspectorFactory.writableVoidObjectInspector;
+    ObjectInspector[] arguments = {valueOI};
+
+    udf.initialize(arguments);
+    DeferredObject[] args = { new DeferredJavaObject(null) };
+    DateWritable output = (DateWritable) udf.evaluate(args);
+
+    // Try with null VOID
+    assertNull("to_date() with null DATE ", output);
+
+    // Try with erroneously generated VOID
+    DeferredObject[] junkArgs = { new DeferredJavaObject(new Text("2015-11-22")) };
+    try {
+      udf.evaluate(junkArgs);
+      fail("to_date() test with VOID non-null failed");
+    } catch (UDFArgumentException udfae) {
+      assertEquals("TO_DATE() received non-null object of VOID type", udfae.getMessage());
+    }
   }
 
 }

@@ -105,7 +105,7 @@ public class TestHiveDecimalParse {
     int rc = driver.compile(query);
     Assert.assertTrue("Got " + rc + ", expected not zero", rc != 0);
     Assert.assertTrue(driver.getErrorMsg(),
-        driver.getErrorMsg().contains("missing ) at ',' near ',' in column specification"));
+      driver.getErrorMsg().contains("missing ) at ',' near ',' in column name or primary key or foreign key"));
   }
 
   @Test
@@ -132,6 +132,9 @@ public class TestHiveDecimalParse {
 
   private Driver createDriver() {
     HiveConf conf = new HiveConf(Driver.class);
+    conf
+    .setVar(HiveConf.ConfVars.HIVE_AUTHORIZATION_MANAGER,
+        "org.apache.hadoop.hive.ql.security.authorization.plugin.sqlstd.SQLStdHiveAuthorizerFactory");
 
     SessionState.start(conf);
     Driver driver = new Driver(conf);

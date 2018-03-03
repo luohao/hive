@@ -29,13 +29,12 @@ import java.util.Map;
 import java.util.Properties;
 
 import org.apache.commons.lang3.StringEscapeUtils;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configurable;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hive.common.FileUtils;
+import org.apache.hadoop.hive.common.ValidTxnList;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.ql.exec.mr.ExecMapperContext;
 import org.apache.hadoop.hive.ql.io.AcidUtils;
@@ -60,7 +59,6 @@ import org.apache.hadoop.hive.serde2.objectinspector.StructField;
 import org.apache.hadoop.hive.serde2.objectinspector.StructObjectInspector;
 import org.apache.hadoop.hive.serde2.objectinspector.primitive.PrimitiveObjectInspectorFactory;
 import org.apache.hadoop.hive.serde2.typeinfo.TypeInfoFactory;
-import org.apache.hadoop.hive.serde2.typeinfo.TypeInfoUtils;
 import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.io.WritableComparable;
 import org.apache.hadoop.mapred.InputFormat;
@@ -69,9 +67,12 @@ import org.apache.hadoop.mapred.JobConf;
 import org.apache.hadoop.mapred.JobConfigurable;
 import org.apache.hadoop.mapred.RecordReader;
 import org.apache.hadoop.mapred.Reporter;
+import org.apache.hadoop.mapreduce.lib.input.FileInputFormat;
 import org.apache.hadoop.util.StringUtils;
 import org.apache.hive.common.util.AnnotationUtils;
 import org.apache.hive.common.util.ReflectionUtil;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import com.google.common.collect.Iterators;
 
@@ -80,7 +81,7 @@ import com.google.common.collect.Iterators;
  **/
 public class FetchOperator implements Serializable {
 
-  static final Log LOG = LogFactory.getLog(FetchOperator.class.getName());
+  static final Logger LOG = LoggerFactory.getLogger(FetchOperator.class.getName());
   static final LogHelper console = new LogHelper(LOG);
 
   public static final String FETCH_OPERATOR_DIRECTORY_LIST =
@@ -133,6 +134,10 @@ public class FetchOperator implements Serializable {
     this.job = job;
     this.work = work;
     this.operator = operator;
+    if (operator instanceof TableScanOperator) {
+      Utilities.addTableSchemaToConf(job,
+          (TableScanOperator) operator);
+    }
     this.vcCols = vcCols;
     this.hasVC = vcCols != null && !vcCols.isEmpty();
     this.isStatReader = work.getTblDesc() == null;
@@ -141,6 +146,9 @@ public class FetchOperator implements Serializable {
     initialize();
   }
 
+  public void setValidTxnList(String txnStr) {
+    job.set(ValidTxnList.VALID_TXNS_KEY, txnStr);
+  }
   private void initialize() throws HiveException {
     if (isStatReader) {
       outputOI = work.getStatRowOI();
@@ -200,12 +208,13 @@ public class FetchOperator implements Serializable {
   private static final Map<String, InputFormat> inputFormats = new HashMap<String, InputFormat>();
 
   @SuppressWarnings("unchecked")
-  static InputFormat getInputFormatFromCache(Class<? extends InputFormat> inputFormatClass,
-       JobConf conf) throws IOException {
+  static InputFormat getInputFormatFromCache(
+    Class<? extends InputFormat> inputFormatClass, JobConf conf) throws IOException {
     if (Configurable.class.isAssignableFrom(inputFormatClass) ||
         JobConfigurable.class.isAssignableFrom(inputFormatClass)) {
       return ReflectionUtil.newInstance(inputFormatClass, conf);
     }
+    // TODO: why is this copy-pasted from HiveInputFormat?
     InputFormat format = inputFormats.get(inputFormatClass.getName());
     if (format == null) {
       try {
@@ -405,6 +414,10 @@ public class FetchOperator implements Serializable {
    * Currently only used by FetchTask.
    **/
   public boolean pushRow() throws IOException, HiveException {
+    if (operator == null) {
+      return false;
+    }
+
     if (work.getRowsComputedUsingStats() != null) {
       for (List<Object> row : work.getRowsComputedUsingStats()) {
         operator.process(row, 0);
@@ -519,10 +532,7 @@ public class FetchOperator implements Serializable {
         currRecReader.close();
         currRecReader = null;
       }
-      if (operator != null) {
-        operator.close(false);
-        operator = null;
-      }
+      closeOperator();
       if (context != null) {
         context.clear();
         context = null;
@@ -534,6 +544,13 @@ public class FetchOperator implements Serializable {
     } catch (Exception e) {
       throw new HiveException("Failed with exception " + e.getMessage()
           + StringUtils.stringifyException(e));
+    }
+  }
+
+  public void closeOperator() throws HiveException {
+    if (operator != null) {
+      operator.close(false);
+      operator = null;
     }
   }
 
@@ -599,6 +616,10 @@ public class FetchOperator implements Serializable {
   }
 
   private boolean needConversion(PartitionDesc partitionDesc) {
+    boolean isAcid = AcidUtils.isTablePropertyTransactional(partitionDesc.getTableDesc().getProperties());
+    if (Utilities.isSchemaEvolutionEnabled(job, isAcid) && Utilities.isInputFileFormatSelfDescribing(partitionDesc)) {
+      return false;
+    }
     return needConversion(partitionDesc.getTableDesc(), Arrays.asList(partitionDesc));
   }
 
@@ -641,7 +662,7 @@ public class FetchOperator implements Serializable {
    * @return list of file status entries
    */
   private FileStatus[] listStatusUnderPath(FileSystem fs, Path p) throws IOException {
-    boolean recursive = HiveConf.getBoolVar(job, HiveConf.ConfVars.HADOOPMAPREDINPUTDIRRECURSIVE);
+    boolean recursive = job.getBoolean(FileInputFormat.INPUT_DIR_RECURSIVE, false);
     // If this is in acid format always read it recursively regardless of what the jobconf says.
     if (!recursive && !AcidUtils.isAcid(p, job)) {
       return fs.listStatus(p, FileUtils.HIDDEN_FILES_PATH_FILTER);

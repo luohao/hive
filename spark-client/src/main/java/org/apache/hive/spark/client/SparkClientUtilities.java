@@ -23,32 +23,39 @@ import com.google.common.collect.Lists;
 import java.io.File;
 import java.net.URL;
 import java.net.URLClassLoader;
+import java.util.ArrayList;
 import java.util.List;
-import java.util.Set;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 import org.apache.commons.lang.StringUtils;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 
 public class SparkClientUtilities {
-  protected static final transient Log LOG = LogFactory.getLog(SparkClientUtilities.class);
+  protected static final transient Logger LOG = LoggerFactory.getLogger(SparkClientUtilities.class);
+
+  private static final Map<String, Long> downloadedFiles = new ConcurrentHashMap<>();
 
   /**
    * Add new elements to the classpath.
    *
-   * @param newPaths Set of classpath elements
+   * @param newPaths Map of classpath elements and corresponding timestamp
+   * @return locally accessible files corresponding to the newPaths
    */
-  public static void addToClassPath(Set<String> newPaths, Configuration conf, File localTmpDir)
-      throws Exception {
+  public static List<String> addToClassPath(Map<String, Long> newPaths, Configuration conf,
+      File localTmpDir) throws Exception {
     URLClassLoader loader = (URLClassLoader) Thread.currentThread().getContextClassLoader();
     List<URL> curPath = Lists.newArrayList(loader.getURLs());
+    List<String> localNewPaths = new ArrayList<>();
 
     boolean newPathAdded = false;
-    for (String newPath : newPaths) {
-      URL newUrl = urlFromPathString(newPath, conf, localTmpDir);
+    for (Map.Entry<String, Long> entry : newPaths.entrySet()) {
+      URL newUrl = urlFromPathString(entry.getKey(), entry.getValue(), conf, localTmpDir);
+      localNewPaths.add(newUrl.toString());
       if (newUrl != null && !curPath.contains(newUrl)) {
         curPath.add(newUrl);
         LOG.info("Added jar[" + newUrl + "] to classpath.");
@@ -61,6 +68,7 @@ public class SparkClientUtilities {
           new URLClassLoader(curPath.toArray(new URL[curPath.size()]), loader);
       Thread.currentThread().setContextClassLoader(newLoader);
     }
+    return localNewPaths;
   }
 
   /**
@@ -69,7 +77,8 @@ public class SparkClientUtilities {
    * @param path  path string
    * @return
    */
-  private static URL urlFromPathString(String path, Configuration conf, File localTmpDir) {
+  private static URL urlFromPathString(String path, Long timeStamp,
+      Configuration conf, File localTmpDir) {
     URL url = null;
     try {
       if (StringUtils.indexOf(path, "file:/") == 0) {
@@ -78,12 +87,17 @@ public class SparkClientUtilities {
         Path remoteFile = new Path(path);
         Path localFile =
             new Path(localTmpDir.getAbsolutePath() + File.separator + remoteFile.getName());
-        if (!new File(localFile.toString()).exists()) {
+        Long currentTS = downloadedFiles.get(path);
+        if (currentTS == null) {
+          currentTS = -1L;
+        }
+        if (!new File(localFile.toString()).exists() || currentTS < timeStamp) {
           LOG.info("Copying " + remoteFile + " to " + localFile);
           FileSystem remoteFS = remoteFile.getFileSystem(conf);
           remoteFS.copyToLocalFile(remoteFile, localFile);
+          downloadedFiles.put(path, timeStamp);
         }
-        return urlFromPathString(localFile.toString(), conf, localTmpDir);
+        return urlFromPathString(localFile.toString(), timeStamp, conf, localTmpDir);
       } else {
         url = new File(path).toURL();
       }
@@ -91,5 +105,34 @@ public class SparkClientUtilities {
       LOG.error("Bad URL " + path + ", ignoring path", err);
     }
     return url;
+  }
+
+  public static boolean isYarnClusterMode(String master, String deployMode) {
+    return "yarn-cluster".equals(master) ||
+        ("yarn".equals(master) && "cluster".equals(deployMode));
+  }
+
+  public static boolean isYarnClientMode(String master, String deployMode) {
+    return "yarn-client".equals(master) ||
+        ("yarn".equals(master) && "client".equals(deployMode));
+  }
+
+  public static boolean isYarnMaster(String master) {
+    return master != null && master.startsWith("yarn");
+  }
+
+  public static boolean isLocalMaster(String master) {
+    return master != null && master.startsWith("local");
+  }
+
+  public static String getDeployModeFromMaster(String master) {
+    if (master != null) {
+      if (master.equals("yarn-client")) {
+        return "client";
+      } else if (master.equals("yarn-cluster")) {
+        return "cluster";
+      }
+    }
+    return null;
   }
 }

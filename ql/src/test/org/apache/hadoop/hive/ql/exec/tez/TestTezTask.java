@@ -23,10 +23,12 @@ import static org.junit.Assert.assertTrue;
 import static org.mockito.Matchers.any;
 import static org.mockito.Matchers.anyBoolean;
 import static org.mockito.Matchers.eq;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.never;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -35,12 +37,16 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.hive.common.metrics.common.Metrics;
+import org.apache.hadoop.hive.common.metrics.common.MetricsConstant;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.ql.Context;
+import org.apache.hadoop.hive.ql.QueryPlan;
 import org.apache.hadoop.hive.ql.exec.Operator;
 import org.apache.hadoop.hive.ql.metadata.HiveException;
 import org.apache.hadoop.hive.ql.plan.BaseWork;
@@ -67,6 +73,7 @@ import org.apache.tez.dag.api.client.DAGClient;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
+import org.mockito.Mockito;
 import org.mockito.invocation.InvocationOnMock;
 import org.mockito.stubbing.Answer;
 
@@ -117,7 +124,7 @@ public class TestTezTask {
           }
         });
 
-    work = new TezWork("");
+    work = new TezWork("", null);
 
     mws = new MapWork[] { new MapWork(), new MapWork()};
     rws = new ReduceWork[] { new ReduceWork(), new ReduceWork() };
@@ -138,11 +145,10 @@ public class TestTezTask {
     mws[0].setAliasToWork(map);
     mws[1].setAliasToWork(map);
 
-    LinkedHashMap<String, ArrayList<String>> pathMap
-      = new LinkedHashMap<String, ArrayList<String>>();
+    LinkedHashMap<Path, ArrayList<String>> pathMap = new LinkedHashMap<>();
     ArrayList<String> aliasList = new ArrayList<String>();
     aliasList.add("foo");
-    pathMap.put("foo", aliasList);
+    pathMap.put(new Path("foo"), aliasList);
 
     mws[0].setPathToAliases(pathMap);
     mws[1].setPathToAliases(pathMap);
@@ -158,11 +164,18 @@ public class TestTezTask {
     task = new TezTask(utils);
     task.setWork(work);
     task.setConsole(mock(LogHelper.class));
+    QueryPlan mockQueryPlan = mock(QueryPlan.class);
+    doReturn(UUID.randomUUID().toString()).when(mockQueryPlan).getQueryId();
+    task.setQueryPlan(mockQueryPlan);
 
     conf = new JobConf();
     appLr = mock(LocalResource.class);
 
-    SessionState.start(new HiveConf());
+    HiveConf hiveConf = new HiveConf();
+    hiveConf
+        .setVar(HiveConf.ConfVars.HIVE_AUTHORIZATION_MANAGER,
+            "org.apache.hadoop.hive.ql.security.authorization.plugin.sqlstd.SQLStdHiveAuthorizerFactory");
+    SessionState.start(hiveConf);
     session = mock(TezClient.class);
     sessionState = mock(TezSessionState.class);
     when(sessionState.getSession()).thenReturn(session);
@@ -203,7 +216,7 @@ public class TestTezTask {
 
   @Test
   public void testEmptyWork() throws IllegalArgumentException, IOException, Exception {
-    DAG dag = task.build(conf, new TezWork(""), path, appLr, null, new Context(conf));
+    DAG dag = task.build(conf, new TezWork("", null), path, appLr, null, new Context(conf));
     assertEquals(dag.getVertices().size(), 0);
   }
 
@@ -236,6 +249,7 @@ public class TestTezTask {
         .thenReturn(resources);
     when(utils.getBaseName(res)).thenReturn("foo.jar");
     when(sessionState.isOpen()).thenReturn(true);
+    when(sessionState.isOpening()).thenReturn(false);
     when(sessionState.hasResources(inputOutputJars)).thenReturn(false);
     task.updateSession(sessionState, conf, path, inputOutputJars, resMap);
     verify(session).addAppMasterLocalFiles(resMap);
@@ -254,6 +268,7 @@ public class TestTezTask {
         .thenReturn(resources);
     when(utils.getBaseName(res)).thenReturn("foo.jar");
     when(sessionState.isOpen()).thenReturn(true);
+    when(sessionState.isOpening()).thenReturn(false);
     when(sessionState.hasResources(inputOutputJars)).thenReturn(false);
     task.addExtraResourcesToDag(sessionState, dag, inputOutputJars, resMap);
     verify(dag).addTaskLocalFiles(resMap);
@@ -272,5 +287,66 @@ public class TestTezTask {
     when(utils.getBaseName(res)).thenReturn("foo.jar");
 
     assertEquals(resMap, task.getExtraLocalResources(conf, path, inputOutputJars));
+  }
+
+  @Test
+  public void testParseRightmostXmx() throws Exception {
+    // Empty java opts
+    String javaOpts = "";
+    long heapSize = DagUtils.parseRightmostXmx(javaOpts);
+    assertEquals("Unexpected maximum heap size", -1, heapSize);
+
+    // Non-empty java opts without -Xmx specified
+    javaOpts = "-Xms1024m";
+    heapSize = DagUtils.parseRightmostXmx(javaOpts);
+    assertEquals("Unexpected maximum heap size", -1, heapSize);
+
+    // Non-empty java opts with -Xmx specified in GB
+    javaOpts = "-Xms1024m -Xmx2g";
+    heapSize = DagUtils.parseRightmostXmx(javaOpts);
+    assertEquals("Unexpected maximum heap size", 2147483648L, heapSize);
+
+    // Non-empty java opts with -Xmx specified in MB
+    javaOpts = "-Xms1024m -Xmx1024m";
+    heapSize = DagUtils.parseRightmostXmx(javaOpts);
+    assertEquals("Unexpected maximum heap size", 1073741824, heapSize);
+
+    // Non-empty java opts with -Xmx specified in KB
+    javaOpts = "-Xms1024m -Xmx524288k";
+    heapSize = DagUtils.parseRightmostXmx(javaOpts);
+    assertEquals("Unexpected maximum heap size", 536870912, heapSize);
+
+    // Non-empty java opts with -Xmx specified in B
+    javaOpts = "-Xms1024m -Xmx1610612736";
+    heapSize = DagUtils.parseRightmostXmx(javaOpts);
+    assertEquals("Unexpected maximum heap size", 1610612736, heapSize);
+
+    // Non-empty java opts with -Xmx specified twice
+    javaOpts = "-Xmx1024m -Xmx1536m";
+    heapSize = DagUtils.parseRightmostXmx(javaOpts);
+    assertEquals("Unexpected maximum heap size", 1610612736, heapSize);
+
+    // Non-empty java opts with bad -Xmx specification
+    javaOpts = "pre-Xmx1024m";
+    heapSize = DagUtils.parseRightmostXmx(javaOpts);
+    assertEquals("Unexpected maximum heap size", -1, heapSize);
+
+    // Non-empty java opts with bad -Xmx specification
+    javaOpts = "-Xmx1024m-post";
+    heapSize = DagUtils.parseRightmostXmx(javaOpts);
+    assertEquals("Unexpected maximum heap size", -1, heapSize);
+  }
+
+  @Test
+  public void tezTask_updates_Metrics() throws IOException {
+
+    Metrics mockMetrics = Mockito.mock(Metrics.class);
+
+    TezTask tezTask = new TezTask();
+    tezTask.updateTaskMetrics(mockMetrics);
+
+    verify(mockMetrics, times(1)).incrementCounter(MetricsConstant.HIVE_TEZ_TASKS);
+    verify(mockMetrics, never()).incrementCounter(MetricsConstant.HIVE_SPARK_TASKS);
+    verify(mockMetrics, never()).incrementCounter(MetricsConstant.HIVE_MR_TASKS);
   }
 }

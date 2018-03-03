@@ -35,11 +35,12 @@
       <directory>${project.parent.basedir}</directory>
 
       <excludes>
+        <exclude>**/*.jar</exclude>
         <exclude>**/target/**</exclude>
         <exclude>**/.classpath</exclude>
         <exclude>**/.project</exclude>
         <exclude>**/.settings/**</exclude>
-        <exclude>itests/thirdparty/**</exclude>
+        <exclude>**/thirdparty/**</exclude>
         <exclude>testutils/ptest2/velocity.log*</exclude>
       </excludes>
 
@@ -67,26 +68,36 @@
         <include>data/**/*</include>
         <include>dev-support/**/*</include>
         <include>docs/**/*</include>
+        <include>druid-handler/**/*</include>
+        <include>jdbc-handler/**/*</include>
         <include>find-bugs/**/*</include>
         <include>hbase-handler/**/*</include>
         <include>hcatalog/**/*</include>
-        <include>hwi/**/*</include>
+        <include>hplsql/**/*</include>
         <include>itests/**/*</include>
         <include>jdbc/**/*</include>
         <include>contrib/**/*</include>
         <include>metastore/**/*</include>
+        <include>llap-common/**/*</include>
+        <include>llap-client/**/*</include>
+        <include>llap-ext-client/**/*</include>
+        <include>llap-tez/**/*</include>
+        <include>llap-server/**/*</include>
         <include>lib/**/*</include>
         <include>findbugs/**/*</include>
-        <include>odbc/**/*</include>
+        <include>orc/**/*</include>
         <include>packaging/pom.xml</include>
         <include>packaging/src/**/*</include>
         <include>pom.xml</include>
         <include>ql/**/*</include>
         <include>serde/**/*</include>
+        <include>service-rpc/**/*</include>
         <include>service/**/*</include>
         <include>shims/**/*</include>
         <include>spark-client/**/*</include>
+        <include>storage-api/**/*</include>
         <include>testutils/**/*</include>
+        <include>vector-code-gen/**/*</include>
       </includes>
       <outputDirectory>/</outputDirectory>
     </fileSet>

@@ -1,4 +1,4 @@
-PREHOOK: query: explain 
+PREHOOK: query: explain vectorization 
 select count(*) from (select c.ctinyint 
 from alltypesorc c
 left outer join alltypesorc cd
@@ -7,7 +7,7 @@ left outer join alltypesorc hd
   on hd.ctinyint = c.ctinyint
 ) t1
 PREHOOK: type: QUERY
-POSTHOOK: query: explain 
+POSTHOOK: query: explain vectorization 
 select count(*) from (select c.ctinyint 
 from alltypesorc c
 left outer join alltypesorc cd
@@ -16,6 +16,10 @@ left outer join alltypesorc hd
   on hd.ctinyint = c.ctinyint
 ) t1
 POSTHOOK: type: QUERY
+PLAN VECTORIZATION:
+  enabled: true
+  enabledConditionsMet: [hive.vectorized.execution.enabled IS true]
+
 STAGE DEPENDENCIES:
   Stage-2 is a root stage
   Stage-1 depends on stages: Stage-2
@@ -29,7 +33,7 @@ STAGE PLANS:
         Map 3 
             Map Operator Tree:
                 TableScan
-                  alias: c
+                  alias: cd
                   Statistics: Num rows: 12288 Data size: 377237 Basic stats: COMPLETE Column stats: NONE
                   Select Operator
                     expressions: cint (type: int)
@@ -39,13 +43,21 @@ STAGE PLANS:
                       keys:
                         0 _col1 (type: int)
                         1 _col0 (type: int)
+            Execution mode: vectorized
+            Map Vectorization:
+                enabled: true
+                enabledConditionsMet: hive.vectorized.use.vectorized.input.format IS true
+                groupByVectorOutput: true
+                inputFileFormats: org.apache.hadoop.hive.ql.io.orc.OrcInputFormat
+                allNative: true
+                usesVectorUDFAdaptor: false
+                vectorized: true
             Local Work:
               Map Reduce Local Work
-            Execution mode: vectorized
         Map 4 
             Map Operator Tree:
                 TableScan
-                  alias: c
+                  alias: hd
                   Statistics: Num rows: 12288 Data size: 377237 Basic stats: COMPLETE Column stats: NONE
                   Select Operator
                     expressions: ctinyint (type: tinyint)
@@ -55,9 +67,17 @@ STAGE PLANS:
                       keys:
                         0 _col0 (type: tinyint)
                         1 _col0 (type: tinyint)
+            Execution mode: vectorized
+            Map Vectorization:
+                enabled: true
+                enabledConditionsMet: hive.vectorized.use.vectorized.input.format IS true
+                groupByVectorOutput: true
+                inputFileFormats: org.apache.hadoop.hive.ql.io.orc.OrcInputFormat
+                allNative: true
+                usesVectorUDFAdaptor: false
+                vectorized: true
             Local Work:
               Map Reduce Local Work
-            Execution mode: vectorized
 
   Stage: Stage-1
     Spark
@@ -102,10 +122,26 @@ STAGE PLANS:
                             sort order: 
                             Statistics: Num rows: 1 Data size: 8 Basic stats: COMPLETE Column stats: NONE
                             value expressions: _col0 (type: bigint)
+            Execution mode: vectorized
+            Map Vectorization:
+                enabled: true
+                enabledConditionsMet: hive.vectorized.use.vectorized.input.format IS true
+                groupByVectorOutput: true
+                inputFileFormats: org.apache.hadoop.hive.ql.io.orc.OrcInputFormat
+                allNative: false
+                usesVectorUDFAdaptor: false
+                vectorized: true
             Local Work:
               Map Reduce Local Work
-            Execution mode: vectorized
         Reducer 2 
+            Execution mode: vectorized
+            Reduce Vectorization:
+                enabled: true
+                enableConditionsMet: hive.vectorized.execution.reduce.enabled IS true, hive.execution.engine spark IN [tez, spark] IS true
+                groupByVectorOutput: true
+                allNative: false
+                usesVectorUDFAdaptor: false
+                vectorized: true
             Reduce Operator Tree:
               Group By Operator
                 aggregations: count(VALUE._col0)
@@ -116,10 +152,9 @@ STAGE PLANS:
                   compressed: false
                   Statistics: Num rows: 1 Data size: 8 Basic stats: COMPLETE Column stats: NONE
                   table:
-                      input format: org.apache.hadoop.mapred.TextInputFormat
-                      output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
+                      input format: org.apache.hadoop.mapred.SequenceFileInputFormat
+                      output format: org.apache.hadoop.hive.ql.io.HiveSequenceFileOutputFormat
                       serde: org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe
-            Execution mode: vectorized
 
   Stage: Stage-0
     Fetch Operator

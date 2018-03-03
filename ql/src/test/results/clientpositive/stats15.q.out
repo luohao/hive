@@ -42,10 +42,10 @@ Retention:          	0
 #### A masked pattern was here ####
 Table Type:         	MANAGED_TABLE       	 
 Table Parameters:	 	 
-	COLUMN_STATS_ACCURATE	true                
+	COLUMN_STATS_ACCURATE	{\"BASIC_STATS\":\"true\"}
 	numFiles            	1                   
 	numRows             	500                 
-	rawDataSize         	0                   
+	rawDataSize         	5312                
 	totalSize           	5812                
 #### A masked pattern was here ####
 	 	 
@@ -145,6 +145,12 @@ Retention:          	0
 #### A masked pattern was here ####
 Table Type:         	MANAGED_TABLE       	 
 Table Parameters:	 	 
+	COLUMN_STATS_ACCURATE	{\"BASIC_STATS\":\"true\"}
+	numFiles            	3                   
+	numPartitions       	3                   
+	numRows             	1500                
+	rawDataSize         	15936               
+	totalSize           	17436               
 #### A masked pattern was here ####
 	 	 
 # Storage Information	 	 
@@ -180,10 +186,10 @@ Database:           	default
 Table:              	stats_part          	 
 #### A masked pattern was here ####
 Partition Parameters:	 	 
-	COLUMN_STATS_ACCURATE	true                
+	COLUMN_STATS_ACCURATE	{\"BASIC_STATS\":\"true\"}
 	numFiles            	1                   
 	numRows             	500                 
-	rawDataSize         	0                   
+	rawDataSize         	5312                
 	totalSize           	5812                
 #### A masked pattern was here ####
 	 	 
@@ -220,10 +226,10 @@ Database:           	default
 Table:              	stats_part          	 
 #### A masked pattern was here ####
 Partition Parameters:	 	 
-	COLUMN_STATS_ACCURATE	true                
+	COLUMN_STATS_ACCURATE	{\"BASIC_STATS\":\"true\"}
 	numFiles            	1                   
 	numRows             	500                 
-	rawDataSize         	0                   
+	rawDataSize         	5312                
 	totalSize           	5812                
 #### A masked pattern was here ####
 	 	 
@@ -281,6 +287,12 @@ Retention:          	0
 #### A masked pattern was here ####
 Table Type:         	MANAGED_TABLE       	 
 Table Parameters:	 	 
+	COLUMN_STATS_ACCURATE	{\"BASIC_STATS\":\"true\"}
+	numFiles            	3                   
+	numPartitions       	3                   
+	numRows             	1500                
+	rawDataSize         	15936               
+	totalSize           	17436               
 #### A masked pattern was here ####
 	 	 
 # Storage Information	 	 

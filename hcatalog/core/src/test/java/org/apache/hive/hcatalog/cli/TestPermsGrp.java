@@ -99,7 +99,7 @@ public class TestPermsGrp extends TestCase {
     hcatConf.setTimeVar(HiveConf.ConfVars.METASTORE_CLIENT_SOCKET_TIMEOUT, 60, TimeUnit.SECONDS);
     hcatConf.setBoolVar(HiveConf.ConfVars.HIVE_SUPPORT_CONCURRENCY, false);
     clientWH = new Warehouse(hcatConf);
-    msc = new HiveMetaStoreClient(hcatConf, null);
+    msc = new HiveMetaStoreClient(hcatConf);
     System.setProperty(HiveConf.ConfVars.PREEXECHOOKS.varname, " ");
     System.setProperty(HiveConf.ConfVars.POSTEXECHOOKS.varname, " ");
   }
@@ -116,7 +116,7 @@ public class TestPermsGrp extends TestCase {
       Table tbl = getTable(dbName, tblName, typeName);
       msc.createTable(tbl);
       Database db = Hive.get(hcatConf).getDatabase(dbName);
-      Path dfsPath = clientWH.getTablePath(db, tblName);
+      Path dfsPath = clientWH.getDefaultTablePath(db, tblName);
       cleanupTbl(dbName, tblName, typeName);
 
       // Next user did specify perms.
@@ -126,7 +126,7 @@ public class TestPermsGrp extends TestCase {
         assertTrue(e instanceof ExitException);
         assertEquals(((ExitException) e).getStatus(), 0);
       }
-      dfsPath = clientWH.getTablePath(db, tblName);
+      dfsPath = clientWH.getDefaultTablePath(db, tblName);
       assertTrue(dfsPath.getFileSystem(hcatConf).getFileStatus(dfsPath).getPermission().equals(FsPermission.valueOf("drwx-wx---")));
 
       cleanupTbl(dbName, tblName, typeName);
@@ -141,7 +141,7 @@ public class TestPermsGrp extends TestCase {
         assertTrue(me instanceof ExitException);
       }
       // No physical dir gets created.
-      dfsPath = clientWH.getTablePath(db, tblName);
+      dfsPath = clientWH.getDefaultTablePath(db, tblName);
       try {
         dfsPath.getFileSystem(hcatConf).getFileStatus(dfsPath);
         assert false;
@@ -195,6 +195,8 @@ public class TestPermsGrp extends TestCase {
   private void callHCatCli(String[] args) {
     List<String> argsList = new ArrayList<String>();
     argsList.add("-Dhive.support.concurrency=false");
+    argsList
+        .add("-Dhive.security.authorization.manager=org.apache.hadoop.hive.ql.security.authorization.plugin.sqlstd.SQLStdHiveAuthorizerFactory");
     argsList.addAll(Arrays.asList(args));
     HCatCli.main(argsList.toArray(new String[]{}));
   }

@@ -18,13 +18,13 @@
 
 package org.apache.hadoop.hive.ql.exec.vector;
 
-import java.util.Collection;
-import java.util.concurrent.Future;
-
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hive.ql.CompilationOpContext;
 import org.apache.hadoop.hive.ql.metadata.HiveException;
 import org.apache.hadoop.hive.ql.plan.OperatorDesc;
 import org.apache.hadoop.hive.serde2.objectinspector.StructObjectInspector;
+
+import com.google.common.annotations.VisibleForTesting;
 
 /**
  * This is the *NON-NATIVE* vector map join operator for just LEFT OUTER JOIN and filtered.
@@ -44,25 +44,33 @@ public class VectorMapJoinOuterFilteredOperator extends VectorMapJoinBaseOperato
 
   private transient boolean firstBatch;
 
-  private transient VectorExtractRowDynBatch vectorExtractRowDynBatch;
+  private transient VectorExtractRow vectorExtractRow;
 
   protected transient Object[] singleRow;
+  protected transient int savePosBigTable;
 
+  /** Kryo ctor. */
+  @VisibleForTesting
   public VectorMapJoinOuterFilteredOperator() {
     super();
   }
 
-  public VectorMapJoinOuterFilteredOperator(VectorizationContext vContext, OperatorDesc conf)
-      throws HiveException {
-    super(vContext, conf);
+  public VectorMapJoinOuterFilteredOperator(CompilationOpContext ctx) {
+    super(ctx);
+  }
+
+  public VectorMapJoinOuterFilteredOperator(CompilationOpContext ctx,
+      VectorizationContext vContext, OperatorDesc conf) throws HiveException {
+    super(ctx, vContext, conf);
 
     this.vContext = vContext;
   }
 
   @Override
-  public Collection<Future<?>> initializeOp(Configuration hconf) throws HiveException {
+  public void initializeOp(Configuration hconf) throws HiveException {
 
     final int posBigTable = conf.getPosBigTable();
+    savePosBigTable = posBigTable;
 
     // We need a input object inspector that is for the row we will extract out of the
     // vectorized row batch, not for example, an original inspector for an ORC table, etc.
@@ -71,11 +79,9 @@ public class VectorMapJoinOuterFilteredOperator extends VectorMapJoinBaseOperato
 
     // Call super VectorMapJoinOuterFilteredOperator, which calls super MapJoinOperator with
     // new input inspector.
-    Collection<Future<?>> result = super.initializeOp(hconf);
+    super.initializeOp(hconf);
 
     firstBatch = true;
-
-    return result;
   }
 
   @Override
@@ -90,16 +96,13 @@ public class VectorMapJoinOuterFilteredOperator extends VectorMapJoinBaseOperato
     }
 
     if (firstBatch) {
-      vectorExtractRowDynBatch = new VectorExtractRowDynBatch();
-      vectorExtractRowDynBatch.init((StructObjectInspector) inputObjInspectors[0], vContext.getProjectedColumns());
+      vectorExtractRow = new VectorExtractRow();
+      vectorExtractRow.init((StructObjectInspector) inputObjInspectors[savePosBigTable], vContext.getProjectedColumns());
 
-      singleRow = new Object[vectorExtractRowDynBatch.getCount()];
+      singleRow = new Object[vectorExtractRow.getCount()];
 
       firstBatch = false;
     }
-
-
-    vectorExtractRowDynBatch.setBatchOnEntry(batch);
 
     // VectorizedBatchUtil.debugDisplayBatch( batch, "VectorReduceSinkOperator processOp ");
 
@@ -107,16 +110,14 @@ public class VectorMapJoinOuterFilteredOperator extends VectorMapJoinBaseOperato
       int selected[] = batch.selected;
       for (int logical = 0 ; logical < batch.size; logical++) {
         int batchIndex = selected[logical];
-        vectorExtractRowDynBatch.extractRow(batchIndex, singleRow);
+        vectorExtractRow.extractRow(batch, batchIndex, singleRow);
         super.process(singleRow, tag);
       }
     } else {
       for (int batchIndex = 0 ; batchIndex < batch.size; batchIndex++) {
-        vectorExtractRowDynBatch.extractRow(batchIndex, singleRow);
+        vectorExtractRow.extractRow(batch, batchIndex, singleRow);
         super.process(singleRow, tag);
       }
     }
-
-    vectorExtractRowDynBatch.forgetBatchOnExit();
   }
 }

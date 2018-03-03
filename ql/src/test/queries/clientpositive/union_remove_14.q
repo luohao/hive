@@ -1,6 +1,6 @@
+set hive.mapred.mode=nonstrict;
 set hive.stats.autogather=false;
 set hive.optimize.union.remove=true;
-set hive.mapred.supports.subdirectories=true;
 
 set hive.merge.sparkfiles=true;
 set hive.merge.mapfiles=true;
@@ -9,6 +9,7 @@ set hive.auto.convert.join=true;
 set hive.merge.smallfiles.avgsize=1;
 set mapred.input.dir.recursive=true;
 
+-- SORT_QUERY_RESULTS
 -- This is to test the union->selectstar->filesink optimization
 -- Union of 2 subqueries is performed (one of which is a map-only query, and the
 -- other one contains a join, which should be performed as a map-join query at runtime),
@@ -34,7 +35,7 @@ SELECT * FROM
 (
 select key, 1 as `values` from inputTbl1
 union all
-select a.key as key, b.val as `values`
+select a.key as key, cast(b.val as bigint) as `values`
 FROM inputTbl1 a join inputTbl1 b on a.key=b.key
 )c;
 
@@ -43,11 +44,11 @@ SELECT * FROM
 (
 select key, 1 as `values` from inputTbl1
 union all
-select a.key as key, b.val as `values`
+select a.key as key, cast(b.val as bigint) as `values`
 FROM inputTbl1 a join inputTbl1 b on a.key=b.key
 )c;
 
 desc formatted outputTbl1;
 
 set hive.input.format=org.apache.hadoop.hive.ql.io.HiveInputFormat;
-select * from outputTbl1 order by key, `values`;
+select * from outputTbl1;

@@ -26,10 +26,11 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.AbstractMap.SimpleEntry;
 
 import org.antlr.runtime.tree.Tree;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.hive.ql.parse.BaseSemanticAnalyzer.AnalyzeRewriteContext;
 import org.apache.hadoop.hive.ql.parse.BaseSemanticAnalyzer.TableSpec;
 
@@ -39,8 +40,8 @@ import org.apache.hadoop.hive.ql.parse.BaseSemanticAnalyzer.TableSpec;
  **/
 public class QBParseInfo {
 
-  private final boolean isSubQ;
-  private final String alias;
+  private boolean isSubQ;
+  private String alias;
   private ASTNode joinExpr;
   private ASTNode hints;
   private final HashMap<String, ASTNode> aliasToSrc;
@@ -62,10 +63,12 @@ public class QBParseInfo {
   private final Set<String> destCubes;
   private final Set<String> destGroupingSets;
   private final Map<String, ASTNode> destToHaving;
-  private final HashSet<String> insertIntoTables;
+  // insertIntoTables/insertOverwriteTables map a table's fullName to its ast;
+  private final Map<String, ASTNode> insertIntoTables;
+  private final Map<String, ASTNode> insertOverwriteTables;
+  private ASTNode queryFromExpr;
 
   private boolean isAnalyzeCommand; // used for the analyze command (statistics)
-  private boolean isInsertToTable;  // used for insert overwrite command (statistics)
   private boolean isNoScanAnalyzeCommand; // used for the analyze command (statistics) (noscan)
   private boolean isPartialScanAnalyzeCommand; // used for the analyze command (statistics)
                                                // (partialscan)
@@ -100,7 +103,10 @@ public class QBParseInfo {
 
   /* Order by clause */
   private final HashMap<String, ASTNode> destToOrderby;
-  private final HashMap<String, Integer> destToLimit;
+  // Use SimpleEntry to save the offset and rowcount of limit clause
+  // KEY of SimpleEntry: offset
+  // VALUE of SimpleEntry: rowcount
+  private final HashMap<String, SimpleEntry<Integer, Integer>> destToLimit;
   private int outerQueryLimit;
 
   // used by GroupBy
@@ -112,7 +118,7 @@ public class QBParseInfo {
 
 
   @SuppressWarnings("unused")
-  private static final Log LOG = LogFactory.getLog(QBParseInfo.class.getName());
+  private static final Logger LOG = LoggerFactory.getLogger(QBParseInfo.class.getName());
 
   public QBParseInfo(String alias, boolean isSubQ) {
     aliasToSrc = new HashMap<String, ASTNode>();
@@ -129,8 +135,9 @@ public class QBParseInfo {
     destToDistributeby = new HashMap<String, ASTNode>();
     destToSortby = new HashMap<String, ASTNode>();
     destToOrderby = new HashMap<String, ASTNode>();
-    destToLimit = new HashMap<String, Integer>();
-    insertIntoTables = new HashSet<String>();
+    destToLimit = new HashMap<String, SimpleEntry<Integer, Integer>>();
+    insertIntoTables = new HashMap<String, ASTNode>();
+    insertOverwriteTables = new HashMap<String, ASTNode>();
     destRollups = new HashSet<String>();
     destCubes = new HashSet<String>();
     destGroupingSets = new HashSet<String>();
@@ -171,22 +178,26 @@ public class QBParseInfo {
     }
   }
 
-  public void addInsertIntoTable(String fullName) {
-    insertIntoTables.add(fullName.toLowerCase());
+  public void addInsertIntoTable(String fullName, ASTNode ast) {
+    insertIntoTables.put(fullName.toLowerCase(), ast);
   }
 
+  /**
+   * See also {@link #getInsertOverwriteTables()}
+   */
   public boolean isInsertIntoTable(String dbName, String table) {
     String fullName = dbName + "." + table;
-    return insertIntoTables.contains(fullName.toLowerCase());
+    return insertIntoTables.containsKey(fullName.toLowerCase());
   }
 
   /**
    * Check if a table is in the list to be inserted into
+   * See also {@link #getInsertOverwriteTables()}
    * @param fullTableName table name in dbname.tablename format
    * @return
    */
   public boolean isInsertIntoTable(String fullTableName) {
-    return insertIntoTables.contains(fullTableName.toLowerCase());
+    return insertIntoTables.containsKey(fullTableName.toLowerCase());
   }
 
   public HashMap<String, ASTNode> getAggregationExprsForClause(String clause) {
@@ -223,6 +234,10 @@ public class QBParseInfo {
 
   public void setSelExprForClause(String clause, ASTNode ast) {
     destToSelExpr.put(clause, ast);
+  }
+
+  public void setQueryFromExpr(ASTNode ast) {
+    queryFromExpr = ast;
   }
 
   public void setWhrExprForClause(String clause, ASTNode ast) {
@@ -344,6 +359,10 @@ public class QBParseInfo {
     return destToSelExpr.get(clause);
   }
 
+  public ASTNode getQueryFrom() {
+    return queryFromExpr;
+  }
+
   /**
    * Get the Cluster By AST for the clause.
    *
@@ -405,8 +424,16 @@ public class QBParseInfo {
     return alias;
   }
 
+  public void setAlias(String alias) {
+    this.alias = alias;
+  }
+
   public boolean getIsSubQ() {
     return isSubQ;
+  }
+
+  public void setIsSubQ(boolean isSubQ) {
+    this.isSubQ = isSubQ;
   }
 
   public ASTNode getJoinExpr() {
@@ -441,12 +468,16 @@ public class QBParseInfo {
     exprToColumnAlias.put(expr,  alias);
   }
 
-  public void setDestLimit(String dest, Integer limit) {
-    destToLimit.put(dest, limit);
+  public void setDestLimit(String dest, Integer offset, Integer limit) {
+    destToLimit.put(dest, new SimpleEntry<>(offset, limit));
   }
 
   public Integer getDestLimit(String dest) {
-    return destToLimit.get(dest);
+    return destToLimit.get(dest) == null ? null : destToLimit.get(dest).getValue();
+  }
+
+  public Integer getDestLimitOffset(String dest) {
+    return destToLimit.get(dest) == null ? 0 : destToLimit.get(dest).getKey();
   }
 
   /**
@@ -550,14 +581,6 @@ public class QBParseInfo {
     return isAnalyzeCommand;
   }
 
-  public void setIsInsertToTable(boolean isInsertToTable) {
-    this.isInsertToTable = isInsertToTable;
-  }
-
-  public boolean isInsertToTable() {
-    return isInsertToTable;
-  }
-
   public void addTableSpec(String tName, TableSpec tSpec) {
     tableSpecs.put(tName, tSpec);
   }
@@ -575,7 +598,7 @@ public class QBParseInfo {
     return tableSpecs.get(tName.next());
   }
 
-  public HashMap<String, Integer> getDestToLimit() {
+  public HashMap<String, SimpleEntry<Integer,Integer>> getDestToLimit() {
     return destToLimit;
   }
 
@@ -637,6 +660,14 @@ public class QBParseInfo {
   public void setPartialScanAnalyzeCommand(boolean isPartialScanAnalyzeCommand) {
     this.isPartialScanAnalyzeCommand = isPartialScanAnalyzeCommand;
   }
+
+  /**
+   * See also {@link #isInsertIntoTable(String)}
+   */
+  public Map<String, ASTNode> getInsertOverwriteTables() {
+    return insertOverwriteTables;
+  }
+
 }
 
 

@@ -18,9 +18,19 @@
 
 package org.apache.hadoop.hive.ql.io.orc;
 
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNull;
+
+import java.io.ByteArrayOutputStream;
+import java.io.DataInputStream;
+import java.io.File;
+import java.io.PrintStream;
+import java.util.Properties;
+
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.ql.io.AcidOutputFormat;
 import org.apache.hadoop.hive.ql.io.AcidUtils;
 import org.apache.hadoop.hive.ql.io.RecordIdentifier;
@@ -31,13 +41,9 @@ import org.apache.hadoop.io.IntWritable;
 import org.apache.hadoop.io.LongWritable;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.mapred.Reporter;
+import org.apache.orc.impl.OrcAcidUtils;
+import org.apache.orc.tools.FileDump;
 import org.junit.Test;
-
-import java.io.DataInputStream;
-import java.io.File;
-
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNull;
 
 public class TestOrcRecordUpdater {
 
@@ -112,7 +118,7 @@ public class TestOrcRecordUpdater {
     assertEquals(5L, updater.getStats().getRowCount());
 
     Path bucketPath = AcidUtils.createFilename(root, options);
-    Path sidePath = OrcRecordUpdater.getSideFile(bucketPath);
+    Path sidePath = OrcAcidUtils.getSideFile(bucketPath);
     DataInputStream side = fs.open(sidePath);
 
     // read the stopping point for the first flush and make sure we only see
@@ -177,6 +183,52 @@ public class TestOrcRecordUpdater {
     assertEquals(6L, updater.getStats().getRowCount());
 
     assertEquals(false, fs.exists(sidePath));
+  }
+
+  @Test
+  public void testWriterTblProperties() throws Exception {
+    Path root = new Path(workDir, "testWriterTblProperties");
+    Configuration conf = new Configuration();
+    // Must use raw local because the checksummer doesn't honor flushes.
+    FileSystem fs = FileSystem.getLocal(conf).getRaw();
+    ObjectInspector inspector;
+    synchronized (TestOrcFile.class) {
+      inspector = ObjectInspectorFactory.getReflectionObjectInspector
+          (MyRow.class, ObjectInspectorFactory.ObjectInspectorOptions.JAVA);
+    }
+    Properties tblProps = new Properties();
+    tblProps.setProperty("orc.compress", "SNAPPY");
+    tblProps.setProperty("orc.compress.size", "8192");
+    HiveConf.setIntVar(conf, HiveConf.ConfVars.HIVE_ORC_BASE_DELTA_RATIO, 4);
+    AcidOutputFormat.Options options = new AcidOutputFormat.Options(conf)
+        .filesystem(fs)
+        .bucket(10)
+        .writingBase(false)
+        .minimumTransactionId(10)
+        .maximumTransactionId(19)
+        .inspector(inspector)
+        .reporter(Reporter.NULL)
+        .finalDestination(root)
+        .tableProperties(tblProps);
+    RecordUpdater updater = new OrcRecordUpdater(root, options);
+    updater.insert(11, new MyRow("first"));
+    updater.insert(11, new MyRow("second"));
+    updater.insert(11, new MyRow("third"));
+    updater.flush();
+    updater.insert(12, new MyRow("fourth"));
+    updater.insert(12, new MyRow("fifth"));
+    updater.flush();
+
+    PrintStream origOut = System.out;
+    ByteArrayOutputStream myOut = new ByteArrayOutputStream();
+    System.setOut(new PrintStream(myOut));
+    FileDump.main(new String[]{root.toUri().toString()});
+    System.out.flush();
+    String outDump = new String(myOut.toByteArray());
+    assertEquals(true, outDump.contains("Compression: SNAPPY"));
+    assertEquals(true, outDump.contains("Compression size: 2048"));
+    System.setOut(origOut);
+    updater.close(false);
   }
 
   @Test

@@ -59,6 +59,8 @@ public class JoinDesc extends AbstractOperatorDesc {
   // alias to filter mapping
   private Map<Byte, List<ExprNodeDesc>> filters;
 
+  private List<ExprNodeDesc> residualFilterExprs;
+
   // pos of outer join alias=<pos of other alias:num of filters on outer join alias>xn
   // for example,
   // a left outer join b on a.k=b.k AND a.k>5 full outer join c on a.k=c.k AND a.k>10 AND c.k>20
@@ -193,6 +195,7 @@ public class JoinDesc extends AbstractOperatorDesc {
     this.tagOrder = clone.tagOrder;
     this.filters = clone.filters;
     this.filterMap = clone.filterMap;
+    this.residualFilterExprs = clone.residualFilterExprs;
     this.statistics = clone.statistics;
   }
 
@@ -211,7 +214,7 @@ public class JoinDesc extends AbstractOperatorDesc {
   /**
    * @return the keys in string form
    */
-  @Explain(displayName = "keys", explainLevels = { Level.USER, Level.DEFAULT, Level.EXTENDED })
+  @Explain(displayName = "keys")
   public Map<Byte, String> getKeysString() {
     if (joinKeys == null) {
       return null;
@@ -220,6 +223,19 @@ public class JoinDesc extends AbstractOperatorDesc {
     Map<Byte, String> keyMap = new LinkedHashMap<Byte, String>();
     for (byte i = 0; i < joinKeys.length; i++) {
       keyMap.put(i, PlanUtils.getExprListString(Arrays.asList(joinKeys[i])));
+    }
+    return keyMap;
+  }
+
+  @Explain(displayName = "keys", explainLevels = { Level.USER })
+  public Map<Byte, String> getUserLevelExplainKeysString() {
+    if (joinKeys == null) {
+      return null;
+    }
+
+    Map<Byte, String> keyMap = new LinkedHashMap<Byte, String>();
+    for (byte i = 0; i < joinKeys.length; i++) {
+      keyMap.put(i, PlanUtils.getExprListString(Arrays.asList(joinKeys[i]), true));
     }
     return keyMap;
   }
@@ -235,7 +251,7 @@ public class JoinDesc extends AbstractOperatorDesc {
    *
    * @return Map from alias to filters on the alias.
    */
-  @Explain(displayName = "filter predicates", explainLevels = { Level.USER, Level.DEFAULT, Level.EXTENDED })
+  @Explain(displayName = "filter predicates")
   public Map<Byte, String> getFiltersStringMap() {
     if (getFilters() == null || getFilters().size() == 0) {
       return null;
@@ -281,8 +297,43 @@ public class JoinDesc extends AbstractOperatorDesc {
     this.filters = filters;
   }
 
-  @Explain(displayName = "outputColumnNames", explainLevels = { Level.USER, Level.DEFAULT, Level.EXTENDED })
+  @Explain(displayName = "residual filter predicates", explainLevels = { Level.USER, Level.DEFAULT, Level.EXTENDED })
+  public String getResidualFilterExprsString() {
+    if (getResidualFilterExprs() == null || getResidualFilterExprs().size() == 0) {
+      return null;
+    }
+
+    StringBuilder sb = new StringBuilder();
+    boolean first = true;
+    for (ExprNodeDesc expr : getResidualFilterExprs()) {
+      if (!first) {
+        sb.append(" ");
+      }
+
+      first = false;
+      sb.append("{");
+      sb.append(expr.getExprString());
+      sb.append("}");
+    }
+
+    return sb.toString();
+  }
+
+  public List<ExprNodeDesc> getResidualFilterExprs() {
+    return residualFilterExprs;
+  }
+
+  public void setResidualFilterExprs(List<ExprNodeDesc> residualFilterExprs) {
+    this.residualFilterExprs = residualFilterExprs;
+  }
+
+  @Explain(displayName = "outputColumnNames")
   public List<String> getOutputColumnNames() {
+    return outputColumnNames;
+  }
+
+  @Explain(displayName = "Output", explainLevels = { Level.USER })
+  public List<String> getUserLevelExplainOutputColumnNames() {
     return outputColumnNames;
   }
 

@@ -1,6 +1,8 @@
+set hive.mapred.mode=nonstrict;
 set hive.explain.user=false;
 SET hive.vectorized.execution.enabled=true;
 SET hive.auto.convert.join=true;
+set hive.fetch.task.conversion=none;
 
 -- SORT_QUERY_RESULTS
 
@@ -8,7 +10,7 @@ SET hive.auto.convert.join=true;
 -- Query copied from subquery_in.q
 
 -- non agg, non corr, with join in Parent Query
-explain
+explain vectorization expression
 select p.p_partkey, li.l_suppkey 
 from (select distinct l_partkey as p_partkey from lineitem) p join lineitem li on p.p_partkey = li.l_partkey 
 where li.l_linenumber = 1 and
@@ -22,7 +24,7 @@ where li.l_linenumber = 1 and
 ;
 
 -- non agg, corr, with join in Parent Query
-explain
+explain vectorization expression
 select p.p_partkey, li.l_suppkey 
 from (select distinct l_partkey as p_partkey from lineitem) p join lineitem li on p.p_partkey = li.l_partkey 
 where li.l_linenumber = 1 and

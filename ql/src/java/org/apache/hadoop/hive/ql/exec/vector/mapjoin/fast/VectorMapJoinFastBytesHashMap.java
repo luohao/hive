@@ -18,23 +18,33 @@
 
 package org.apache.hadoop.hive.ql.exec.vector.mapjoin.fast;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import java.io.IOException;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.hive.ql.exec.JoinUtil;
 import org.apache.hadoop.hive.ql.exec.vector.mapjoin.hashtable.VectorMapJoinBytesHashMap;
 import org.apache.hadoop.hive.ql.exec.vector.mapjoin.hashtable.VectorMapJoinHashMapResult;
+import org.apache.hadoop.hive.ql.metadata.HiveException;
 import org.apache.hadoop.io.BytesWritable;
+import org.apache.hive.common.util.HashCodeUtil;
+
+import com.google.common.annotations.VisibleForTesting;
 
 /*
- * An single byte array value hash map optimized for vector map join.
+ * An bytes key hash map optimized for vector map join.
+ *
+ * This is the abstract base for the multi-key and string bytes key hash map implementations.
  */
 public abstract class VectorMapJoinFastBytesHashMap
         extends VectorMapJoinFastBytesHashTable
         implements VectorMapJoinBytesHashMap {
 
-  private static final Log LOG = LogFactory.getLog(VectorMapJoinFastBytesHashMap.class);
+  private static final Logger LOG = LoggerFactory.getLogger(VectorMapJoinFastBytesHashMap.class);
 
   private VectorMapJoinFastValueStore valueStore;
+
+  protected BytesWritable testValueBytesWritable;
 
   @Override
   public VectorMapJoinHashMapResult createHashMapResult() {
@@ -55,7 +65,6 @@ public abstract class VectorMapJoinFastBytesHashMap
       slotTriples[tripleIndex + 1] = hashCode;
       slotTriples[tripleIndex + 2] = valueStore.addFirst(valueBytes, 0, valueLength);
       // LOG.debug("VectorMapJoinFastBytesHashMap add first keyRefWord " + Long.toHexString(slotTriples[tripleIndex]) + " hashCode " + Long.toHexString(slotTriples[tripleIndex + 1]) + " valueRefWord " + Long.toHexString(slotTriples[tripleIndex + 2]));
-      keysAssigned++;
     } else {
       // Add another value.
       // LOG.debug("VectorMapJoinFastBytesHashMap add more keyRefWord " + Long.toHexString(slotTriples[tripleIndex]) + " hashCode " + Long.toHexString(slotTriples[tripleIndex + 1]) + " valueRefWord " + Long.toHexString(slotTriples[tripleIndex + 2]));
@@ -71,8 +80,8 @@ public abstract class VectorMapJoinFastBytesHashMap
 
     optimizedHashMapResult.forget();
 
-    long hashCode = VectorMapJoinFastBytesHashUtil.hashKey(keyBytes, keyStart, keyLength);
-    long valueRefWord = findReadSlot(keyBytes, keyStart, keyLength, hashCode);
+    long hashCode = HashCodeUtil.murmurHash(keyBytes, keyStart, keyLength);
+    long valueRefWord = findReadSlot(keyBytes, keyStart, keyLength, hashCode, hashMapResult.getReadPos());
     JoinUtil.JoinResult joinResult;
     if (valueRefWord == -1) {
       joinResult = JoinUtil.JoinResult.NOMATCH;
@@ -90,8 +99,8 @@ public abstract class VectorMapJoinFastBytesHashMap
   }
 
   public VectorMapJoinFastBytesHashMap(
-      int initialCapacity, float loadFactor, int writeBuffersSize) {
-    super(initialCapacity, loadFactor, writeBuffersSize);
+      int initialCapacity, float loadFactor, int writeBuffersSize, long estimatedKeyCount) {
+    super(initialCapacity, loadFactor, writeBuffersSize, estimatedKeyCount);
 
     valueStore = new VectorMapJoinFastValueStore(writeBuffersSize);
 

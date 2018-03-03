@@ -13,67 +13,44 @@
  */
 package org.apache.hadoop.hive.ql.io.parquet;
 
+import static org.apache.hadoop.hive.ql.io.parquet.HiveParquetSchemaTestUtils.createHiveColumnsFrom;
+import static org.apache.hadoop.hive.ql.io.parquet.HiveParquetSchemaTestUtils.createHiveTypeInfoFrom;
+import static org.apache.hadoop.hive.ql.io.parquet.HiveParquetSchemaTestUtils.testConversion;
 import static org.junit.Assert.assertEquals;
 
-import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
 
 import org.apache.hadoop.hive.ql.io.parquet.convert.HiveSchemaConverter;
-import org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe;
 import org.apache.hadoop.hive.serde2.typeinfo.TypeInfo;
-import org.apache.hadoop.hive.serde2.typeinfo.TypeInfoUtils;
+import org.apache.parquet.schema.MessageType;
+import org.apache.parquet.schema.OriginalType;
+import org.apache.parquet.schema.Type.Repetition;
 import org.junit.Test;
 
-import org.apache.parquet.schema.MessageType;
-import org.apache.parquet.schema.MessageTypeParser;
-import org.apache.parquet.schema.OriginalType;
-import org.apache.parquet.schema.Types;
-import org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName;
-import org.apache.parquet.schema.Type.Repetition;
 
 public class TestHiveSchemaConverter {
-
-  private List<String> createHiveColumnsFrom(final String columnNamesStr) {
-    List<String> columnNames;
-    if (columnNamesStr.length() == 0) {
-      columnNames = new ArrayList<String>();
-    } else {
-      columnNames = Arrays.asList(columnNamesStr.split(","));
-    }
-
-    return columnNames;
-  }
-
-  private List<TypeInfo> createHiveTypeInfoFrom(final String columnsTypeStr) {
-    List<TypeInfo> columnTypes;
-
-    if (columnsTypeStr.length() == 0) {
-      columnTypes = new ArrayList<TypeInfo>();
-    } else {
-      columnTypes = TypeInfoUtils.getTypeInfosFromTypeString(columnsTypeStr);
-    }
-
-    return columnTypes;
-  }
-
-  private void testConversion(final String columnNamesStr, final String columnsTypeStr, final String expectedSchema) throws Exception {
-    final List<String> columnNames = createHiveColumnsFrom(columnNamesStr);
-    final List<TypeInfo> columnTypes = createHiveTypeInfoFrom(columnsTypeStr);
-    final MessageType messageTypeFound = HiveSchemaConverter.convert(columnNames, columnTypes);
-    final MessageType expectedMT = MessageTypeParser.parseMessageType(expectedSchema);
-    assertEquals("converting " + columnNamesStr + ": " + columnsTypeStr + " to " + expectedSchema, expectedMT, messageTypeFound);
-  }
 
   @Test
   public void testSimpleType() throws Exception {
     testConversion(
-            "a,b,c",
-            "int,double,boolean",
+            "a,b,c,d",
+            "int,bigint,double,boolean",
             "message hive_schema {\n"
             + "  optional int32 a;\n"
-            + "  optional double b;\n"
-            + "  optional boolean c;\n"
+            + "  optional int64 b;\n"
+            + "  optional double c;\n"
+            + "  optional boolean d;\n"
+            + "}\n");
+  }
+
+  @Test
+  public void testSpecialIntType() throws Exception {
+    testConversion(
+            "a,b",
+            "tinyint,smallint",
+            "message hive_schema {\n"
+            + "  optional int32 a (INT_8);\n"
+            + "  optional int32 b (INT_16);\n"
             + "}\n");
   }
 

@@ -1,7 +1,8 @@
 set hive.exec.dynamic.partition.mode=nonstrict;
+set hive.mapred.mode=nonstrict;
 set hive.support.concurrency=true;
 set hive.txn.manager=org.apache.hadoop.hive.ql.lockmgr.DbTxnManager;
-set hive.enforce.bucketing=true;
+
 
 -- SORT_QUERY_RESULTS
 
@@ -19,10 +20,6 @@ create table unencryptedTable(value string)
     partitioned by (key string) clustered by (value) into 2 buckets stored as orc TBLPROPERTIES ('transactional'='true');
 
 -- insert encrypted table from values
-explain extended insert into table encryptedTable partition (key) values
-    ('val_501', '501'),
-    ('val_502', '502');
-
 insert into table encryptedTable partition (key) values
     ('val_501', '501'),
     ('val_502', '502');
@@ -30,10 +27,6 @@ insert into table encryptedTable partition (key) values
 select * from encryptedTable order by key;
 
 -- insert encrypted table from unencrypted source
-explain extended from src
-insert into table encryptedTable partition (key)
-    select value, key limit 2;
-
 from src
 insert into table encryptedTable partition (key)
     select value, key limit 2;
@@ -41,10 +34,6 @@ insert into table encryptedTable partition (key)
 select * from encryptedTable order by key;
 
 -- insert unencrypted table from encrypted source
-explain extended from encryptedTable
-insert into table unencryptedTable partition (key)
-    select value, key;
-
 from encryptedTable
 insert into table unencryptedTable partition (key)
     select value, key;

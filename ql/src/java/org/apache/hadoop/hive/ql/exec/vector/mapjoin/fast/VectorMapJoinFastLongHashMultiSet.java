@@ -20,8 +20,8 @@ package org.apache.hadoop.hive.ql.exec.vector.mapjoin.fast;
 
 import java.io.IOException;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.hive.ql.exec.JoinUtil;
 import org.apache.hadoop.hive.ql.exec.vector.mapjoin.hashtable.VectorMapJoinHashMultiSetResult;
 import org.apache.hadoop.hive.ql.exec.vector.mapjoin.hashtable.VectorMapJoinLongHashMultiSet;
@@ -29,19 +29,31 @@ import org.apache.hadoop.hive.ql.metadata.HiveException;
 import org.apache.hadoop.hive.ql.plan.VectorMapJoinDesc.HashTableKeyType;
 import org.apache.hadoop.hive.serde2.SerDeException;
 import org.apache.hadoop.io.BytesWritable;
+import org.apache.hive.common.util.HashCodeUtil;
+
+import com.google.common.annotations.VisibleForTesting;
 
 /*
- * An single long value multi-set optimized for vector map join.
+ * An single LONG key hash multi-set optimized for vector map join.
  */
 public class VectorMapJoinFastLongHashMultiSet
              extends VectorMapJoinFastLongHashTable
              implements VectorMapJoinLongHashMultiSet {
 
-  public static final Log LOG = LogFactory.getLog(VectorMapJoinFastLongHashMultiSet.class);
+  public static final Logger LOG = LoggerFactory.getLogger(VectorMapJoinFastLongHashMultiSet.class);
 
   @Override
   public VectorMapJoinHashMultiSetResult createHashMultiSetResult() {
     return new VectorMapJoinFastHashMultiSet.HashMultiSetResult();
+  }
+
+  /*
+   * A Unit Test convenience method for putting the key into the hash table using the
+   * actual type.
+   */
+  @VisibleForTesting
+  public void testPutRow(long currentKey) throws HiveException, IOException {
+    add(currentKey, null);
   }
 
   @Override
@@ -67,7 +79,7 @@ public class VectorMapJoinFastLongHashMultiSet
 
     optimizedHashMultiSetResult.forget();
 
-    long hashCode = VectorMapJoinFastLongHashUtil.hashKey(key);
+    long hashCode = HashCodeUtil.calculateLongHashCode(key);
     long count = findReadSlot(key, hashCode);
     JoinUtil.JoinResult joinResult;
     if (count == -1) {
@@ -84,8 +96,8 @@ public class VectorMapJoinFastLongHashMultiSet
 
   public VectorMapJoinFastLongHashMultiSet(
       boolean minMaxEnabled, boolean isOuterJoin, HashTableKeyType hashTableKeyType,
-      int initialCapacity, float loadFactor, int writeBuffersSize) {
+      int initialCapacity, float loadFactor, int writeBuffersSize, long estimatedKeyCount) {
     super(minMaxEnabled, isOuterJoin, hashTableKeyType,
-        initialCapacity, loadFactor, writeBuffersSize);
+        initialCapacity, loadFactor, writeBuffersSize, estimatedKeyCount);
   }
 }

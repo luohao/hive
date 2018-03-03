@@ -27,8 +27,9 @@ import java.sql.Timestamp;
 import java.util.HashMap;
 import java.util.Map;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.hive.ql.util.TimestampUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.hive.common.type.HiveChar;
 import org.apache.hadoop.hive.common.type.HiveDecimal;
 import org.apache.hadoop.hive.common.type.HiveIntervalYearMonth;
@@ -69,7 +70,7 @@ import org.apache.hadoop.io.WritableUtils;
  * ObjectInspector to return to the caller of SerDe2.getObjectInspector().
  */
 public final class PrimitiveObjectInspectorUtils {
-  private static Log LOG = LogFactory.getLog(PrimitiveObjectInspectorUtils.class);
+  private static final Logger LOG = LoggerFactory.getLogger(PrimitiveObjectInspectorUtils.class);
 
   /**
    * TypeEntry stores information about a Hive Primitive TypeInfo.
@@ -484,6 +485,7 @@ public final class PrimitiveObjectInspectorUtils {
       return ((TimestampObjectInspector) oi).getPrimitiveWritableObject(o)
           .getDouble();
     case DECIMAL:
+      // TODO: lossy conversion!
       return ((HiveDecimalObjectInspector) oi).getPrimitiveJavaObject(o).doubleValue();
     case DATE:  // unsupported conversion
     default:
@@ -578,7 +580,24 @@ public final class PrimitiveObjectInspectorUtils {
    * NumberFormatException will be thrown if o is not a valid number.
    */
   public static byte getByte(Object o, PrimitiveObjectInspector oi) {
-    return (byte) getInt(o, oi);
+    byte result;
+    switch (oi.getPrimitiveCategory()) {
+    case DECIMAL:
+      {
+        HiveDecimal dec = ((HiveDecimalObjectInspector) oi)
+            .getPrimitiveJavaObject(o);
+        if (!dec.isByte()) {
+          throw new NumberFormatException();
+        }
+        result = dec.byteValue();
+      }
+      break;
+    default:
+      // For all other data types, use int conversion.  At some point, we should have all
+      // conversions make sure the value fits.
+      return (byte) getInt(o, oi);
+    }
+    return result;
   }
 
   /**
@@ -587,7 +606,24 @@ public final class PrimitiveObjectInspectorUtils {
    * NumberFormatException will be thrown if o is not a valid number.
    */
   public static short getShort(Object o, PrimitiveObjectInspector oi) {
-    return (short) getInt(o, oi);
+    short result;
+    switch (oi.getPrimitiveCategory()) {
+    case DECIMAL:
+      {
+        HiveDecimal dec = ((HiveDecimalObjectInspector) oi)
+            .getPrimitiveJavaObject(o);
+        if (!dec.isShort()) {
+          throw new NumberFormatException();
+        }
+        result = dec.shortValue();
+      }
+      break;
+    default:
+      // For all other data types, use int conversion.  At some point, we should have all
+      // conversions make sure the value fits.
+      return (short) getInt(o, oi);
+    }
+    return result;
   }
 
   /**
@@ -651,8 +687,14 @@ public final class PrimitiveObjectInspectorUtils {
           .getPrimitiveWritableObject(o).getSeconds());
       break;
     case DECIMAL:
-      result = ((HiveDecimalObjectInspector) oi)
-          .getPrimitiveJavaObject(o).intValue();
+      {
+        HiveDecimal dec = ((HiveDecimalObjectInspector) oi)
+            .getPrimitiveJavaObject(o);
+        if (!dec.isInt()) {
+          throw new NumberFormatException();
+        }
+        result = dec.intValue();
+      }
       break;
     case DATE:  // unsupported conversion
     default: {
@@ -715,8 +757,14 @@ public final class PrimitiveObjectInspectorUtils {
           .getSeconds();
       break;
     case DECIMAL:
-      result = ((HiveDecimalObjectInspector) oi)
-          .getPrimitiveJavaObject(o).longValue();
+      {
+        HiveDecimal dec = ((HiveDecimalObjectInspector) oi)
+            .getPrimitiveJavaObject(o);
+        if (!dec.isLong()) {
+          throw new NumberFormatException();
+        }
+        result = dec.longValue();
+      }
       break;
     case DATE:  // unsupported conversion
     default:
@@ -1024,16 +1072,26 @@ public final class PrimitiveObjectInspectorUtils {
       try {
         result = Date.valueOf(s);
       } catch (IllegalArgumentException e) {
-        result = null;
+        Timestamp ts = getTimestampFromString(s);
+        if (ts != null) {
+          result = new Date(ts.getTime());
+        } else {
+          result = null;
+        }
       }
       break;
     case CHAR:
     case VARCHAR: {
+      String val = getString(o, oi).trim();
       try {
-        String val = getString(o, oi).trim();
         result = Date.valueOf(val);
       } catch (IllegalArgumentException e) {
-        result = null;
+        Timestamp ts = getTimestampFromString(val);
+        if (ts != null) {
+          result = new Date(ts.getTime());
+        } else {
+          result = null;
+        }
       }
       break;
     }
@@ -1088,13 +1146,13 @@ public final class PrimitiveObjectInspectorUtils {
       result = TimestampWritable.longToTimestamp(longValue, intToTimestampInSeconds);
       break;
     case FLOAT:
-      result = TimestampWritable.doubleToTimestamp(((FloatObjectInspector) inputOI).get(o));
+      result = TimestampUtils.doubleToTimestamp(((FloatObjectInspector) inputOI).get(o));
       break;
     case DOUBLE:
-      result = TimestampWritable.doubleToTimestamp(((DoubleObjectInspector) inputOI).get(o));
+      result = TimestampUtils.doubleToTimestamp(((DoubleObjectInspector) inputOI).get(o));
       break;
     case DECIMAL:
-      result = TimestampWritable.decimalToTimestamp(((HiveDecimalObjectInspector) inputOI)
+      result = TimestampUtils.decimalToTimestamp(((HiveDecimalObjectInspector) inputOI)
                                                     .getPrimitiveJavaObject(o));
       break;
     case STRING:
@@ -1130,6 +1188,9 @@ public final class PrimitiveObjectInspectorUtils {
       if (s.length() - periodIdx > 9) {
         s = s.substring(0, periodIdx + 10);
       }
+    }
+    if (s.indexOf(' ') < 0) {
+      s = s.concat(" 00:00:00");
     }
     try {
       result = Timestamp.valueOf(s);

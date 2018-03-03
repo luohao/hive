@@ -18,14 +18,12 @@
 
 package org.apache.hadoop.hive.ql.exec.spark.status.impl;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.hive.ql.exec.spark.Statistic.SparkStatistics;
 import org.apache.hadoop.hive.ql.exec.spark.Statistic.SparkStatisticsBuilder;
 import org.apache.hadoop.hive.ql.metadata.HiveException;
 import org.apache.hive.spark.client.MetricsCollection;
-import org.apache.hive.spark.client.metrics.Metrics;
-import org.apache.hive.spark.client.metrics.ShuffleReadMetrics;
 import org.apache.hive.spark.counter.SparkCounters;
 import org.apache.hadoop.hive.ql.exec.spark.status.SparkJobStatus;
 import org.apache.hadoop.hive.ql.exec.spark.status.SparkStageProgress;
@@ -40,7 +38,6 @@ import org.apache.spark.api.java.JavaFutureAction;
 
 import java.io.Serializable;
 import java.util.HashMap;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Future;
@@ -50,15 +47,28 @@ import java.util.concurrent.TimeUnit;
  * Used with remove spark client.
  */
 public class RemoteSparkJobStatus implements SparkJobStatus {
-  private static final Log LOG = LogFactory.getLog(RemoteSparkJobStatus.class.getName());
+  private static final Logger LOG = LoggerFactory.getLogger(RemoteSparkJobStatus.class.getName());
   private final SparkClient sparkClient;
   private final JobHandle<Serializable> jobHandle;
+  private Throwable error;
   private final transient long sparkClientTimeoutInSeconds;
 
   public RemoteSparkJobStatus(SparkClient sparkClient, JobHandle<Serializable> jobHandle, long timeoutInSeconds) {
     this.sparkClient = sparkClient;
     this.jobHandle = jobHandle;
+    this.error = null;
     this.sparkClientTimeoutInSeconds = timeoutInSeconds;
+  }
+
+  @Override
+  public String getAppID() {
+    Future<String> getAppID = sparkClient.run(new GetAppIDJob());
+    try {
+      return getAppID.get(sparkClientTimeoutInSeconds, TimeUnit.SECONDS);
+    } catch (Exception e) {
+      LOG.warn("Failed to get APP ID.", e);
+      return null;
+    }
   }
 
   @Override
@@ -114,7 +124,8 @@ public class RemoteSparkJobStatus implements SparkJobStatus {
     // add spark job metrics.
     String jobIdentifier = "Spark Job[" + jobHandle.getClientJobId() + "] Metrics";
 
-    Map<String, Long> flatJobMetric = extractMetrics(metricsCollection);
+    Map<String, Long> flatJobMetric = SparkMetricsUtils.collectMetrics(
+        metricsCollection.getAllMetrics());
     for (Map.Entry<String, Long> entry : flatJobMetric.entrySet()) {
       sparkStatisticsBuilder.add(jobIdentifier, entry.getKey(), Long.toString(entry.getValue()));
     }
@@ -125,6 +136,27 @@ public class RemoteSparkJobStatus implements SparkJobStatus {
   @Override
   public void cleanup() {
 
+  }
+
+  @Override
+  public Throwable getError() {
+    if (error != null) {
+      return error;
+    }
+    return jobHandle.getError();
+  }
+
+  @Override
+  public void setError(Throwable e) {
+    this.error = e;
+  }
+
+  /**
+   * Indicates whether the remote context is active. SparkJobMonitor can use this to decide whether
+   * to stop monitoring.
+   */
+  public boolean isRemoteActive() {
+    return sparkClient.isActive();
   }
 
   private SparkJobInfo getSparkJobInfo() throws HiveException {
@@ -216,38 +248,6 @@ public class RemoteSparkJobStatus implements SparkJobStatus {
     }
   }
 
-  private Map<String, Long> extractMetrics(MetricsCollection metricsCollection) {
-    Map<String, Long> results = new LinkedHashMap<String, Long>();
-    Metrics allMetrics = metricsCollection.getAllMetrics();
-
-    results.put("ExecutorDeserializeTime", allMetrics.executorDeserializeTime);
-    results.put("ExecutorRunTime", allMetrics.executorRunTime);
-    results.put("ResultSize", allMetrics.resultSize);
-    results.put("JvmGCTime", allMetrics.jvmGCTime);
-    results.put("ResultSerializationTime", allMetrics.resultSerializationTime);
-    results.put("MemoryBytesSpilled", allMetrics.memoryBytesSpilled);
-    results.put("DiskBytesSpilled", allMetrics.diskBytesSpilled);
-    if (allMetrics.inputMetrics != null) {
-      results.put("BytesRead", allMetrics.inputMetrics.bytesRead);
-    }
-    if (allMetrics.shuffleReadMetrics != null) {
-      ShuffleReadMetrics shuffleReadMetrics = allMetrics.shuffleReadMetrics;
-      long rbf = shuffleReadMetrics.remoteBlocksFetched;
-      long lbf = shuffleReadMetrics.localBlocksFetched;
-      results.put("RemoteBlocksFetched", rbf);
-      results.put("LocalBlocksFetched", lbf);
-      results.put("TotalBlocksFetched", lbf + rbf);
-      results.put("FetchWaitTime", shuffleReadMetrics.fetchWaitTime);
-      results.put("RemoteBytesRead", shuffleReadMetrics.remoteBytesRead);
-    }
-    if (allMetrics.shuffleWriteMetrics != null) {
-      results.put("ShuffleBytesWritten", allMetrics.shuffleWriteMetrics.shuffleBytesWritten);
-      results.put("ShuffleWriteTime", allMetrics.shuffleWriteMetrics.shuffleWriteTime);
-    }
-
-    return results;
-  }
-
   private static SparkJobInfo getDefaultJobInfo(final Integer jobId,
       final JobExecutionStatus status) {
     return new SparkJobInfo() {
@@ -267,5 +267,16 @@ public class RemoteSparkJobStatus implements SparkJobStatus {
         return status;
       }
     };
+  }
+
+  private static class GetAppIDJob implements Job<String> {
+
+    public GetAppIDJob() {
+    }
+
+    @Override
+    public String call(JobContext jc) throws Exception {
+      return jc.sc().sc().applicationId();
+    }
   }
 }

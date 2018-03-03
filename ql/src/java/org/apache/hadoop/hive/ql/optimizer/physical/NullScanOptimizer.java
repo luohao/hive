@@ -23,10 +23,11 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Stack;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.hive.ql.exec.FilterOperator;
 import org.apache.hadoop.hive.ql.exec.LimitOperator;
+import org.apache.hadoop.hive.ql.exec.Operator;
 import org.apache.hadoop.hive.ql.exec.TableScanOperator;
 import org.apache.hadoop.hive.ql.lib.DefaultGraphWalker;
 import org.apache.hadoop.hive.ql.lib.Dispatcher;
@@ -49,7 +50,7 @@ import org.apache.hadoop.hive.ql.plan.ExprNodeDesc;
  */
 public class NullScanOptimizer implements PhysicalPlanResolver {
 
-  private static final Log LOG = LogFactory.getLog(NullScanOptimizer.class.getName());
+  private static final Logger LOG = LoggerFactory.getLogger(NullScanOptimizer.class.getName());
   @Override
   public PhysicalContext resolve(PhysicalContext pctx) throws SemanticException {
 
@@ -88,6 +89,17 @@ public class NullScanOptimizer implements PhysicalPlanResolver {
       ExprNodeConstantDesc c = (ExprNodeConstantDesc) condition;
       if (!Boolean.FALSE.equals(c.getValue())) {
         return null;
+      }
+
+      int numOfndPeers = 0;
+      if (filter.getParentOperators() != null) {
+        for (Operator<?> fParent : filter.getParentOperators()) {
+          if (fParent.getChildOperators() != null) {
+            numOfndPeers += fParent.getChildOperators().size();
+            if (numOfndPeers > 1)
+              return null;
+          }
+        }
       }
 
       WalkerCtx ctx = (WalkerCtx) procCtx;

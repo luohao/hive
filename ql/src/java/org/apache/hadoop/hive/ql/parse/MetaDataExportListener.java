@@ -21,8 +21,8 @@ import java.io.IOException;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -38,13 +38,13 @@ import org.apache.hadoop.hive.metastore.events.PreDropTableEvent;
 import org.apache.hadoop.hive.metastore.events.PreEventContext;
 import org.apache.hadoop.hive.metastore.events.PreEventContext.PreEventType;
 import org.apache.hadoop.hive.ql.session.SessionState;
-import org.apache.hadoop.hive.ql.parse.ImportSemanticAnalyzer;
+
 /**
  * This class listens for drop events and, if set, exports the table's metadata as JSON to the trash
  * of the user performing the drop
  */
 public class MetaDataExportListener extends MetaStorePreEventListener {
-  public static final Log LOG = LogFactory.getLog(MetaDataExportListener.class);
+  public static final Logger LOG = LoggerFactory.getLogger(MetaDataExportListener.class);
 
   /** Configure the export listener */
   public MetaDataExportListener(Configuration config) {
@@ -83,7 +83,7 @@ public class MetaDataExportListener extends MetaStorePreEventListener {
     } catch (IOException e) {
       throw new MetaException(e.getMessage());
     }
-    Path outFile = new Path(metaPath, name + ImportSemanticAnalyzer.METADATA_NAME);
+    Path outFile = new Path(metaPath, name + EximUtil.METADATA_NAME);
     try {
       SessionState.getConsole().printInfo("Beginning metadata export");
       EximUtil.createExportDump(fs, outFile, mTbl, null, null);

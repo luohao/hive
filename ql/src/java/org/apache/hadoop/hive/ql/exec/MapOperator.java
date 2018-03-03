@@ -18,10 +18,8 @@
 
 package org.apache.hadoop.hive.ql.exec;
 
-import java.io.Serializable;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -30,14 +28,14 @@ import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Properties;
 import java.util.Set;
-import java.util.concurrent.Future;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.metastore.api.hive_metastoreConstants;
+import org.apache.hadoop.hive.ql.CompilationOpContext;
 import org.apache.hadoop.hive.ql.exec.mr.ExecMapperContext;
-import org.apache.hadoop.hive.ql.exec.tez.MapRecordProcessor;
+import org.apache.hadoop.hive.ql.io.AcidUtils;
 import org.apache.hadoop.hive.ql.io.RecordIdentifier;
 import org.apache.hadoop.hive.ql.metadata.HiveException;
 import org.apache.hadoop.hive.ql.metadata.VirtualColumn;
@@ -47,6 +45,7 @@ import org.apache.hadoop.hive.ql.plan.PartitionDesc;
 import org.apache.hadoop.hive.ql.plan.TableDesc;
 import org.apache.hadoop.hive.ql.plan.TableScanDesc;
 import org.apache.hadoop.hive.ql.plan.api.OperatorType;
+import org.apache.hadoop.hive.serde2.ColumnProjectionUtils;
 import org.apache.hadoop.hive.serde2.Deserializer;
 import org.apache.hadoop.hive.serde2.SerDeException;
 import org.apache.hadoop.hive.serde2.SerDeStats;
@@ -72,22 +71,10 @@ import com.google.common.annotations.VisibleForTesting;
  * Writable data structure from a Table (instead of a Hive Object).
  **/
 @SuppressWarnings("deprecation")
-public class MapOperator extends Operator<MapWork> implements Serializable, Cloneable {
+public class MapOperator extends AbstractMapOperator {
 
   private static final long serialVersionUID = 1L;
 
-  /**
-   * Counter.
-   *
-   */
-  public static enum Counter {
-    DESERIALIZE_ERRORS,
-    RECORDS_IN
-  }
-
-  private final transient LongWritable deserialize_error_count = new LongWritable();
-  private final transient LongWritable recordCounter = new LongWritable();
-  protected transient long numRows = 0;
   protected transient long cntr = 1;
   protected transient long logEveryNRows = 0;
 
@@ -100,7 +87,6 @@ public class MapOperator extends Operator<MapWork> implements Serializable, Clon
 
   // context for current input file
   protected transient MapOpCtx[] currentCtxs;
-  private transient final Map<String, Path> normalizedPaths = new HashMap<String, Path>();
 
   protected static class MapOpCtx {
 
@@ -193,13 +179,18 @@ public class MapOperator extends Operator<MapWork> implements Serializable, Clon
         SerDeUtils.createOverlayedProperties(td.getProperties(), pd.getProperties());
 
     Map<String, String> partSpec = pd.getPartSpec();
-
     opCtx.tableName = String.valueOf(overlayedProps.getProperty("name"));
     opCtx.partName = String.valueOf(partSpec);
     opCtx.deserializer = pd.getDeserializer(hconf);
 
-    StructObjectInspector partRawRowObjectInspector =
-        (StructObjectInspector) opCtx.deserializer.getObjectInspector();
+    StructObjectInspector partRawRowObjectInspector;
+    boolean isAcid = AcidUtils.isTablePropertyTransactional(td.getProperties());
+    if (Utilities.isSchemaEvolutionEnabled(hconf, isAcid) && Utilities.isInputFileFormatSelfDescribing(pd)) {
+      partRawRowObjectInspector = tableRowOI;
+    } else {
+      partRawRowObjectInspector =
+          (StructObjectInspector) opCtx.deserializer.getObjectInspector();
+    }
 
     opCtx.partTblObjectInspectorConverter =
         ObjectInspectorConverters.getConverter(partRawRowObjectInspector, tableRowOI);
@@ -288,20 +279,29 @@ public class MapOperator extends Operator<MapWork> implements Serializable, Clon
    * and P1's schema is same as T, whereas P2's scheme is different from T, conversion
    * might be needed for both P1 and P2, since SettableOI might be needed for T
    */
-  private Map<TableDesc, StructObjectInspector> getConvertedOI(Configuration hconf)
+  private Map<TableDesc, StructObjectInspector> getConvertedOI(Map<String, Configuration> tableToConf)
       throws HiveException {
     Map<TableDesc, StructObjectInspector> tableDescOI =
         new HashMap<TableDesc, StructObjectInspector>();
     Set<TableDesc> identityConverterTableDesc = new HashSet<TableDesc>();
+
     try {
       Map<ObjectInspector, Boolean> oiSettableProperties = new HashMap<ObjectInspector, Boolean>();
 
-      for (String onefile : conf.getPathToAliases().keySet()) {
+      for (Path onefile : conf.getPathToAliases().keySet()) {
         PartitionDesc pd = conf.getPathToPartitionInfo().get(onefile);
         TableDesc tableDesc = pd.getTableDesc();
+        Configuration hconf = tableToConf.get(tableDesc.getTableName());
         Deserializer partDeserializer = pd.getDeserializer(hconf);
-        StructObjectInspector partRawRowObjectInspector =
-            (StructObjectInspector) partDeserializer.getObjectInspector();
+        StructObjectInspector partRawRowObjectInspector;
+        boolean isAcid = AcidUtils.isTablePropertyTransactional(tableDesc.getProperties());
+        if (Utilities.isSchemaEvolutionEnabled(hconf, isAcid) && Utilities.isInputFileFormatSelfDescribing(pd)) {
+          Deserializer tblDeserializer = tableDesc.getDeserializer(hconf);
+          partRawRowObjectInspector = (StructObjectInspector) tblDeserializer.getObjectInspector();
+        } else {
+          partRawRowObjectInspector =
+              (StructObjectInspector) partDeserializer.getObjectInspector();
+        }
 
         StructObjectInspector tblRawRowObjectInspector = tableDescOI.get(tableDesc);
         if ((tblRawRowObjectInspector == null) ||
@@ -330,17 +330,101 @@ public class MapOperator extends Operator<MapWork> implements Serializable, Clon
     return tableDescOI;
   }
 
+  /**
+   * For each source table, combine the nested column pruning information from all its
+   * table scan descriptors and set it in a configuration copy. This is necessary since
+   * the configuration property "READ_NESTED_COLUMN_PATH_CONF_STR" is set on a per-table
+   * basis, so we can't just use a single configuration for all the tables.
+   */
+  private Map<String, Configuration> cloneConfsForNestedColPruning(Configuration hconf) {
+    Map<String, Configuration> tableNameToConf = new HashMap<>();
+
+    for (Map.Entry<Path, ArrayList<String>> e : conf.getPathToAliases().entrySet()) {
+      List<String> aliases = e.getValue();
+      if (aliases == null || aliases.isEmpty()) {
+        continue;
+      }
+
+      String tableName = conf.getPathToPartitionInfo().get(e.getKey()).getTableName();
+      for (String alias: aliases) {
+        Operator<?> rootOp = conf.getAliasToWork().get(alias);
+        if (!(rootOp instanceof TableScanOperator)) {
+          continue;
+        }
+        TableScanDesc tableScanDesc = ((TableScanOperator) rootOp).getConf();
+        List<String> nestedColumnPaths = tableScanDesc.getNeededNestedColumnPaths();
+        if (nestedColumnPaths == null || nestedColumnPaths.isEmpty()) {
+          continue;
+        }
+        if (!tableNameToConf.containsKey(tableName)) {
+          Configuration clonedConf = new Configuration(hconf);
+          clonedConf.unset(ColumnProjectionUtils.READ_NESTED_COLUMN_PATH_CONF_STR);
+          tableNameToConf.put(tableName, clonedConf);
+        }
+        Configuration newConf = tableNameToConf.get(tableName);
+        ColumnProjectionUtils.appendNestedColumnPaths(newConf, nestedColumnPaths);
+      }
+    }
+
+    // Assign tables without nested column pruning info to the default conf
+    for (PartitionDesc pd : conf.getPathToPartitionInfo().values()) {
+      if (!tableNameToConf.containsKey(pd.getTableName())) {
+        tableNameToConf.put(pd.getTableName(), hconf);
+      }
+    }
+
+    for (PartitionDesc pd: conf.getAliasToPartnInfo().values()) {
+      if (!tableNameToConf.containsKey(pd.getTableName())) {
+        tableNameToConf.put(pd.getTableName(), hconf);
+      }
+    }
+
+    return tableNameToConf;
+  }
+
+  /*
+   * This is the same as the setChildren method below but for empty tables.
+   * It takes care of the following:
+   * 1. Create the right object inspector.
+   * 2. Set up the childrenOpToOI with the object inspector.
+   * So as to ensure that the initialization happens correctly.
+   */
+  public void initEmptyInputChildren(List<Operator<?>> children, Configuration hconf)
+    throws SerDeException, Exception {
+    setChildOperators(children);
+
+    Map<String, Configuration> tableNameToConf = cloneConfsForNestedColPruning(hconf);
+
+    for (Operator<?> child : children) {
+      TableScanOperator tsOp = (TableScanOperator) child;
+      StructObjectInspector soi = null;
+      PartitionDesc partDesc = conf.getAliasToPartnInfo().get(tsOp.getConf().getAlias());
+      Configuration newConf = tableNameToConf.get(partDesc.getTableDesc().getTableName());
+      Deserializer serde = partDesc.getTableDesc().getDeserializer();
+      partDesc.setProperties(partDesc.getProperties());
+      MapOpCtx opCtx = new MapOpCtx(tsOp.getConf().getAlias(), child, partDesc);
+      StructObjectInspector tableRowOI = (StructObjectInspector) serde.getObjectInspector();
+      initObjectInspector(newConf, opCtx, tableRowOI);
+      soi = opCtx.rowObjectInspector;
+      child.getParentOperators().add(this);
+      childrenOpToOI.put(child, soi);
+    }
+  }
+
   public void setChildren(Configuration hconf) throws Exception {
 
     List<Operator<? extends OperatorDesc>> children =
         new ArrayList<Operator<? extends OperatorDesc>>();
 
-    Map<TableDesc, StructObjectInspector> convertedOI = getConvertedOI(hconf);
+    Map<String, Configuration> tableNameToConf = cloneConfsForNestedColPruning(hconf);
+    Map<TableDesc, StructObjectInspector> convertedOI = getConvertedOI(tableNameToConf);
 
-    for (Map.Entry<String, ArrayList<String>> entry : conf.getPathToAliases().entrySet()) {
-      String onefile = entry.getKey();
+    for (Map.Entry<Path, ArrayList<String>> entry : conf.getPathToAliases().entrySet()) {
+      Path onefile = entry.getKey();
       List<String> aliases = entry.getValue();
       PartitionDesc partDesc = conf.getPathToPartitionInfo().get(onefile);
+      TableDesc tableDesc = partDesc.getTableDesc();
+      Configuration newConf = tableNameToConf.get(tableDesc.getTableName());
 
       for (String alias : aliases) {
         Operator<? extends OperatorDesc> op = conf.getAliasToWork().get(alias);
@@ -348,16 +432,16 @@ public class MapOperator extends Operator<MapWork> implements Serializable, Clon
           LOG.debug("Adding alias " + alias + " to work list for file "
               + onefile);
         }
-        Map<Operator<?>, MapOpCtx> contexts = opCtxMap.get(onefile);
+        Map<Operator<?>, MapOpCtx> contexts = opCtxMap.get(onefile.toString());
         if (contexts == null) {
-          opCtxMap.put(onefile, contexts = new LinkedHashMap<Operator<?>, MapOpCtx>());
+          opCtxMap.put(onefile.toString(), contexts = new LinkedHashMap<Operator<?>, MapOpCtx>());
         }
         if (contexts.containsKey(op)) {
           continue;
         }
         MapOpCtx context = new MapOpCtx(alias, op, partDesc);
         StructObjectInspector tableRowOI = convertedOI.get(partDesc.getTableDesc());
-        contexts.put(op, initObjectInspector(hconf, context, tableRowOI));
+        contexts.put(op, initObjectInspector(newConf, context, tableRowOI));
 
         if (children.contains(op) == false) {
           op.setParentOperators(new ArrayList<Operator<? extends OperatorDesc>>(1));
@@ -392,61 +476,30 @@ public class MapOperator extends Operator<MapWork> implements Serializable, Clon
     }
   }
 
-  private String getNominalPath(Path fpath) {
-    String nominal = null;
-    boolean schemaless = fpath.toUri().getScheme() == null;
-    for (String onefile : conf.getPathToAliases().keySet()) {
-      Path onepath = normalizePath(onefile, schemaless);
-      Path curfpath = fpath;
-      if(!schemaless && onepath.toUri().getScheme() == null) {
-        curfpath = new Path(fpath.toUri().getPath());
-      }
-      // check for the operators who will process rows coming to this Map Operator
-      if (onepath.toUri().relativize(curfpath.toUri()).equals(curfpath.toUri())) {
-        // not from this
-        continue;
-      }
-      if (nominal != null) {
-        throw new IllegalStateException("Ambiguous input path " + fpath);
-      }
-      nominal = onefile;
-    }
-    if (nominal == null) {
-      throw new IllegalStateException("Invalid input path " + fpath);
-    }
-    return nominal;
+  /** Kryo ctor. */
+  protected MapOperator() {
+    super();
+  }
+
+  public MapOperator(CompilationOpContext ctx) {
+    super(ctx);
   }
 
   @Override
-  public Collection<Future<?>> initializeOp(Configuration hconf) throws HiveException {
-    return super.initializeOp(hconf);
+  public void initializeOp(Configuration hconf) throws HiveException {
+    super.initializeOp(hconf);
   }
 
   public void initializeMapOperator(Configuration hconf) throws HiveException {
-    // set that parent initialization is done and call initialize on children
-    state = State.INIT;
-    statsMap.put(Counter.DESERIALIZE_ERRORS.toString(), deserialize_error_count);
+    super.initializeMapOperator(hconf);
 
-    numRows = 0;
     cntr = 1;
     logEveryNRows = HiveConf.getLongVar(hconf, HiveConf.ConfVars.HIVE_LOG_N_RECORDS);
-
-    String context = hconf.get(Operator.CONTEXT_NAME_KEY, "");
-    if (context != null && !context.isEmpty()) {
-      context = "_" + context.replace(" ","_");
-    }
-    statsMap.put(Counter.RECORDS_IN + context, recordCounter);
 
     for (Entry<Operator<?>, StructObjectInspector> entry : childrenOpToOI.entrySet()) {
       Operator<?> child = entry.getKey();
       child.initialize(hconf, new ObjectInspector[] {entry.getValue()});
     }
-  }
-
-  @Override
-  public void closeOp(boolean abort) throws HiveException {
-    recordCounter.set(numRows);
-    super.closeOp(abort);
   }
 
   // Find context for current input file
@@ -473,23 +526,9 @@ public class MapOperator extends Operator<MapWork> implements Serializable, Clon
     for (Entry<Operator<?>, MapOpCtx> entry : contexts.entrySet()) {
       Operator<?> operator = entry.getKey();
       MapOpCtx context = entry.getValue();
-      operator.setInputContext(nominalPath, context.tableName, context.partName);
+      operator.setInputContext(context.tableName, context.partName);
     }
     currentCtxs = contexts.values().toArray(new MapOpCtx[contexts.size()]);
-  }
-
-  private Path normalizePath(String onefile, boolean schemaless) {
-    //creating Path is expensive, so cache the corresponding
-    //Path object in normalizedPaths
-    Path path = normalizedPaths.get(onefile);
-    if (path == null) {
-      path = new Path(onefile);
-      if (schemaless && path.toUri().getScheme() != null) {
-        path = new Path(path.toUri().getPath());
-      }
-      normalizedPaths.put(onefile, path);
-    }
-    return path;
   }
 
   public void process(Writable value) throws HiveException {
@@ -510,7 +549,12 @@ public class MapOperator extends Operator<MapWork> implements Serializable, Clon
         }
       } catch (Exception e) {
         // TODO: policy on deserialization errors
-        String message = toErrorMessage(value, row, current.rowObjectInspector);
+        String message = null;
+        try {
+          message = toErrorMessage(value, row, current.rowObjectInspector);
+        } catch (Throwable t) {
+          message = "[" + row + ", " + value + "]: cannot get error message " + t.getMessage();
+        }
         if (row == null) {
           deserialize_error_count.set(deserialize_error_count.get() + 1);
           throw new HiveException("Hive Runtime Error while processing writable " + message, e);
@@ -558,61 +602,67 @@ public class MapOperator extends Operator<MapWork> implements Serializable, Clon
       vcValues = new Object[vcs.size()];
     }
     for (int i = 0; i < vcs.size(); i++) {
-      VirtualColumn vc = vcs.get(i);
-      if (vc.equals(VirtualColumn.FILENAME)) {
-        if (ctx.inputFileChanged()) {
-          vcValues[i] = new Text(ctx.getCurrentInputPath().toString());
-        }
-      } else if (vc.equals(VirtualColumn.BLOCKOFFSET)) {
-        long current = ctx.getIoCxt().getCurrentBlockStart();
-        LongWritable old = (LongWritable) vcValues[i];
-        if (old == null) {
-          old = new LongWritable(current);
-          vcValues[i] = old;
-          continue;
-        }
-        if (current != old.get()) {
-          old.set(current);
-        }
-      } else if (vc.equals(VirtualColumn.ROWOFFSET)) {
-        long current = ctx.getIoCxt().getCurrentRow();
-        LongWritable old = (LongWritable) vcValues[i];
-        if (old == null) {
-          old = new LongWritable(current);
-          vcValues[i] = old;
-          continue;
-        }
-        if (current != old.get()) {
-          old.set(current);
-        }
-      } else if (vc.equals(VirtualColumn.RAWDATASIZE)) {
-        long current = 0L;
-        SerDeStats stats = deserializer.getSerDeStats();
-        if(stats != null) {
-          current = stats.getRawDataSize();
-        }
-        LongWritable old = (LongWritable) vcValues[i];
-        if (old == null) {
-          old = new LongWritable(current);
-          vcValues[i] = old;
-          continue;
-        }
-        if (current != old.get()) {
-          old.set(current);
-        }
-      }
-      else if(vc.equals(VirtualColumn.ROWID)) {
-        if(ctx.getIoCxt().getRecordIdentifier() == null) {
-          vcValues[i] = null;
-        }
-        else {
-          if(vcValues[i] == null) {
-            vcValues[i] = new Object[RecordIdentifier.Field.values().length];
+      switch(vcs.get(i)) {
+        case FILENAME :
+          if (ctx.inputFileChanged()) {
+            vcValues[i] = new Text(ctx.getCurrentInputPath().toString());
           }
-          RecordIdentifier.StructInfo.toArray(ctx.getIoCxt().getRecordIdentifier(), (Object[])vcValues[i]);
-          ctx.getIoCxt().setRecordIdentifier(null);//so we don't accidentally cache the value; shouldn't
-          //happen since IO layer either knows how to produce ROW__ID or not - but to be safe
+          break;
+        case BLOCKOFFSET: {
+          long current = ctx.getIoCxt().getCurrentBlockStart();
+          LongWritable old = (LongWritable) vcValues[i];
+          if (old == null) {
+            old = new LongWritable(current);
+            vcValues[i] = old;
+            continue;
+          }
+          if (current != old.get()) {
+            old.set(current);
+          }
         }
+        break;
+        case ROWOFFSET: {
+          long current = ctx.getIoCxt().getCurrentRow();
+          LongWritable old = (LongWritable) vcValues[i];
+          if (old == null) {
+            old = new LongWritable(current);
+            vcValues[i] = old;
+            continue;
+          }
+          if (current != old.get()) {
+            old.set(current);
+          }
+        }
+        break;
+        case RAWDATASIZE:
+          long current = 0L;
+          SerDeStats stats = deserializer.getSerDeStats();
+          if(stats != null) {
+            current = stats.getRawDataSize();
+          }
+          LongWritable old = (LongWritable) vcValues[i];
+          if (old == null) {
+            old = new LongWritable(current);
+            vcValues[i] = old;
+            continue;
+          }
+          if (current != old.get()) {
+            old.set(current);
+          }
+          break;
+        case ROWID:
+          if(ctx.getIoCxt().getRecordIdentifier() == null) {
+            vcValues[i] = null;
+          }
+          else {
+            if(vcValues[i] == null) {
+              vcValues[i] = new Object[RecordIdentifier.Field.values().length];
+            }
+            RecordIdentifier.StructInfo.toArray(ctx.getIoCxt().getRecordIdentifier(), (Object[])vcValues[i]);
+            ctx.getIoCxt().setRecordIdentifier(null);//so we don't accidentally cache the value; shouldn't
+            //happen since IO layer either knows how to produce ROW__ID or not - but to be safe
+          }
+	  break;
       }
     }
     return vcValues;
@@ -625,7 +675,7 @@ public class MapOperator extends Operator<MapWork> implements Serializable, Clon
 
   @Override
   public String getName() {
-    return getOperatorName();
+    return MapOperator.getOperatorName();
   }
 
   static public String getOperatorName() {

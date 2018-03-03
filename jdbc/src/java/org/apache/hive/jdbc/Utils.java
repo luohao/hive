@@ -25,23 +25,24 @@ import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Properties;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hive.service.cli.HiveSQLException;
-import org.apache.hive.service.cli.thrift.TStatus;
-import org.apache.hive.service.cli.thrift.TStatusCode;
+import org.apache.hive.service.rpc.thrift.TStatus;
+import org.apache.hive.service.rpc.thrift.TStatusCode;
 import org.apache.http.client.CookieStore;
 import org.apache.http.cookie.Cookie;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-class Utils {
-  static final Log LOG = LogFactory.getLog(Utils.class.getName());
+public class Utils {
+  static final Logger LOG = LoggerFactory.getLogger(Utils.class.getName());
   /**
     * The required prefix for the connection URL.
     */
-  static final String URL_PREFIX = "jdbc:hive2://";
+  public static final String URL_PREFIX = "jdbc:hive2://";
 
   /**
     * If host is provided, without a port.
@@ -62,7 +63,7 @@ class Utils {
   static final String HIVE_SERVER2_RETRY_TRUE = "true";
   static final String HIVE_SERVER2_RETRY_FALSE = "false";
 
-  static class JdbcConnectionParams {
+  public static class JdbcConnectionParams {
     // Note on client side parameter naming convention:
     // Prefer using a shorter camelCase param name instead of using the same name as the
     // corresponding
@@ -71,31 +72,37 @@ class Utils {
     // client side params are specified in sess_var_list
 
     // Client param names:
-    static final String AUTH_TYPE = "auth";
+
+    // Retry setting
+    static final String RETRIES = "retries";
+
+    public static final String AUTH_TYPE = "auth";
     // We're deprecating this variable's name.
-    static final String AUTH_QOP_DEPRECATED = "sasl.qop";
-    static final String AUTH_QOP = "saslQop";
-    static final String AUTH_SIMPLE = "noSasl";
-    static final String AUTH_TOKEN = "delegationToken";
-    static final String AUTH_USER = "user";
-    static final String AUTH_PRINCIPAL = "principal";
-    static final String AUTH_PASSWD = "password";
-    static final String AUTH_KERBEROS_AUTH_TYPE = "kerberosAuthType";
-    static final String AUTH_KERBEROS_AUTH_TYPE_FROM_SUBJECT = "fromSubject";
-    static final String ANONYMOUS_USER = "anonymous";
-    static final String ANONYMOUS_PASSWD = "anonymous";
-    static final String USE_SSL = "ssl";
-    static final String SSL_TRUST_STORE = "sslTrustStore";
-    static final String SSL_TRUST_STORE_PASSWORD = "trustStorePassword";
+    public static final String AUTH_QOP_DEPRECATED = "sasl.qop";
+    public static final String AUTH_QOP = "saslQop";
+    public static final String AUTH_SIMPLE = "noSasl";
+    public static final String AUTH_TOKEN = "delegationToken";
+    public static final String AUTH_USER = "user";
+    public static final String AUTH_PRINCIPAL = "principal";
+    public static final String AUTH_PASSWD = "password";
+    public static final String AUTH_KERBEROS_AUTH_TYPE = "kerberosAuthType";
+    public static final String AUTH_KERBEROS_AUTH_TYPE_FROM_SUBJECT = "fromSubject";
+    public static final String ANONYMOUS_USER = "anonymous";
+    public static final String ANONYMOUS_PASSWD = "anonymous";
+    public static final String USE_SSL = "ssl";
+    public static final String SSL_TRUST_STORE = "sslTrustStore";
+    public static final String SSL_TRUST_STORE_PASSWORD = "trustStorePassword";
     // We're deprecating the name and placement of this in the parsed map (from hive conf vars to
     // hive session vars).
     static final String TRANSPORT_MODE_DEPRECATED = "hive.server2.transport.mode";
-    static final String TRANSPORT_MODE = "transportMode";
+    public static final String TRANSPORT_MODE = "transportMode";
     // We're deprecating the name and placement of this in the parsed map (from hive conf vars to
     // hive session vars).
     static final String HTTP_PATH_DEPRECATED = "hive.server2.thrift.http.path";
-    static final String HTTP_PATH = "httpPath";
-    static final String SERVICE_DISCOVERY_MODE = "serviceDiscoveryMode";
+    public static final String HTTP_PATH = "httpPath";
+    public static final String SERVICE_DISCOVERY_MODE = "serviceDiscoveryMode";
+    public static final String PROPERTY_DRIVER        = "driver";
+    public static final String PROPERTY_URL           = "url";
     // Don't use dynamic service discovery
     static final String SERVICE_DISCOVERY_MODE_NONE = "none";
     // Use ZooKeeper for indirection while using dynamic service discovery
@@ -111,6 +118,9 @@ class Utils {
     static final String DEFAULT_COOKIE_NAMES_HS2 = "hive.server2.auth";
     // The http header prefix for additional headers which have to be appended to the request
     static final String HTTP_HEADER_PREFIX = "http.header.";
+    // Set the fetchSize
+    static final String FETCH_SIZE = "fetchSize";
+    static final String INIT_FILE = "initFile";
 
     // --------------- Begin 2 way ssl options -------------------------
     // Use two way ssl. This param will take effect only when ssl=true
@@ -127,6 +137,8 @@ class Utils {
     // Currently supports JKS keystore format
     static final String SSL_TRUST_STORE_TYPE = "JKS";
 
+    private static final String HIVE_VAR_PREFIX = "hivevar:";
+    private static final String HIVE_CONF_PREFIX = "hiveconf:";
     private String host = null;
     private int port = 0;
     private String jdbcUriString;
@@ -138,7 +150,7 @@ class Utils {
     private String[] authorityList;
     private String zooKeeperEnsemble = null;
     private String currentHostZnodePath;
-    private List<String> rejectedHostZnodePaths = new ArrayList<String>();
+    private final List<String> rejectedHostZnodePaths = new ArrayList<String>();
 
     public JdbcConnectionParams() {
     }
@@ -255,6 +267,10 @@ class Utils {
     throw new HiveSQLException(status);
   }
 
+  public static JdbcConnectionParams parseURL(String uri) throws JdbcUriParseException,
+          SQLException, ZooKeeperHiveClientException {
+    return parseURL(uri, new Properties());
+  }
   /**
    * Parse JDBC connection URL
    * The new format of the URL is:
@@ -278,7 +294,7 @@ class Utils {
    * @return
    * @throws SQLException
    */
-  static JdbcConnectionParams parseURL(String uri) throws JdbcUriParseException,
+  static JdbcConnectionParams parseURL(String uri, Properties info) throws JdbcUriParseException,
       SQLException, ZooKeeperHiveClientException {
     JdbcConnectionParams connParams = new JdbcConnectionParams();
 
@@ -362,6 +378,37 @@ class Utils {
       while (varMatcher.find()) {
         connParams.getHiveVars().put(varMatcher.group(1), varMatcher.group(2));
       }
+    }
+    
+    // Apply configs supplied in the JDBC connection properties object
+    for (Map.Entry<Object, Object> kv : info.entrySet()) {
+      if ((kv.getKey() instanceof String)) {
+        String key = (String) kv.getKey();
+        if (key.startsWith(JdbcConnectionParams.HIVE_VAR_PREFIX)) {
+          connParams.getHiveVars().put(
+              key.substring(JdbcConnectionParams.HIVE_VAR_PREFIX.length()), info.getProperty(key));
+        } else if (key.startsWith(JdbcConnectionParams.HIVE_CONF_PREFIX)) {
+          connParams.getHiveConfs().put(
+              key.substring(JdbcConnectionParams.HIVE_CONF_PREFIX.length()), info.getProperty(key));
+        }
+      }
+    }
+    // Extract user/password from JDBC connection properties if its not supplied
+    // in the connection URL
+    if (!connParams.getSessionVars().containsKey(JdbcConnectionParams.AUTH_USER)) {
+        if (info.containsKey(JdbcConnectionParams.AUTH_USER)) {
+            connParams.getSessionVars().put(JdbcConnectionParams.AUTH_USER,
+              info.getProperty(JdbcConnectionParams.AUTH_USER));
+        }
+        if (info.containsKey(JdbcConnectionParams.AUTH_PASSWD)) {
+          connParams.getSessionVars().put(JdbcConnectionParams.AUTH_PASSWD,
+              info.getProperty(JdbcConnectionParams.AUTH_PASSWD));
+        }
+    }
+
+    if (info.containsKey(JdbcConnectionParams.AUTH_TYPE)) {
+      connParams.getSessionVars().put(JdbcConnectionParams.AUTH_TYPE,
+          info.getProperty(JdbcConnectionParams.AUTH_TYPE));
     }
 
     // Handle all deprecations here:
@@ -503,19 +550,25 @@ class Utils {
    * explored. Also update the host, port, jdbcUriString and other configs published by the server.
    *
    * @param connParams
-   * @throws ZooKeeperHiveClientException
+   * @return true if new server info is retrieved successfully
    */
-  static void updateConnParamsFromZooKeeper(JdbcConnectionParams connParams)
-      throws ZooKeeperHiveClientException {
+  static boolean updateConnParamsFromZooKeeper(JdbcConnectionParams connParams) {
     // Add current host to the rejected list
     connParams.getRejectedHostZnodePaths().add(connParams.getCurrentHostZnodePath());
     String oldServerHost = connParams.getHost();
     int oldServerPort = connParams.getPort();
     // Update connection params (including host, port) from ZooKeeper
-    ZooKeeperHiveClientHelper.configureConnParams(connParams);
-    connParams.setJdbcUriString(connParams.getJdbcUriString().replace(
-        oldServerHost + ":" + oldServerPort, connParams.getHost() + ":" + connParams.getPort()));
-    LOG.info("Selected HiveServer2 instance with uri: " + connParams.getJdbcUriString());
+    try {
+      ZooKeeperHiveClientHelper.configureConnParams(connParams);
+      connParams.setJdbcUriString(connParams.getJdbcUriString().replace(
+          oldServerHost + ":" + oldServerPort, connParams.getHost() + ":" + connParams.getPort()));
+      LOG.info("Selected HiveServer2 instance with uri: " + connParams.getJdbcUriString());
+    } catch(ZooKeeperHiveClientException e) {
+      LOG.error(e.getMessage());
+      return false;
+    }
+
+    return true;
   }
 
   private static String joinStringArray(String[] stringArray, String seperator) {
@@ -584,5 +637,15 @@ class Utils {
       }
     }
     return true;
+  }
+
+  public static String parsePropertyFromUrl(final String url, final String key) {
+    String[] tokens = url.split(";");
+    for (String token : tokens) {
+      if (token.trim().startsWith(key.trim() + "=")) {
+        return token.trim().substring((key.trim() + "=").length());
+      }
+    }
+    return null;
   }
 }

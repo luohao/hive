@@ -19,21 +19,20 @@ package org.apache.hadoop.hive.ql.exec;
 
 import java.io.IOException;
 import java.io.Serializable;
-import java.util.Collection;
 import java.util.HashSet;
 import java.util.Set;
-import java.util.concurrent.Future;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.hive.ql.CompilationOpContext;
 import org.apache.hadoop.hive.ql.metadata.HiveException;
 import org.apache.hadoop.hive.ql.plan.DynamicPartitionCtx;
 import org.apache.hadoop.hive.ql.plan.FileMergeDesc;
 import org.apache.hadoop.mapred.JobConf;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Fast file merge operator for ORC and RCfile. This is an abstract class which
@@ -44,8 +43,7 @@ public abstract class AbstractFileMergeOperator<T extends FileMergeDesc>
     extends Operator<T> implements Serializable {
 
   public static final String BACKUP_PREFIX = "_backup.";
-  public static final Log LOG = LogFactory
-      .getLog(AbstractFileMergeOperator.class);
+  public static final Logger LOG = LoggerFactory.getLogger(AbstractFileMergeOperator.class);
 
   protected JobConf jc;
   protected FileSystem fs;
@@ -64,9 +62,18 @@ public abstract class AbstractFileMergeOperator<T extends FileMergeDesc>
   protected Set<Path> incompatFileSet;
   protected transient DynamicPartitionCtx dpCtx;
 
+  /** Kryo ctor. */
+  protected AbstractFileMergeOperator() {
+    super();
+  }
+
+  public AbstractFileMergeOperator(CompilationOpContext ctx) {
+    super(ctx);
+  }
+
   @Override
-  public Collection<Future<?>> initializeOp(Configuration hconf) throws HiveException {
-    Collection<Future<?>> result = super.initializeOp(hconf);
+  public void initializeOp(Configuration hconf) throws HiveException {
+    super.initializeOp(hconf);
     this.jc = new JobConf(hconf);
     incompatFileSet = new HashSet<Path>();
     autoDelete = false;
@@ -94,7 +101,6 @@ public abstract class AbstractFileMergeOperator<T extends FileMergeDesc>
       throw new HiveException("Failed to initialize AbstractFileMergeOperator",
           e);
     }
-    return result;
   }
 
   // sets up temp and task temp path
@@ -202,18 +208,23 @@ public abstract class AbstractFileMergeOperator<T extends FileMergeDesc>
   @Override
   public void closeOp(boolean abort) throws HiveException {
     try {
-      if (!exception) {
-        FileStatus fss = fs.getFileStatus(outPath);
-        if (!fs.rename(outPath, finalPath)) {
-          throw new IOException(
-              "Unable to rename " + outPath + " to " + finalPath);
+      if (!abort) {
+        // if outPath does not exist, then it means all paths within combine split are skipped as
+        // they are incompatible for merge (for example: files without stripe stats).
+        // Those files will be added to incompatFileSet
+        if (fs.exists(outPath)) {
+          FileStatus fss = fs.getFileStatus(outPath);
+          if (!fs.rename(outPath, finalPath)) {
+            throw new IOException(
+                "Unable to rename " + outPath + " to " + finalPath);
+          }
+          LOG.info("renamed path " + outPath + " to " + finalPath + " . File" +
+              " size is "
+              + fss.getLen());
         }
-        LOG.info("renamed path " + outPath + " to " + finalPath + " . File" +
-            " size is "
-            + fss.getLen());
 
         // move any incompatible files to final path
-        if (!incompatFileSet.isEmpty()) {
+        if (incompatFileSet != null && !incompatFileSet.isEmpty()) {
           for (Path incompatFile : incompatFileSet) {
             Path destDir = finalPath.getParent();
             try {
@@ -269,5 +280,14 @@ public abstract class AbstractFileMergeOperator<T extends FileMergeDesc>
     } else {
       return null;
     }
+  }
+
+  @Override
+  public String getName() {
+    return AbstractFileMergeOperator.getOperatorName();
+  }
+
+  public static String getOperatorName() {
+    return "MERGE";
   }
 }

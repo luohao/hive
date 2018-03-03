@@ -1,20 +1,4 @@
-PREHOOK: query: -- INCLUDE_HADOOP_MAJOR_VERSIONS(0.23)
--- SORT_QUERY_RESULTS
-
--- list bucketing DML : dynamic partition (one level) , merge , one skewed column
--- DML without merge files mixed with small and big files:
--- ds=2008-04-08/hr=a1/HIVE_DEFAULT_LIST_BUCKETING_DIR_NAME/
--- 155 000000_0
--- ds=2008-04-08/hr=b1/key=484
--- 87 000000_0
--- 87 000001_0
--- ds=2008-04-08/hr=b1/HIVE_DEFAULT_LIST_BUCKETING_DIR_NAME/
--- 5201 000000_0
--- 5201 000001_0
--- DML with merge will merge small files
-
--- skewed table
-CREATE TABLE list_bucketing_dynamic_part (key String, value STRING)
+PREHOOK: query: CREATE TABLE list_bucketing_dynamic_part (key String, value STRING)
     PARTITIONED BY (ds string, hr string)
     skewed by (key) on ('484')
     stored as DIRECTORIES
@@ -22,23 +6,7 @@ CREATE TABLE list_bucketing_dynamic_part (key String, value STRING)
 PREHOOK: type: CREATETABLE
 PREHOOK: Output: database:default
 PREHOOK: Output: default@list_bucketing_dynamic_part
-POSTHOOK: query: -- INCLUDE_HADOOP_MAJOR_VERSIONS(0.23)
--- SORT_QUERY_RESULTS
-
--- list bucketing DML : dynamic partition (one level) , merge , one skewed column
--- DML without merge files mixed with small and big files:
--- ds=2008-04-08/hr=a1/HIVE_DEFAULT_LIST_BUCKETING_DIR_NAME/
--- 155 000000_0
--- ds=2008-04-08/hr=b1/key=484
--- 87 000000_0
--- 87 000001_0
--- ds=2008-04-08/hr=b1/HIVE_DEFAULT_LIST_BUCKETING_DIR_NAME/
--- 5201 000000_0
--- 5201 000001_0
--- DML with merge will merge small files
-
--- skewed table
-CREATE TABLE list_bucketing_dynamic_part (key String, value STRING)
+POSTHOOK: query: CREATE TABLE list_bucketing_dynamic_part (key String, value STRING)
     PARTITIONED BY (ds string, hr string)
     skewed by (key) on ('484')
     stored as DIRECTORIES
@@ -46,59 +14,14 @@ CREATE TABLE list_bucketing_dynamic_part (key String, value STRING)
 POSTHOOK: type: CREATETABLE
 POSTHOOK: Output: database:default
 POSTHOOK: Output: default@list_bucketing_dynamic_part
-PREHOOK: query: -- list bucketing DML without merge. use bucketize to generate a few small files.
-explain extended
+PREHOOK: query: explain extended
 insert overwrite table list_bucketing_dynamic_part partition (ds = '2008-04-08', hr)
 select key, value, if(key % 100 == 0, 'a1', 'b1') from srcpart where ds = '2008-04-08'
 PREHOOK: type: QUERY
-POSTHOOK: query: -- list bucketing DML without merge. use bucketize to generate a few small files.
-explain extended
+POSTHOOK: query: explain extended
 insert overwrite table list_bucketing_dynamic_part partition (ds = '2008-04-08', hr)
 select key, value, if(key % 100 == 0, 'a1', 'b1') from srcpart where ds = '2008-04-08'
 POSTHOOK: type: QUERY
-ABSTRACT SYNTAX TREE:
-  
-TOK_QUERY
-   TOK_FROM
-      TOK_TABREF
-         TOK_TABNAME
-            srcpart
-   TOK_INSERT
-      TOK_DESTINATION
-         TOK_TAB
-            TOK_TABNAME
-               list_bucketing_dynamic_part
-            TOK_PARTSPEC
-               TOK_PARTVAL
-                  ds
-                  '2008-04-08'
-               TOK_PARTVAL
-                  hr
-      TOK_SELECT
-         TOK_SELEXPR
-            TOK_TABLE_OR_COL
-               key
-         TOK_SELEXPR
-            TOK_TABLE_OR_COL
-               value
-         TOK_SELEXPR
-            TOK_FUNCTION
-               if
-               ==
-                  %
-                     TOK_TABLE_OR_COL
-                        key
-                     100
-                  0
-               'a1'
-               'b1'
-      TOK_WHERE
-         =
-            TOK_TABLE_OR_COL
-               ds
-            '2008-04-08'
-
-
 STAGE DEPENDENCIES:
   Stage-1 is a root stage
   Stage-0 depends on stages: Stage-1
@@ -129,6 +52,7 @@ STAGE PLANS:
                     output format: org.apache.hadoop.hive.ql.io.RCFileOutputFormat
                     properties:
                       bucket_count -1
+                      column.name.delimiter ,
                       columns key,value
                       columns.comments 
                       columns.types string:string
@@ -157,8 +81,9 @@ STAGE PLANS:
               ds 2008-04-08
               hr 11
             properties:
-              COLUMN_STATS_ACCURATE true
+              COLUMN_STATS_ACCURATE {"BASIC_STATS":"true","COLUMN_STATS":{"key":"true","value":"true"}}
               bucket_count -1
+              column.name.delimiter ,
               columns key,value
               columns.comments 'default','default'
               columns.types string:string
@@ -180,6 +105,7 @@ STAGE PLANS:
               output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
               properties:
                 bucket_count -1
+                column.name.delimiter ,
                 columns key,value
                 columns.comments 'default','default'
                 columns.types string:string
@@ -203,8 +129,9 @@ STAGE PLANS:
               ds 2008-04-08
               hr 12
             properties:
-              COLUMN_STATS_ACCURATE true
+              COLUMN_STATS_ACCURATE {"BASIC_STATS":"true","COLUMN_STATS":{"key":"true","value":"true"}}
               bucket_count -1
+              column.name.delimiter ,
               columns key,value
               columns.comments 'default','default'
               columns.types string:string
@@ -226,6 +153,7 @@ STAGE PLANS:
               output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
               properties:
                 bucket_count -1
+                column.name.delimiter ,
                 columns key,value
                 columns.comments 'default','default'
                 columns.types string:string
@@ -257,6 +185,7 @@ STAGE PLANS:
               output format: org.apache.hadoop.hive.ql.io.RCFileOutputFormat
               properties:
                 bucket_count -1
+                column.name.delimiter ,
                 columns key,value
                 columns.comments 
                 columns.types string:string
@@ -294,12 +223,10 @@ POSTHOOK: Lineage: list_bucketing_dynamic_part PARTITION(ds=2008-04-08,hr=a1).ke
 POSTHOOK: Lineage: list_bucketing_dynamic_part PARTITION(ds=2008-04-08,hr=a1).value SIMPLE [(srcpart)srcpart.FieldSchema(name:value, type:string, comment:default), ]
 POSTHOOK: Lineage: list_bucketing_dynamic_part PARTITION(ds=2008-04-08,hr=b1).key SIMPLE [(srcpart)srcpart.FieldSchema(name:key, type:string, comment:default), ]
 POSTHOOK: Lineage: list_bucketing_dynamic_part PARTITION(ds=2008-04-08,hr=b1).value SIMPLE [(srcpart)srcpart.FieldSchema(name:value, type:string, comment:default), ]
-PREHOOK: query: -- check DML result
-show partitions list_bucketing_dynamic_part
+PREHOOK: query: show partitions list_bucketing_dynamic_part
 PREHOOK: type: SHOWPARTITIONS
 PREHOOK: Input: default@list_bucketing_dynamic_part
-POSTHOOK: query: -- check DML result
-show partitions list_bucketing_dynamic_part
+POSTHOOK: query: show partitions list_bucketing_dynamic_part
 POSTHOOK: type: SHOWPARTITIONS
 POSTHOOK: Input: default@list_bucketing_dynamic_part
 ds=2008-04-08/hr=a1
@@ -327,7 +254,7 @@ Database:           	default
 Table:              	list_bucketing_dynamic_part	 
 #### A masked pattern was here ####
 Partition Parameters:	 	 
-	COLUMN_STATS_ACCURATE	true                
+	COLUMN_STATS_ACCURATE	{\"BASIC_STATS\":\"true\"}
 	numFiles            	2                   
 	numRows             	16                  
 	rawDataSize         	136                 
@@ -370,7 +297,7 @@ Database:           	default
 Table:              	list_bucketing_dynamic_part	 
 #### A masked pattern was here ####
 Partition Parameters:	 	 
-	COLUMN_STATS_ACCURATE	true                
+	COLUMN_STATS_ACCURATE	{\"BASIC_STATS\":\"true\"}
 	numFiles            	4                   
 	numRows             	984                 
 	rawDataSize         	9488                
@@ -392,59 +319,14 @@ Skewed Values:      	[[484]]
 Skewed Value to Truncated Path:	{[484]=/list_bucketing_dynamic_part/ds=2008-04-08/hr=b1/key=484}	 
 Storage Desc Params:	 	 
 	serialization.format	1                   
-PREHOOK: query: -- list bucketing DML with merge. use bucketize to generate a few small files.
-explain extended
+PREHOOK: query: explain extended
 insert overwrite table list_bucketing_dynamic_part partition (ds = '2008-04-08', hr)
 select key, value, if(key % 100 == 0, 'a1', 'b1') from srcpart where ds = '2008-04-08'
 PREHOOK: type: QUERY
-POSTHOOK: query: -- list bucketing DML with merge. use bucketize to generate a few small files.
-explain extended
+POSTHOOK: query: explain extended
 insert overwrite table list_bucketing_dynamic_part partition (ds = '2008-04-08', hr)
 select key, value, if(key % 100 == 0, 'a1', 'b1') from srcpart where ds = '2008-04-08'
 POSTHOOK: type: QUERY
-ABSTRACT SYNTAX TREE:
-  
-TOK_QUERY
-   TOK_FROM
-      TOK_TABREF
-         TOK_TABNAME
-            srcpart
-   TOK_INSERT
-      TOK_DESTINATION
-         TOK_TAB
-            TOK_TABNAME
-               list_bucketing_dynamic_part
-            TOK_PARTSPEC
-               TOK_PARTVAL
-                  ds
-                  '2008-04-08'
-               TOK_PARTVAL
-                  hr
-      TOK_SELECT
-         TOK_SELEXPR
-            TOK_TABLE_OR_COL
-               key
-         TOK_SELEXPR
-            TOK_TABLE_OR_COL
-               value
-         TOK_SELEXPR
-            TOK_FUNCTION
-               if
-               ==
-                  %
-                     TOK_TABLE_OR_COL
-                        key
-                     100
-                  0
-               'a1'
-               'b1'
-      TOK_WHERE
-         =
-            TOK_TABLE_OR_COL
-               ds
-            '2008-04-08'
-
-
 STAGE DEPENDENCIES:
   Stage-1 is a root stage
   Stage-7 depends on stages: Stage-1 , consists of Stage-4, Stage-3, Stage-5
@@ -480,13 +362,14 @@ STAGE PLANS:
                     output format: org.apache.hadoop.hive.ql.io.RCFileOutputFormat
                     properties:
                       bucket_count -1
+                      column.name.delimiter ,
                       columns key,value
                       columns.comments 
                       columns.types string:string
 #### A masked pattern was here ####
                       name default.list_bucketing_dynamic_part
                       partition_columns hr
-                      partition_columns.types string:string
+                      partition_columns.types string
                       serialization.ddl struct list_bucketing_dynamic_part { string key, string value}
                       serialization.format 1
                       serialization.lib org.apache.hadoop.hive.serde2.columnar.ColumnarSerDe
@@ -508,8 +391,9 @@ STAGE PLANS:
               ds 2008-04-08
               hr 11
             properties:
-              COLUMN_STATS_ACCURATE true
+              COLUMN_STATS_ACCURATE {"BASIC_STATS":"true","COLUMN_STATS":{"key":"true","value":"true"}}
               bucket_count -1
+              column.name.delimiter ,
               columns key,value
               columns.comments 'default','default'
               columns.types string:string
@@ -531,6 +415,7 @@ STAGE PLANS:
               output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
               properties:
                 bucket_count -1
+                column.name.delimiter ,
                 columns key,value
                 columns.comments 'default','default'
                 columns.types string:string
@@ -554,8 +439,9 @@ STAGE PLANS:
               ds 2008-04-08
               hr 12
             properties:
-              COLUMN_STATS_ACCURATE true
+              COLUMN_STATS_ACCURATE {"BASIC_STATS":"true","COLUMN_STATS":{"key":"true","value":"true"}}
               bucket_count -1
+              column.name.delimiter ,
               columns key,value
               columns.comments 'default','default'
               columns.types string:string
@@ -577,6 +463,7 @@ STAGE PLANS:
               output format: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
               properties:
                 bucket_count -1
+                column.name.delimiter ,
                 columns key,value
                 columns.comments 'default','default'
                 columns.types string:string
@@ -617,13 +504,14 @@ STAGE PLANS:
               output format: org.apache.hadoop.hive.ql.io.RCFileOutputFormat
               properties:
                 bucket_count -1
+                column.name.delimiter ,
                 columns key,value
                 columns.comments 
                 columns.types string:string
 #### A masked pattern was here ####
                 name default.list_bucketing_dynamic_part
                 partition_columns hr
-                partition_columns.types string:string
+                partition_columns.types string
                 serialization.ddl struct list_bucketing_dynamic_part { string key, string value}
                 serialization.format 1
                 serialization.lib org.apache.hadoop.hive.serde2.columnar.ColumnarSerDe
@@ -649,13 +537,14 @@ STAGE PLANS:
             output format: org.apache.hadoop.hive.ql.io.RCFileOutputFormat
             properties:
               bucket_count -1
+              column.name.delimiter ,
               columns key,value
               columns.comments 
               columns.types string:string
 #### A masked pattern was here ####
               name default.list_bucketing_dynamic_part
               partition_columns hr
-              partition_columns.types string:string
+              partition_columns.types string
               serialization.ddl struct list_bucketing_dynamic_part { string key, string value}
               serialization.format 1
               serialization.lib org.apache.hadoop.hive.serde2.columnar.ColumnarSerDe
@@ -666,13 +555,14 @@ STAGE PLANS:
               output format: org.apache.hadoop.hive.ql.io.RCFileOutputFormat
               properties:
                 bucket_count -1
+                column.name.delimiter ,
                 columns key,value
                 columns.comments 
                 columns.types string:string
 #### A masked pattern was here ####
                 name default.list_bucketing_dynamic_part
                 partition_columns hr
-                partition_columns.types string:string
+                partition_columns.types string
                 serialization.ddl struct list_bucketing_dynamic_part { string key, string value}
                 serialization.format 1
                 serialization.lib org.apache.hadoop.hive.serde2.columnar.ColumnarSerDe
@@ -698,13 +588,14 @@ STAGE PLANS:
             output format: org.apache.hadoop.hive.ql.io.RCFileOutputFormat
             properties:
               bucket_count -1
+              column.name.delimiter ,
               columns key,value
               columns.comments 
               columns.types string:string
 #### A masked pattern was here ####
               name default.list_bucketing_dynamic_part
               partition_columns hr
-              partition_columns.types string:string
+              partition_columns.types string
               serialization.ddl struct list_bucketing_dynamic_part { string key, string value}
               serialization.format 1
               serialization.lib org.apache.hadoop.hive.serde2.columnar.ColumnarSerDe
@@ -715,13 +606,14 @@ STAGE PLANS:
               output format: org.apache.hadoop.hive.ql.io.RCFileOutputFormat
               properties:
                 bucket_count -1
+                column.name.delimiter ,
                 columns key,value
                 columns.comments 
                 columns.types string:string
 #### A masked pattern was here ####
                 name default.list_bucketing_dynamic_part
                 partition_columns hr
-                partition_columns.types string:string
+                partition_columns.types string
                 serialization.ddl struct list_bucketing_dynamic_part { string key, string value}
                 serialization.format 1
                 serialization.lib org.apache.hadoop.hive.serde2.columnar.ColumnarSerDe
@@ -758,12 +650,10 @@ POSTHOOK: Lineage: list_bucketing_dynamic_part PARTITION(ds=2008-04-08,hr=a1).ke
 POSTHOOK: Lineage: list_bucketing_dynamic_part PARTITION(ds=2008-04-08,hr=a1).value SIMPLE [(srcpart)srcpart.FieldSchema(name:value, type:string, comment:default), ]
 POSTHOOK: Lineage: list_bucketing_dynamic_part PARTITION(ds=2008-04-08,hr=b1).key SIMPLE [(srcpart)srcpart.FieldSchema(name:key, type:string, comment:default), ]
 POSTHOOK: Lineage: list_bucketing_dynamic_part PARTITION(ds=2008-04-08,hr=b1).value SIMPLE [(srcpart)srcpart.FieldSchema(name:value, type:string, comment:default), ]
-PREHOOK: query: -- check DML result
-show partitions list_bucketing_dynamic_part
+PREHOOK: query: show partitions list_bucketing_dynamic_part
 PREHOOK: type: SHOWPARTITIONS
 PREHOOK: Input: default@list_bucketing_dynamic_part
-POSTHOOK: query: -- check DML result
-show partitions list_bucketing_dynamic_part
+POSTHOOK: query: show partitions list_bucketing_dynamic_part
 POSTHOOK: type: SHOWPARTITIONS
 POSTHOOK: Input: default@list_bucketing_dynamic_part
 ds=2008-04-08/hr=a1
@@ -791,7 +681,7 @@ Database:           	default
 Table:              	list_bucketing_dynamic_part	 
 #### A masked pattern was here ####
 Partition Parameters:	 	 
-	COLUMN_STATS_ACCURATE	true                
+	COLUMN_STATS_ACCURATE	{\"BASIC_STATS\":\"true\"}
 	numFiles            	1                   
 	numRows             	16                  
 	rawDataSize         	136                 
@@ -834,7 +724,7 @@ Database:           	default
 Table:              	list_bucketing_dynamic_part	 
 #### A masked pattern was here ####
 Partition Parameters:	 	 
-	COLUMN_STATS_ACCURATE	true                
+	COLUMN_STATS_ACCURATE	{\"BASIC_STATS\":\"true\"}
 	numFiles            	3                   
 	numRows             	984                 
 	rawDataSize         	9488                
@@ -859,27 +749,19 @@ Storage Desc Params:
 PREHOOK: query: select count(1) from srcpart where ds = '2008-04-08'
 PREHOOK: type: QUERY
 PREHOOK: Input: default@srcpart
-PREHOOK: Input: default@srcpart@ds=2008-04-08/hr=11
-PREHOOK: Input: default@srcpart@ds=2008-04-08/hr=12
 #### A masked pattern was here ####
 POSTHOOK: query: select count(1) from srcpart where ds = '2008-04-08'
 POSTHOOK: type: QUERY
 POSTHOOK: Input: default@srcpart
-POSTHOOK: Input: default@srcpart@ds=2008-04-08/hr=11
-POSTHOOK: Input: default@srcpart@ds=2008-04-08/hr=12
 #### A masked pattern was here ####
 1000
 PREHOOK: query: select count(*) from list_bucketing_dynamic_part
 PREHOOK: type: QUERY
 PREHOOK: Input: default@list_bucketing_dynamic_part
-PREHOOK: Input: default@list_bucketing_dynamic_part@ds=2008-04-08/hr=a1
-PREHOOK: Input: default@list_bucketing_dynamic_part@ds=2008-04-08/hr=b1
 #### A masked pattern was here ####
 POSTHOOK: query: select count(*) from list_bucketing_dynamic_part
 POSTHOOK: type: QUERY
 POSTHOOK: Input: default@list_bucketing_dynamic_part
-POSTHOOK: Input: default@list_bucketing_dynamic_part@ds=2008-04-08/hr=a1
-POSTHOOK: Input: default@list_bucketing_dynamic_part@ds=2008-04-08/hr=b1
 #### A masked pattern was here ####
 1000
 PREHOOK: query: explain extended
@@ -888,32 +770,6 @@ PREHOOK: type: QUERY
 POSTHOOK: query: explain extended
 select * from list_bucketing_dynamic_part where key = '484' and value = 'val_484'
 POSTHOOK: type: QUERY
-ABSTRACT SYNTAX TREE:
-  
-TOK_QUERY
-   TOK_FROM
-      TOK_TABREF
-         TOK_TABNAME
-            list_bucketing_dynamic_part
-   TOK_INSERT
-      TOK_DESTINATION
-         TOK_DIR
-            TOK_TMP_FILE
-      TOK_SELECT
-         TOK_SELEXPR
-            TOK_ALLCOLREF
-      TOK_WHERE
-         and
-            =
-               TOK_TABLE_OR_COL
-                  key
-               '484'
-            =
-               TOK_TABLE_OR_COL
-                  value
-               'val_484'
-
-
 STAGE DEPENDENCIES:
   Stage-0 is a root stage
 
@@ -929,8 +785,9 @@ STAGE PLANS:
               ds 2008-04-08
               hr a1
             properties:
-              COLUMN_STATS_ACCURATE true
+              COLUMN_STATS_ACCURATE {"BASIC_STATS":"true"}
               bucket_count -1
+              column.name.delimiter ,
               columns key,value
               columns.comments 
               columns.types string:string
@@ -952,6 +809,7 @@ STAGE PLANS:
               output format: org.apache.hadoop.hive.ql.io.RCFileOutputFormat
               properties:
                 bucket_count -1
+                column.name.delimiter ,
                 columns key,value
                 columns.comments 
                 columns.types string:string
@@ -973,8 +831,9 @@ STAGE PLANS:
               ds 2008-04-08
               hr b1
             properties:
-              COLUMN_STATS_ACCURATE true
+              COLUMN_STATS_ACCURATE {"BASIC_STATS":"true"}
               bucket_count -1
+              column.name.delimiter ,
               columns key,value
               columns.comments 
               columns.types string:string
@@ -996,6 +855,7 @@ STAGE PLANS:
               output format: org.apache.hadoop.hive.ql.io.RCFileOutputFormat
               properties:
                 bucket_count -1
+                column.name.delimiter ,
                 columns key,value
                 columns.comments 
                 columns.types string:string
@@ -1053,13 +913,11 @@ POSTHOOK: Input: default@srcpart@ds=2008-04-08/hr=12
 #### A masked pattern was here ####
 484	val_484	2008-04-08	11
 484	val_484	2008-04-08	12
-PREHOOK: query: -- clean up
-drop table list_bucketing_dynamic_part
+PREHOOK: query: drop table list_bucketing_dynamic_part
 PREHOOK: type: DROPTABLE
 PREHOOK: Input: default@list_bucketing_dynamic_part
 PREHOOK: Output: default@list_bucketing_dynamic_part
-POSTHOOK: query: -- clean up
-drop table list_bucketing_dynamic_part
+POSTHOOK: query: drop table list_bucketing_dynamic_part
 POSTHOOK: type: DROPTABLE
 POSTHOOK: Input: default@list_bucketing_dynamic_part
 POSTHOOK: Output: default@list_bucketing_dynamic_part

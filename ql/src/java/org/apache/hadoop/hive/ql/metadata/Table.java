@@ -18,9 +18,17 @@
 
 package org.apache.hadoop.hive.ql.metadata;
 
+import java.io.Serializable;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Properties;
+
 import org.apache.commons.lang3.StringUtils;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -44,6 +52,7 @@ import org.apache.hadoop.hive.ql.parse.SemanticAnalyzer;
 import org.apache.hadoop.hive.ql.parse.SemanticException;
 import org.apache.hadoop.hive.ql.session.SessionState;
 import org.apache.hadoop.hive.serde.serdeConstants;
+import org.apache.hadoop.hive.serde2.AbstractSerDe;
 import org.apache.hadoop.hive.serde2.Deserializer;
 import org.apache.hadoop.hive.serde2.MetadataTypedColumnsetSerDe;
 import org.apache.hadoop.hive.serde2.SerDeException;
@@ -54,15 +63,9 @@ import org.apache.hadoop.io.WritableComparable;
 import org.apache.hadoop.mapred.InputFormat;
 import org.apache.hadoop.mapred.OutputFormat;
 import org.apache.hadoop.mapred.SequenceFileInputFormat;
-
-import java.io.Serializable;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.HashMap;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Properties;
+import org.apache.hive.common.util.ReflectionUtil;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * A Hive Table: is a fundamental unit of data in Hive that shares a common schema/DDL.
@@ -75,7 +78,7 @@ public class Table implements Serializable {
 
   private static final long serialVersionUID = 1L;
 
-  static final private Log LOG = LogFactory.getLog("hive.ql.metadata.Table");
+  static final private Logger LOG = LoggerFactory.getLogger("hive.ql.metadata.Table");
 
   private org.apache.hadoop.hive.metastore.api.Table tTable;
 
@@ -91,6 +94,7 @@ public class Table implements Serializable {
 
   private transient TableSpec tableSpec;
 
+  private transient boolean materializedTable;
 
   /**
    * Used only for serialization.
@@ -176,16 +180,15 @@ public class Table implements Serializable {
       t.setOwner(SessionState.getUserFromAuthenticator());
       // set create time
       t.setCreateTime((int) (System.currentTimeMillis() / 1000));
-
     }
     return t;
   }
 
-  public void checkValidity() throws HiveException {
+  public void checkValidity(Configuration conf) throws HiveException {
     // check for validity
     String name = tTable.getTableName();
     if (null == name || name.length() == 0
-        || !MetaStoreUtils.validateName(name)) {
+        || !MetaStoreUtils.validateName(name, conf)) {
       throw new HiveException("[" + name + "]: is not a valid table name");
     }
     if (0 == getCols().size()) {
@@ -205,8 +208,11 @@ public class Table implements Serializable {
     }
 
     if (isView()) {
+      assert (getViewOriginalText() != null);
+      assert (getViewExpandedText() != null);
+    } else if (isMaterializedView()) {
       assert(getViewOriginalText() != null);
-      assert(getViewExpandedText() != null);
+      assert(getViewExpandedText() == null);
     } else {
       assert(getViewOriginalText() == null);
       assert(getViewExpandedText() == null);
@@ -335,6 +341,14 @@ public class Table implements Serializable {
     return outputFormatClass;
   }
 
+  public boolean isMaterializedTable() {
+    return materializedTable;
+  }
+
+  public void setMaterializedTable(boolean materializedTable) {
+    this.materializedTable = materializedTable;
+  }
+
   /**
    * Marker SemanticException, so that processing that allows for table validation failures
    * and appropriately handles them can recover from these types of SemanticExceptions
@@ -379,7 +393,7 @@ public class Table implements Serializable {
     tTable.getParameters().put(name, value);
   }
 
-  public void setParamters(Map<String, String> params) {
+  public void setParameters(Map<String, String> params) {
     tTable.setParameters(params);
   }
 
@@ -481,13 +495,25 @@ public class Table implements Serializable {
     return partKeys;
   }
 
-  public boolean isPartitionKey(String colName) {
+  public FieldSchema getPartColByName(String colName) {
     for (FieldSchema key : getPartCols()) {
       if (key.getName().toLowerCase().equals(colName)) {
-        return true;
+        return key;
       }
     }
-    return false;
+    return null;
+  }
+
+  public List<String> getPartColNames() {
+    List<String> partColNames = new ArrayList<String>();
+    for (FieldSchema key : getPartCols()) {
+      partColNames.add(key.getName());
+    }
+    return partColNames;
+  }
+
+  public boolean isPartitionKey(String colName) {
+    return getPartColByName(colName) == null ? false : true;
   }
 
   // TODO merge this with getBucketCols function
@@ -595,11 +621,22 @@ public class Table implements Serializable {
   }
 
   public List<FieldSchema> getCols() {
+    return getColsInternal(false);
+  }
 
+  public List<FieldSchema> getColsForMetastore() {
+    return getColsInternal(true);
+  }
+
+  private List<FieldSchema> getColsInternal(boolean forMs) {
     String serializationLib = getSerializationLib();
     try {
+      // Do the lightweight check for general case.
       if (hasMetastoreBasedSchema(SessionState.getSessionConf(), serializationLib)) {
         return tTable.getSd().getCols();
+      } else if (forMs && !shouldStoreFieldsInMetastore(
+          SessionState.getSessionConf(), serializationLib, tTable.getParameters())) {
+        return Hive.getFieldsFromDeserializerForMsStorage(this, getDeserializer());
       } else {
         return MetaStoreUtils.getFieldsFromDeserializer(getTableName(), getDeserializer());
       }
@@ -617,8 +654,8 @@ public class Table implements Serializable {
    */
   public List<FieldSchema> getAllCols() {
     ArrayList<FieldSchema> f_list = new ArrayList<FieldSchema>();
-    f_list.addAll(getPartCols());
     f_list.addAll(getCols());
+    f_list.addAll(getPartCols());
     return f_list;
   }
 
@@ -779,9 +816,6 @@ public class Table implements Serializable {
     return tTable.getViewExpandedText();
   }
 
-  public void clearSerDeInfo() {
-    tTable.getSd().getSerdeInfo().getParameters().clear();
-  }
   /**
    * @param viewExpandedText
    *          the expanded view text to set
@@ -791,10 +825,33 @@ public class Table implements Serializable {
   }
 
   /**
+   * @return whether this view can be used for rewriting queries
+   */
+  public boolean isRewriteEnabled() {
+    return tTable.isRewriteEnabled();
+  }
+
+  /**
+   * @param rewriteEnabled
+   *          whether this view can be used for rewriting queries
+   */
+  public void setRewriteEnabled(boolean rewriteEnabled) {
+    tTable.setRewriteEnabled(rewriteEnabled);
+  }
+
+  public void clearSerDeInfo() {
+    tTable.getSd().getSerdeInfo().getParameters().clear();
+  }
+
+  /**
    * @return whether this table is actually a view
    */
   public boolean isView() {
     return TableType.VIRTUAL_VIEW.equals(getTableType());
+  }
+
+  public boolean isMaterializedView() {
+    return TableType.MATERIALIZED_VIEW.equals(getTableType());
   }
 
   /**
@@ -816,7 +873,7 @@ public class Table implements Serializable {
 
     List<FieldSchema> fsl = getPartCols();
     List<String> tpl = tp.getValues();
-    LinkedHashMap<String, String> spec = new LinkedHashMap<String, String>();
+    LinkedHashMap<String, String> spec = new LinkedHashMap<String, String>(fsl.size());
     for (int i = 0; i < fsl.size(); i++) {
       FieldSchema fs = fsl.get(i);
       String value = tpl.get(i);
@@ -827,6 +884,10 @@ public class Table implements Serializable {
 
   public Table copy() throws HiveException {
     return new Table(tTable.deepCopy());
+  }
+
+  public int getCreateTime() {
+    return tTable.getCreateTime();
   }
 
   public void setCreateTime(int createTime) {
@@ -887,13 +948,26 @@ public class Table implements Serializable {
     return tTable.isTemporary();
   }
 
-  public static boolean hasMetastoreBasedSchema(HiveConf conf, StorageDescriptor serde) {
-    return hasMetastoreBasedSchema(conf, serde.getSerdeInfo().getSerializationLib());
-  }
-
   public static boolean hasMetastoreBasedSchema(HiveConf conf, String serdeLib) {
     return StringUtils.isEmpty(serdeLib) ||
         conf.getStringCollection(ConfVars.SERDESUSINGMETASTOREFORSCHEMA.varname).contains(serdeLib);
+  }
+
+  public static boolean shouldStoreFieldsInMetastore(
+      HiveConf conf, String serdeLib, Map<String, String> tableParams) {
+    if (hasMetastoreBasedSchema(conf, serdeLib))  return true;
+    // Table may or may not be using metastore. Only the SerDe can tell us.
+    AbstractSerDe deserializer = null;
+    try {
+      Class<?> clazz = conf.getClassByName(serdeLib);
+      if (!AbstractSerDe.class.isAssignableFrom(clazz)) return true; // The default.
+      deserializer = ReflectionUtil.newInstance(
+          conf.getClassByName(serdeLib).asSubclass(AbstractSerDe.class), conf);
+    } catch (Exception ex) {
+      LOG.warn("Cannot initialize SerDe: " + serdeLib + ", ignoring", ex);
+      return true;
+    }
+    return deserializer.shouldStoreFieldsInMetastore(tableParams);
   }
 
   public static void validateColumns(List<FieldSchema> columns, List<FieldSchema> partCols)
@@ -933,6 +1007,10 @@ public class Table implements Serializable {
 
   public void setTableSpec(TableSpec tableSpec) {
     this.tableSpec = tableSpec;
+  }
+
+  public boolean hasDeserializer() {
+    return deserializer != null;
   }
 
 };

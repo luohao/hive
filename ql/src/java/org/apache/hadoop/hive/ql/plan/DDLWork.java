@@ -23,6 +23,7 @@ import java.util.HashSet;
 import org.apache.hadoop.hive.ql.hooks.ReadEntity;
 import org.apache.hadoop.hive.ql.hooks.WriteEntity;
 import org.apache.hadoop.hive.ql.parse.AlterTablePartMergeFilesDesc;
+import org.apache.hadoop.hive.ql.parse.PreInsertTableDesc;
 import org.apache.hadoop.hive.ql.plan.Explain.Level;
 
 /**
@@ -31,6 +32,9 @@ import org.apache.hadoop.hive.ql.plan.Explain.Level;
  */
 public class DDLWork implements Serializable {
   private static final long serialVersionUID = 1L;
+
+  private PreInsertTableDesc preInsertTableDesc;
+  private InsertTableDesc insertTableDesc;
   private CreateIndexDesc createIndexDesc;
   private AlterIndexDesc alterIndexDesc;
   private DropIndexDesc dropIdxDesc;
@@ -55,8 +59,10 @@ public class DDLWork implements Serializable {
   private ShowLocksDesc showLocksDesc;
   private ShowCompactionsDesc showCompactionsDesc;
   private ShowTxnsDesc showTxnsDesc;
+  private AbortTxnsDesc abortTxnsDesc;
   private DescFunctionDesc descFunctionDesc;
   private ShowPartitionsDesc showPartsDesc;
+  private ShowCreateDatabaseDesc showCreateDbDesc;
   private ShowCreateTableDesc showCreateTblDesc;
   private DescTableDesc descTblDesc;
   private AddPartitionDesc addPartitionDesc;
@@ -90,6 +96,7 @@ public class DDLWork implements Serializable {
    */
   protected HashSet<WriteEntity> outputs;
   private AlterTablePartMergeFilesDesc mergeFilesDesc;
+  private CacheMetadataDesc cacheMetadataDesc;
 
   public DDLWork() {
   }
@@ -346,6 +353,12 @@ public class DDLWork implements Serializable {
     this.showTxnsDesc = showTxnsDesc;
   }
 
+  public DDLWork(HashSet<ReadEntity> inputs, HashSet<WriteEntity> outputs,
+                 AbortTxnsDesc abortTxnsDesc) {
+    this(inputs, outputs);
+    this.abortTxnsDesc = abortTxnsDesc;
+  }
+
    /**
    * @param descFuncDesc
    */
@@ -364,6 +377,16 @@ public class DDLWork implements Serializable {
     this(inputs, outputs);
 
     this.showPartsDesc = showPartsDesc;
+  }
+
+  /**
+   * @param showCreateDbDesc
+   */
+  public DDLWork(HashSet<ReadEntity> inputs, HashSet<WriteEntity> outputs,
+      ShowCreateDatabaseDesc showCreateDbDesc) {
+    this(inputs, outputs);
+
+    this.showCreateDbDesc = showCreateDbDesc;
   }
 
   /**
@@ -499,7 +522,25 @@ public class DDLWork implements Serializable {
     this.alterTableExchangePartition = alterTableExchangePartition;
   }
 
-    /**
+  public DDLWork(HashSet<ReadEntity> inputs, HashSet<WriteEntity> outputs,
+      CacheMetadataDesc cacheMetadataDesc) {
+    this(inputs, outputs);
+    this.cacheMetadataDesc = cacheMetadataDesc;
+  }
+
+  public DDLWork(HashSet<ReadEntity> inputs, HashSet<WriteEntity> outputs,
+          InsertTableDesc insertTableDesc) {
+    this(inputs, outputs);
+    this.insertTableDesc = insertTableDesc;
+  }
+
+  public DDLWork(HashSet<ReadEntity> inputs, HashSet<WriteEntity> outputs,
+          PreInsertTableDesc preInsertTableDesc) {
+    this(inputs, outputs);
+    this.preInsertTableDesc = preInsertTableDesc;
+  }
+
+  /**
    * @return Create Database descriptor
    */
   public CreateDatabaseDesc getCreateDatabaseDesc() {
@@ -744,6 +785,11 @@ public class DDLWork implements Serializable {
     return showTxnsDesc;
   }
 
+  @Explain(displayName = "Abort Transactions Operator", explainLevels = { Level.USER, Level.DEFAULT, Level.EXTENDED })
+  public AbortTxnsDesc getAbortTxnsDesc() {
+    return abortTxnsDesc;
+  }
+
   /**
    * @return the lockTblDesc
    */
@@ -792,6 +838,10 @@ public class DDLWork implements Serializable {
     this.showTxnsDesc = showTxnsDesc;
   }
 
+  public void setAbortTxnsDesc(AbortTxnsDesc abortTxnsDesc) {
+    this.abortTxnsDesc = abortTxnsDesc;
+  }
+
   /**
    * @param lockTblDesc
    *          the lockTblDesc to set
@@ -830,6 +880,16 @@ public class DDLWork implements Serializable {
    */
   public void setShowPartsDesc(ShowPartitionsDesc showPartsDesc) {
     this.showPartsDesc = showPartsDesc;
+  }
+
+  @Explain(displayName = "Show Create Database Operator",
+      explainLevels = { Level.USER, Level.DEFAULT, Level.EXTENDED })
+  public ShowCreateDatabaseDesc getShowCreateDbDesc() {
+    return showCreateDbDesc;
+  }
+
+  public void setShowCreateDbDesc(ShowCreateDatabaseDesc showCreateDbDesc) {
+    this.showCreateDbDesc = showCreateDbDesc;
   }
 
   /**
@@ -1119,6 +1179,13 @@ public class DDLWork implements Serializable {
   }
 
   /**
+   * @return information about the metadata to be cached
+   */
+  public CacheMetadataDesc getCacheMetadataDesc() {
+    return this.cacheMetadataDesc;
+  }
+
+  /**
    * @param alterTableExchangePartition
    *          set the value of the table partition to be exchanged
    */
@@ -1133,5 +1200,23 @@ public class DDLWork implements Serializable {
 
   public void setShowConfDesc(ShowConfDesc showConfDesc) {
     this.showConfDesc = showConfDesc;
+  }
+
+  @Explain(displayName = "Insert operator", explainLevels = { Level.USER, Level.DEFAULT, Level.EXTENDED })
+  public InsertTableDesc getInsertTableDesc() {
+    return insertTableDesc;
+  }
+
+  public void setInsertTableDesc(InsertTableDesc insertTableDesc) {
+    this.insertTableDesc = insertTableDesc;
+  }
+
+  @Explain(displayName = "Pre Insert operator", explainLevels = { Level.USER, Level.DEFAULT, Level.EXTENDED })
+  public PreInsertTableDesc getPreInsertTableDesc() {
+    return preInsertTableDesc;
+  }
+
+  public void setPreInsertTableDesc(PreInsertTableDesc preInsertTableDesc) {
+    this.preInsertTableDesc = preInsertTableDesc;
   }
 }

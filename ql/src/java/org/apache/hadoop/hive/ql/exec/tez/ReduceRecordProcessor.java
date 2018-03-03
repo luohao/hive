@@ -19,6 +19,7 @@ package org.apache.hadoop.hive.ql.exec.tez;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
@@ -26,8 +27,9 @@ import java.util.Map.Entry;
 import java.util.TreeMap;
 import java.util.concurrent.Callable;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.hive.llap.LlapUtil;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.ql.exec.DummyStoreOperator;
 import org.apache.hadoop.hive.ql.exec.HashTableDummyOperator;
@@ -38,9 +40,11 @@ import org.apache.hadoop.hive.ql.exec.Operator;
 import org.apache.hadoop.hive.ql.exec.OperatorUtils;
 import org.apache.hadoop.hive.ql.exec.Utilities;
 import org.apache.hadoop.hive.ql.exec.mr.ExecMapper.ReportStats;
+import org.apache.hadoop.hive.ql.exec.tez.DynamicValueRegistryTez.RegistryConfTez;
 import org.apache.hadoop.hive.ql.exec.tez.TezProcessor.TezKVOutputCollector;
 import org.apache.hadoop.hive.ql.log.PerfLogger;
 import org.apache.hadoop.hive.ql.plan.BaseWork;
+import org.apache.hadoop.hive.ql.plan.DynamicValue;
 import org.apache.hadoop.hive.ql.plan.ReduceWork;
 import org.apache.hadoop.hive.ql.plan.TableDesc;
 import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspector;
@@ -51,26 +55,25 @@ import org.apache.tez.runtime.api.LogicalInput;
 import org.apache.tez.runtime.api.LogicalOutput;
 import org.apache.tez.runtime.api.ProcessorContext;
 import org.apache.tez.runtime.api.Reader;
-import org.apache.tez.runtime.library.api.KeyValuesReader;
+
+import com.google.common.collect.Lists;
 
 /**
  * Process input from tez LogicalInput and write output - for a map plan
  * Just pump the records through the query plan.
  */
-public class ReduceRecordProcessor  extends RecordProcessor{
+public class ReduceRecordProcessor extends RecordProcessor {
 
   private static final String REDUCE_PLAN_KEY = "__REDUCE_PLAN__";
 
-  private ObjectCache cache;
+  private ObjectCache cache, dynamicValueCache;
 
-  private String cacheKey;
-
-  public static final Log l4j = LogFactory.getLog(ReduceRecordProcessor.class);
+  public static final Logger l4j = LoggerFactory.getLogger(ReduceRecordProcessor.class);
 
   private ReduceWork reduceWork;
 
   List<BaseWork> mergeWorkList = null;
-  List<String> cacheKeys;
+  List<String> cacheKeys, dynamicValueCacheKeys;
 
   private final Map<Integer, DummyStoreOperator> connectOps =
       new TreeMap<Integer, DummyStoreOperator>();
@@ -82,17 +85,16 @@ public class ReduceRecordProcessor  extends RecordProcessor{
 
   private byte bigTablePosition = 0;
 
-  private boolean abort;
-
   public ReduceRecordProcessor(final JobConf jconf, final ProcessorContext context) throws Exception {
     super(jconf, context);
 
-    ObjectCache cache = ObjectCacheFactory.getCache(jconf);
-
     String queryId = HiveConf.getVar(jconf, HiveConf.ConfVars.HIVEQUERYID);
-    cacheKey = queryId + REDUCE_PLAN_KEY;
-    cacheKeys = new ArrayList<String>();
-    cacheKeys.add(cacheKey);
+    cache = ObjectCacheFactory.getCache(jconf, queryId, true);
+    dynamicValueCache = ObjectCacheFactory.getCache(jconf, queryId, false);
+
+    String cacheKey = processorContext.getTaskVertexName() + REDUCE_PLAN_KEY;
+    cacheKeys = Lists.newArrayList(cacheKey);
+    dynamicValueCacheKeys = new ArrayList<String>();
     reduceWork = (ReduceWork) cache.retrieve(cacheKey, new Callable<Object>() {
         @Override
         public Object call() {
@@ -113,6 +115,8 @@ public class ReduceRecordProcessor  extends RecordProcessor{
 
     MapredContext.init(false, new JobConf(jconf));
     List<LogicalInput> shuffleInputs = getShuffleInputs(inputs);
+    // TODO HIVE-14042. Move to using a loop and a timed wait once TEZ-3302 is fixed.
+    checkAbortCondition();
     if (shuffleInputs != null) {
       l4j.info("Waiting for ShuffleInputs to become ready");
       processorContext.waitForAllInputsReady(new ArrayList<Input>(shuffleInputs));
@@ -120,11 +124,27 @@ public class ReduceRecordProcessor  extends RecordProcessor{
 
     connectOps.clear();
     ReduceWork redWork = reduceWork;
+    l4j.info("Main work is " + reduceWork.getName());
+    List<HashTableDummyOperator> workOps = reduceWork.getDummyOps();
+    HashSet<HashTableDummyOperator> dummyOps = workOps == null ? null : new HashSet<>(workOps);
     tagToReducerMap.put(redWork.getTag(), redWork);
     if (mergeWorkList != null) {
       for (BaseWork mergeWork : mergeWorkList) {
+        if (l4j.isDebugEnabled()) {
+          l4j.debug("Additional work " + mergeWork.getName());
+        }
+        workOps = mergeWork.getDummyOps();
+        if (workOps != null) {
+          if (dummyOps == null) {
+            dummyOps = new HashSet<>(workOps);
+          } else {
+            dummyOps.addAll(workOps);
+          }
+        }
         ReduceWork mergeReduceWork = (ReduceWork) mergeWork;
         reducer = mergeReduceWork.getReducer();
+        // Check immediately after reducer is assigned, in cae the abort came in during
+        checkAbortCondition();
         DummyStoreOperator dummyStoreOp = getJoinParentOp(reducer);
         connectOps.put(mergeReduceWork.getTag(), dummyStoreOp);
         tagToReducerMap.put(mergeReduceWork.getTag(), mergeReduceWork);
@@ -132,6 +152,7 @@ public class ReduceRecordProcessor  extends RecordProcessor{
 
       ((TezContext) MapredContext.get()).setDummyOpsMap(connectOps);
     }
+    checkAbortCondition();
 
     bigTablePosition = (byte) reduceWork.getTag();
 
@@ -140,6 +161,30 @@ public class ReduceRecordProcessor  extends RecordProcessor{
     ((TezContext) MapredContext.get()).setTezProcessorContext(processorContext);
     int numTags = reduceWork.getTagToValueDesc().size();
     reducer = reduceWork.getReducer();
+    // Check immediately after reducer is assigned, in cae the abort came in during
+    checkAbortCondition();
+    // set memory available for operators
+    long memoryAvailableToTask = processorContext.getTotalMemoryAvailableToTask();
+    if (reducer.getConf() != null) {
+      reducer.getConf().setMaxMemoryAvailable(memoryAvailableToTask);
+      l4j.info("Memory available for operators set to {}", LlapUtil.humanReadableByteCount(memoryAvailableToTask));
+    }
+    OperatorUtils.setMemoryAvailable(reducer.getChildOperators(), memoryAvailableToTask);
+
+    // Setup values registry
+    String valueRegistryKey = DynamicValue.DYNAMIC_VALUE_REGISTRY_CACHE_KEY;
+    DynamicValueRegistryTez registryTez = dynamicValueCache.retrieve(valueRegistryKey,
+        new Callable<DynamicValueRegistryTez>() {
+          @Override
+          public DynamicValueRegistryTez call() {
+            return new DynamicValueRegistryTez();
+          }
+        });
+    dynamicValueCacheKeys.add(valueRegistryKey);
+    RegistryConfTez registryConf = new RegistryConfTez(jconf, reduceWork, processorContext, inputs);
+    registryTez.init(registryConf);
+    checkAbortCondition();
+
     if (numTags > 1) {
       sources = new ReduceRecordSource[numTags];
       mainWorkOIs = new ObjectInspector[numTags];
@@ -153,11 +198,15 @@ public class ReduceRecordProcessor  extends RecordProcessor{
       for (int i : tagToReducerMap.keySet()) {
         redWork = tagToReducerMap.get(i);
         reducer = redWork.getReducer();
+        // Check immediately after reducer is assigned, in cae the abort came in during
+        checkAbortCondition();
         initializeSourceForTag(redWork, i, mainWorkOIs, sources,
             redWork.getTagToValueDesc().get(0), redWork.getTagToInput().get(0));
         reducer.initializeLocalWork(jconf);
       }
       reducer = reduceWork.getReducer();
+      // Check immediately after reducer is assigned, in cae the abort came in during
+      checkAbortCondition();
       ((TezContext) MapredContext.get()).setRecordSources(sources);
       reducer.initialize(jconf, new ObjectInspector[] { mainWorkOIs[bigTablePosition] });
       for (int i : tagToReducerMap.keySet()) {
@@ -166,11 +215,15 @@ public class ReduceRecordProcessor  extends RecordProcessor{
         }
         redWork = tagToReducerMap.get(i);
         reducer = redWork.getReducer();
+        // Check immediately after reducer is assigned, in cae the abort came in during
+        checkAbortCondition();
         reducer.initialize(jconf, new ObjectInspector[] { mainWorkOIs[i] });
       }
     }
+    checkAbortCondition();
 
     reducer = reduceWork.getReducer();
+
     // initialize reduce operator tree
     try {
       l4j.info(reducer.dump(0));
@@ -178,10 +231,11 @@ public class ReduceRecordProcessor  extends RecordProcessor{
       // Initialization isn't finished until all parents of all operators
       // are initialized. For broadcast joins that means initializing the
       // dummy parent operators as well.
-      List<HashTableDummyOperator> dummyOps = redWork.getDummyOps();
       if (dummyOps != null) {
         for (HashTableDummyOperator dummyOp : dummyOps) {
+          // TODO HIVE-14042. Propagating abort to dummyOps.
           dummyOp.initialize(jconf, null);
+          checkAbortCondition();
         }
       }
 
@@ -194,14 +248,19 @@ public class ReduceRecordProcessor  extends RecordProcessor{
       createOutputMap();
       OperatorUtils.setChildrenCollector(children, outMap);
 
+      checkAbortCondition();
       reducer.setReporter(reporter);
       MapredContext.get().setReporter(reporter);
 
     } catch (Throwable e) {
-      abort = true;
+      super.setAborted(true);
       if (e instanceof OutOfMemoryError) {
         // Don't create a new object if we are already out of memory
         throw (OutOfMemoryError) e;
+      } else if (e instanceof InterruptedException) {
+        l4j.info("Hit an interrupt while initializing ReduceRecordProcessor. Message={}",
+            e.getMessage());
+        throw (InterruptedException) e;
       } else {
         throw new RuntimeException("Reduce operator initialization failed", e);
       }
@@ -216,6 +275,7 @@ public class ReduceRecordProcessor  extends RecordProcessor{
       if (redWork.getTagToValueDesc().get(tag) == null) {
         continue;
       }
+      checkAbortCondition();
       initializeSourceForTag(redWork, tag, ois, sources, redWork.getTagToValueDesc().get(tag),
           redWork.getTagToInput().get(tag));
     }
@@ -237,7 +297,7 @@ public class ReduceRecordProcessor  extends RecordProcessor{
     boolean vectorizedRecordSource = (tag == bigTablePosition) && redWork.getVectorMode();
     sources[tag].init(jconf, redWork.getReducer(), vectorizedRecordSource, keyTableDesc,
         valueTableDesc, reader, tag == bigTablePosition, (byte) tag,
-        redWork.getVectorScratchColumnTypeMap());
+        redWork.getVectorizedRowBatchCtx(), redWork.getVectorizedVertexNum());
     ois[tag] = sources[tag].getObjectInspector();
   }
 
@@ -246,12 +306,30 @@ public class ReduceRecordProcessor  extends RecordProcessor{
 
     for (Entry<String, LogicalOutput> outputEntry : outputs.entrySet()) {
       l4j.info("Starting Output: " + outputEntry.getKey());
-      outputEntry.getValue().start();
-      ((TezKVOutputCollector) outMap.get(outputEntry.getKey())).initialize();
+      if (!isAborted()) {
+        outputEntry.getValue().start();
+        ((TezKVOutputCollector) outMap.get(outputEntry.getKey())).initialize();
+      }
     }
 
     // run the operator pipeline
+    startAbortChecks();
     while (sources[bigTablePosition].pushRecord()) {
+      addRowAndMaybeCheckAbort();
+    }
+  }
+
+  @Override
+  public void abort() {
+    // this will stop run() from pushing records, along with potentially
+    // blocking initialization.
+    super.abort();
+
+    if (reducer != null) {
+      l4j.info("Forwarding abort to reducer: {} " + reducer.getName());
+      reducer.abort();
+    } else {
+      l4j.info("reducer not setup yet. abort not being forwarded");
     }
   }
 
@@ -284,11 +362,23 @@ public class ReduceRecordProcessor  extends RecordProcessor{
       }
     }
 
+    if (dynamicValueCache != null && dynamicValueCacheKeys != null) {
+      for (String k: dynamicValueCacheKeys) {
+        dynamicValueCache.release(k);
+      }
+    }
+
     try {
-      for (ReduceRecordSource rs: sources) {
-        abort = abort && rs.close();
+      if (isAborted()) {
+        for (ReduceRecordSource rs: sources) {
+          if (!rs.close()) {
+            setAborted(false); // Preserving the old logic. Hmm...
+            break;
+          }
+        }
       }
 
+      boolean abort = isAborted();
       reducer.close(abort);
       if (mergeWorkList != null) {
         for (BaseWork redWork : mergeWorkList) {
@@ -309,14 +399,14 @@ public class ReduceRecordProcessor  extends RecordProcessor{
       reducer.preorderMap(rps);
 
     } catch (Exception e) {
-      if (!abort) {
+      if (!isAborted()) {
         // signal new failure to map-reduce
         l4j.error("Hit error while closing operators - failing tree");
         throw new RuntimeException(
             "Hive Runtime Error while closing operators: " + e.getMessage(), e);
       }
     } finally {
-      Utilities.clearWorkMap();
+      Utilities.clearWorkMap(jconf);
       MapredContext.close();
     }
   }

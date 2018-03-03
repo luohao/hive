@@ -18,8 +18,8 @@
 
 package org.apache.hadoop.hive.ql.parse;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Implementation of the query block expression.
@@ -28,14 +28,14 @@ import org.apache.commons.logging.LogFactory;
 
 public class QBExpr {
 
-  private static final Log LOG = LogFactory.getLog("hive.ql.parse.QBExpr");
+  private static final Logger LOG = LoggerFactory.getLogger("hive.ql.parse.QBExpr");
 
   /**
    * Opcode.
    *
    */
   public static enum Opcode {
-    NULLOP, UNION, INTERSECT, DIFF
+    NULLOP, UNION, INTERSECT, INTERSECTALL, EXCEPT, EXCEPTALL, DIFF
   };
 
   private Opcode opcode;
@@ -119,5 +119,18 @@ public class QBExpr {
       return qb.isSimpleSelectQuery();
     }
     return qbexpr1.isSimpleSelectQuery() && qbexpr2.isSimpleSelectQuery();
+  }
+
+  /**
+   * returns true, if the query block contains any query, or subquery without a source table
+   * Like select current_user(), select current_database()
+   * @return true, if the query block contains any query without a source table
+   */
+  public boolean containsQueryWithoutSourceTable() {
+    if (qb != null) {
+      return qb.containsQueryWithoutSourceTable();
+    } else {
+      return qbexpr1.containsQueryWithoutSourceTable() || qbexpr2.containsQueryWithoutSourceTable();
+    }
   }
 }

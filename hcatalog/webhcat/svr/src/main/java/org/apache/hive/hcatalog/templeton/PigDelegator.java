@@ -27,8 +27,8 @@ import java.util.List;
 import java.util.Map;
 
 import org.apache.commons.exec.ExecuteException;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hive.hcatalog.templeton.tool.JobSubmissionConstants;
 import org.apache.hive.hcatalog.templeton.tool.TempletonControllerJob;
 import org.apache.hive.hcatalog.templeton.tool.TempletonUtils;
@@ -39,7 +39,7 @@ import org.apache.hive.hcatalog.templeton.tool.TempletonUtils;
  * This is the backend of the pig web service.
  */
 public class PigDelegator extends LauncherDelegator {
-  private static final Log LOG = LogFactory.getLog(PigDelegator.class);
+  private static final Logger LOG = LoggerFactory.getLogger(PigDelegator.class);
   public PigDelegator(AppConfig appConf) {
     super(appConf);
   }
@@ -51,7 +51,7 @@ public class PigDelegator extends LauncherDelegator {
                boolean usesHcatalog, String completedUrl, boolean enablelog,
                Boolean enableJobReconnect)
     throws NotAuthorizedException, BadParam, BusyException, QueueException,
-    ExecuteException, IOException, InterruptedException {
+    ExecuteException, IOException, InterruptedException, TooManyRequestsException {
     runAs = user;
     List<String> args = makeArgs(execute,
       srcFile, pigArgs,
@@ -126,7 +126,6 @@ public class PigDelegator extends LauncherDelegator {
                 appConf.get(AppConfig.HIVE_PROPS_NAME));
       }
       args.add("--");
-      TempletonUtils.addCmdForWindows(args);
       args.add(appConf.pigPath());
       //the token file location should be first argument of pig
       args.add("-D" + TempletonControllerJob.TOKEN_FILE_ARG_PLACEHOLDER);
@@ -135,7 +134,7 @@ public class PigDelegator extends LauncherDelegator {
       args.add("-D" + TempletonControllerJob.MAPREDUCE_JOB_TAGS_ARG_PLACEHOLDER);
 
       for (String pigArg : pigArgs) {
-        args.add(TempletonUtils.quoteForWindows(pigArg));
+        args.add(pigArg);
       }
       if(needsMetastoreAccess) {
         addHiveMetaStoreTokenArg();
@@ -143,7 +142,7 @@ public class PigDelegator extends LauncherDelegator {
       
       if (TempletonUtils.isset(execute)) {
         args.add("-execute");
-        args.add(TempletonUtils.quoteForWindows(execute));
+        args.add(execute);
       } else if (TempletonUtils.isset(srcFile)) {
         args.add("-file");
         args.add(TempletonUtils.hadoopFsPath(srcFile, appConf, runAs)

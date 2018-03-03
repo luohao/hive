@@ -4,7 +4,6 @@ create table char_udf_1 (c1 string, c2 string, c3 char(10), c4 char(20));
 insert overwrite table char_udf_1
   select key, value, key, value from src where key = '238' limit 1;
 
--- JAVA_VERSION_SPECIFIC_OUTPUT
 
 -- UDFs with char support
 select 
@@ -74,10 +73,13 @@ select
   ltrim(c2) = ltrim(c4)
 from char_udf_1 limit 1;
 
+-- In hive wiki page https://cwiki.apache.org/confluence/display/Hive/LanguageManual+UDF
+-- we only allow A regexp B, not regexp (A,B).
+
 select
-  regexp(c2, 'val'),
-  regexp(c4, 'val'),
-  regexp(c2, 'val') = regexp(c4, 'val')
+  c2 regexp 'val',
+  c4 regexp 'val',
+  (c2 regexp 'val') = (c4 regexp 'val')
 from char_udf_1 limit 1;
 
 select

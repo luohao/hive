@@ -31,8 +31,6 @@ import java.util.Stack;
 import org.antlr.runtime.CommonToken;
 import org.antlr.runtime.tree.TreeWizard;
 import org.antlr.runtime.tree.TreeWizard.ContextVisitor;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.ql.ErrorMsg;
@@ -52,19 +50,16 @@ import org.apache.hadoop.hive.ql.parse.PTFInvocationSpec.PartitionSpec;
 import org.apache.hadoop.hive.ql.parse.PTFInvocationSpec.PartitionedTableFunctionSpec;
 import org.apache.hadoop.hive.ql.parse.PTFInvocationSpec.PartitioningSpec;
 import org.apache.hadoop.hive.ql.parse.WindowingSpec.BoundarySpec;
-import org.apache.hadoop.hive.ql.parse.WindowingSpec.CurrentRowSpec;
-import org.apache.hadoop.hive.ql.parse.WindowingSpec.RangeBoundarySpec;
-import org.apache.hadoop.hive.ql.parse.WindowingSpec.ValueBoundarySpec;
 import org.apache.hadoop.hive.ql.parse.WindowingSpec.WindowExpressionSpec;
 import org.apache.hadoop.hive.ql.parse.WindowingSpec.WindowFrameSpec;
 import org.apache.hadoop.hive.ql.parse.WindowingSpec.WindowFunctionSpec;
 import org.apache.hadoop.hive.ql.parse.WindowingSpec.WindowSpec;
+import org.apache.hadoop.hive.ql.parse.WindowingSpec.WindowType;
 import org.apache.hadoop.hive.ql.plan.ExprNodeDesc;
 import org.apache.hadoop.hive.ql.plan.ExprNodeGenericFuncDesc;
 import org.apache.hadoop.hive.ql.plan.PTFDesc;
 import org.apache.hadoop.hive.ql.plan.PTFDeserializer;
 import org.apache.hadoop.hive.ql.plan.ptf.BoundaryDef;
-import org.apache.hadoop.hive.ql.plan.ptf.CurrentRowDef;
 import org.apache.hadoop.hive.ql.plan.ptf.OrderDef;
 import org.apache.hadoop.hive.ql.plan.ptf.OrderExpressionDef;
 import org.apache.hadoop.hive.ql.plan.ptf.PTFExpressionDef;
@@ -72,9 +67,7 @@ import org.apache.hadoop.hive.ql.plan.ptf.PTFInputDef;
 import org.apache.hadoop.hive.ql.plan.ptf.PTFQueryInputDef;
 import org.apache.hadoop.hive.ql.plan.ptf.PartitionDef;
 import org.apache.hadoop.hive.ql.plan.ptf.PartitionedTableFunctionDef;
-import org.apache.hadoop.hive.ql.plan.ptf.RangeBoundaryDef;
 import org.apache.hadoop.hive.ql.plan.ptf.ShapeDetails;
-import org.apache.hadoop.hive.ql.plan.ptf.ValueBoundaryDef;
 import org.apache.hadoop.hive.ql.plan.ptf.WindowFrameDef;
 import org.apache.hadoop.hive.ql.plan.ptf.WindowFunctionDef;
 import org.apache.hadoop.hive.ql.plan.ptf.WindowTableFunctionDef;
@@ -83,7 +76,7 @@ import org.apache.hadoop.hive.ql.udf.generic.GenericUDFLeadLag;
 import org.apache.hadoop.hive.ql.udf.ptf.TableFunctionEvaluator;
 import org.apache.hadoop.hive.ql.udf.ptf.TableFunctionResolver;
 import org.apache.hadoop.hive.ql.udf.ptf.WindowingTableFunction.WindowingTableFunctionResolver;
-import org.apache.hadoop.hive.serde2.SerDe;
+import org.apache.hadoop.hive.serde2.AbstractSerDe;
 import org.apache.hadoop.hive.serde2.SerDeException;
 import org.apache.hadoop.hive.serde2.SerDeUtils;
 import org.apache.hadoop.hive.serde2.lazybinary.LazyBinarySerDe;
@@ -99,10 +92,12 @@ import org.apache.hadoop.hive.serde2.objectinspector.StructObjectInspector;
 import org.apache.hadoop.hive.serde2.typeinfo.StructTypeInfo;
 import org.apache.hadoop.hive.serde2.typeinfo.TypeInfo;
 import org.apache.hadoop.hive.serde2.typeinfo.TypeInfoUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class PTFTranslator {
 
-  private static final Log LOG = LogFactory.getLog("org.apache.hadoop.hive.ql.parse");
+  private static final Logger LOG = LoggerFactory.getLogger("org.apache.hadoop.hive.ql.parse");
 
   HiveConf hCfg;
   LeadLagInfo llInfo;
@@ -499,6 +494,7 @@ public class PTFTranslator {
       throws SemanticException {
     OrderExpressionDef oexpDef = new OrderExpressionDef();
     oexpDef.setOrder(oExpr.getOrder());
+    oexpDef.setNullOrder(oExpr.getNullOrder());
     try {
       PTFExpressionDef expDef = buildExpressionDef(inpShape, oExpr.getExpression());
       oexpDef.setExpressionTreeString(expDef.getExpressionTreeString());
@@ -520,11 +516,12 @@ public class PTFTranslator {
      * Since we componentize Windowing, no need to translate
      * the Partition & Order specs of individual WFns.
      */
-    return translate(inpShape, spec.getWindowFrame());
+    return translate(inpShape, spec.getWindowFrame(), spec.getOrder().getExpressions());
   }
 
   private WindowFrameDef translate(ShapeDetails inpShape,
-      WindowFrameSpec spec)
+      WindowFrameSpec spec,
+      List<OrderExpression> orderExpressions)
       throws SemanticException {
     if (spec == null) {
       return null;
@@ -538,33 +535,38 @@ public class PTFTranslator {
           "Window range invalid, start boundary is greater than end boundary: %s", spec));
     }
 
-    return new WindowFrameDef(translate(inpShape, s), translate(inpShape, e));
+    WindowFrameDef winFrame = new WindowFrameDef(
+        spec.getWindowType(),
+        new BoundaryDef(s.direction, s.getAmt()),
+        new BoundaryDef(e.direction, e.getAmt()));
+    if (winFrame.getWindowType() == WindowType.RANGE) {
+      winFrame.setOrderDef(buildOrderExpressions(inpShape, orderExpressions));
+    }
+    return winFrame;
   }
 
-  private BoundaryDef translate(ShapeDetails inpShape, BoundarySpec bndSpec)
+  /**
+   * Collect order expressions for RANGE based windowing
+   * @throws SemanticException
+   */
+  private OrderDef buildOrderExpressions(ShapeDetails inpShape, List<OrderExpression> orderExpressions)
       throws SemanticException {
-    if (bndSpec instanceof ValueBoundarySpec) {
-      ValueBoundarySpec vBndSpec = (ValueBoundarySpec) bndSpec;
-      ValueBoundaryDef vbDef = new ValueBoundaryDef(vBndSpec.getDirection(), vBndSpec.getAmt());
-      PTFTranslator.validateNoLeadLagInValueBoundarySpec(vBndSpec.getExpression());
+    OrderDef orderDef = new OrderDef();
+    for (OrderExpression oe : orderExpressions) {
+      PTFTranslator.validateNoLeadLagInValueBoundarySpec(oe.getExpression());
       PTFExpressionDef exprDef = null;
       try {
-        exprDef = buildExpressionDef(inpShape, vBndSpec.getExpression());
+        exprDef = buildExpressionDef(inpShape, oe.getExpression());
       } catch (HiveException he) {
         throw new SemanticException(he);
       }
       PTFTranslator.validateValueBoundaryExprType(exprDef.getOI());
-      vbDef.setExpressionDef(exprDef);
-      return vbDef;
+      OrderExpressionDef orderExprDef = new OrderExpressionDef(exprDef);
+      orderExprDef.setOrder(oe.getOrder());
+      orderExprDef.setNullOrder(oe.getNullOrder());
+      orderDef.addExpression(orderExprDef);
     }
-    else if (bndSpec instanceof RangeBoundarySpec) {
-      RangeBoundarySpec rBndSpec = (RangeBoundarySpec) bndSpec;
-      return new RangeBoundaryDef(rBndSpec.getDirection(), rBndSpec.getAmt());
-    } else if (bndSpec instanceof CurrentRowSpec) {
-      CurrentRowDef cbDef = new CurrentRowDef();
-      return cbDef;
-    }
-    throw new SemanticException("Unknown Boundary: " + bndSpec);
+    return orderDef;
   }
 
   static void setupWdwFnEvaluator(WindowFunctionDef def) throws HiveException {
@@ -593,7 +595,7 @@ public class PTFTranslator {
     if (!OI.getCategory().equals(Category.PRIMITIVE)) {
       throw new SemanticException(
           String.format(
-              "Value Boundary expression must be of primitve type. Found: %s",
+              "Value Boundary expression must be of primitive type. Found: %s",
               OI.getTypeName()));
     }
 
@@ -602,6 +604,7 @@ public class PTFTranslator {
 
     switch (pC)
     {
+    case BOOLEAN:
     case BYTE:
     case DOUBLE:
     case FLOAT:
@@ -612,10 +615,12 @@ public class PTFTranslator {
     case TIMESTAMP:
     case DATE:
     case STRING:
+    case VARCHAR:
+    case CHAR:
       break;
     default:
       throw new SemanticException(
-          String.format("Primitve type %s not supported in Value Boundary expression",
+          String.format("Primitive type %s not supported in Value Boundary expression",
               pC));
     }
 
@@ -634,7 +639,7 @@ public class PTFTranslator {
       List<String> columnNames,
       RowResolver rr) throws SemanticException {
     Map<String, String> serdePropsMap = new LinkedHashMap<String, String>();
-    SerDe serde = null;
+    AbstractSerDe serde = null;
     ShapeDetails shp = new ShapeDetails();
 
     try {
@@ -797,13 +802,13 @@ public class PTFTranslator {
    * OI & Serde helper methods
    */
 
-  protected static SerDe createLazyBinarySerDe(Configuration cfg,
+  protected static AbstractSerDe createLazyBinarySerDe(Configuration cfg,
       StructObjectInspector oi, Map<String, String> serdePropsMap) throws SerDeException {
     serdePropsMap = serdePropsMap == null ? new LinkedHashMap<String, String>() : serdePropsMap;
 
     PTFDeserializer.addOIPropertiestoSerDePropsMap(oi, serdePropsMap);
 
-    SerDe serDe = new LazyBinarySerDe();
+    AbstractSerDe serDe = new LazyBinarySerDe();
     Properties p = new Properties();
     p.setProperty(org.apache.hadoop.hive.serde.serdeConstants.LIST_COLUMNS,
         serdePropsMap.get(org.apache.hadoop.hive.serde.serdeConstants.LIST_COLUMNS));

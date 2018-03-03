@@ -19,11 +19,10 @@
 package org.apache.hadoop.hive.ql.exec;
 
 import java.util.ArrayList;
-import java.util.Collection;
 import java.util.List;
-import java.util.concurrent.Future;
 
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hive.ql.CompilationOpContext;
 import org.apache.hadoop.hive.ql.metadata.HiveException;
 import org.apache.hadoop.hive.ql.plan.LateralViewJoinDesc;
 import org.apache.hadoop.hive.ql.plan.api.OperatorType;
@@ -83,9 +82,18 @@ public class LateralViewJoinOperator extends Operator<LateralViewJoinDesc> {
   public static final byte SELECT_TAG = 0;
   public static final byte UDTF_TAG = 1;
 
+  /** Kryo ctor. */
+  protected LateralViewJoinOperator() {
+    super();
+  }
+
+  public LateralViewJoinOperator(CompilationOpContext ctx) {
+    super(ctx);
+  }
+
   @Override
-  protected Collection<Future<?>> initializeOp(Configuration hconf) throws HiveException {
-    Collection<Future<?>> result = super.initializeOp(hconf);
+  protected void initializeOp(Configuration hconf) throws HiveException {
+    super.initializeOp(hconf);
 
     ArrayList<ObjectInspector> ois = new ArrayList<ObjectInspector>();
     ArrayList<String> fieldNames = conf.getOutputInternalColNames();
@@ -107,8 +115,6 @@ public class LateralViewJoinOperator extends Operator<LateralViewJoinDesc> {
 
     outputObjInspector = ObjectInspectorFactory
         .getStandardStructObjectInspector(fieldNames, ois);
-    return result;
-
   }
 
   // acc is short for accumulator. It's used to build the row before forwarding
@@ -141,7 +147,7 @@ public class LateralViewJoinOperator extends Operator<LateralViewJoinDesc> {
 
   @Override
   public String getName() {
-    return getOperatorName();
+    return LateralViewJoinOperator.getOperatorName();
   }
 
   static public String getOperatorName() {

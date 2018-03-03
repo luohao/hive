@@ -26,9 +26,7 @@ import java.util.Stack;
 import org.antlr.runtime.ANTLRStringStream;
 import org.antlr.runtime.CharStream;
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.hive.common.FileUtils;
 import org.apache.hadoop.hive.metastore.HiveMetaStore;
-import org.apache.hadoop.hive.metastore.ObjectStore;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.metastore.Warehouse;
 import org.apache.hadoop.hive.metastore.api.MetaException;
@@ -36,6 +34,7 @@ import org.apache.hadoop.hive.metastore.api.Table;
 import org.apache.hadoop.hive.metastore.api.hive_metastoreConstants;
 import org.apache.hadoop.hive.serde.serdeConstants;
 
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.Sets;
 
 /**
@@ -285,7 +284,7 @@ public class ExpressionTree {
     //can only support "=" and "!=" for now, because our JDO lib is buggy when
     // using objects from map.get()
     private static final Set<Operator> TABLE_FILTER_OPS = Sets.newHashSet(
-        Operator.EQUALS, Operator.NOTEQUALS, Operator.NOTEQUALS2);
+        Operator.EQUALS, Operator.NOTEQUALS, Operator.NOTEQUALS2, Operator.LIKE);
 
     private void generateJDOFilterOverTables(Map<String, Object> params,
         FilterBuilder filterBuilder) throws MetaException {
@@ -534,6 +533,12 @@ public class ExpressionTree {
   public TreeNode getRoot() {
     return this.root;
   }
+
+  @VisibleForTesting
+  public void setRootForTest(TreeNode tn) {
+    this.root = tn;
+  }
+
 
   /**
    * Adds a intermediate node of either type(AND/OR). Pops last two nodes from

@@ -38,8 +38,9 @@ import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
 
 import org.apache.commons.lang3.mutable.MutableInt;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hive.ql.exec.ExprNodeEvaluator;
 import org.apache.hadoop.hive.ql.exec.ExprNodeEvaluatorFactory;
 import org.apache.hadoop.hive.ql.metadata.HiveException;
@@ -73,7 +74,7 @@ import org.apache.tez.runtime.api.events.InputInitializerEvent;
  */
 public class DynamicPartitionPruner {
 
-  private static final Log LOG = LogFactory.getLog(DynamicPartitionPruner.class);
+  private static final Logger LOG = LoggerFactory.getLogger(DynamicPartitionPruner.class);
 
   private final InputInitializerContext context;
   private final MapWork work;
@@ -165,20 +166,24 @@ public class DynamicPartitionPruner {
       List<TableDesc> tables = work.getEventSourceTableDescMap().get(s);
       // Real column name - on which the operation is being performed
       List<String> columnNames = work.getEventSourceColumnNameMap().get(s);
+      // Column type
+      List<String> columnTypes = work.getEventSourceColumnTypeMap().get(s);
       // Expression for the operation. e.g. N^2 > 10
       List<ExprNodeDesc> partKeyExprs = work.getEventSourcePartKeyExprMap().get(s);
       // eventSourceTableDesc, eventSourceColumnName, evenSourcePartKeyExpr move in lock-step.
       // One entry is added to each at the same time
 
       Iterator<String> cit = columnNames.iterator();
+      Iterator<String> typit = columnTypes.iterator();
       Iterator<ExprNodeDesc> pit = partKeyExprs.iterator();
       // A single source can process multiple columns, and will send an event for each of them.
       for (TableDesc t : tables) {
         numExpectedEventsPerSource.get(s).decrement();
         ++sourceInfoCount;
         String columnName = cit.next();
+        String columnType = typit.next();
         ExprNodeDesc partKeyExpr = pit.next();
-        SourceInfo si = createSourceInfo(t, partKeyExpr, columnName, jobConf);
+        SourceInfo si = createSourceInfo(t, partKeyExpr, columnName, columnType, jobConf);
         if (!sourceInfoMap.containsKey(s)) {
           sourceInfoMap.put(s, new ArrayList<SourceInfo>());
         }
@@ -244,7 +249,7 @@ public class DynamicPartitionPruner {
 
     ObjectInspector oi =
         PrimitiveObjectInspectorFactory.getPrimitiveWritableObjectInspector(TypeInfoFactory
-            .getPrimitiveTypeInfo(si.fieldInspector.getTypeName()));
+            .getPrimitiveTypeInfo(si.columnType));
 
     Converter converter =
         ObjectInspectorConverters.getConverter(
@@ -267,9 +272,9 @@ public class DynamicPartitionPruner {
 
     Object[] row = new Object[1];
 
-    Iterator<String> it = work.getPathToPartitionInfo().keySet().iterator();
+    Iterator<Path> it = work.getPathToPartitionInfo().keySet().iterator();
     while (it.hasNext()) {
-      String p = it.next();
+      Path p = it.next();
       PartitionDesc desc = work.getPathToPartitionInfo().get(p);
       Map<String, String> spec = desc.getPartSpec();
       if (spec == null) {
@@ -295,18 +300,17 @@ public class DynamicPartitionPruner {
       if (!values.contains(partValue)) {
         LOG.info("Pruning path: " + p);
         it.remove();
-        work.getPathToAliases().remove(p);
-        work.getPaths().remove(p);
-        work.getPartitionDescs().remove(desc);
+        // work.removePathToPartitionInfo(p);
+        work.removePathToAlias(p);
       }
     }
   }
 
   @VisibleForTesting
   protected SourceInfo createSourceInfo(TableDesc t, ExprNodeDesc partKeyExpr, String columnName,
-                                        JobConf jobConf) throws
+                                        String columnType, JobConf jobConf) throws
       SerDeException {
-    return new SourceInfo(t, partKeyExpr, columnName, jobConf);
+    return new SourceInfo(t, partKeyExpr, columnName, columnType, jobConf);
 
   }
 
@@ -323,18 +327,20 @@ public class DynamicPartitionPruner {
     /* Whether to skipPruning - depends on the payload from an event which may signal skip - if the event payload is too large */
     public AtomicBoolean skipPruning = new AtomicBoolean();
     public final String columnName;
+    public final String columnType;
 
     @VisibleForTesting // Only used for testing.
-    SourceInfo(TableDesc table, ExprNodeDesc partKey, String columnName, JobConf jobConf, Object forTesting) {
+    SourceInfo(TableDesc table, ExprNodeDesc partKey, String columnName, String columnType, JobConf jobConf, Object forTesting) {
       this.partKey = partKey;
       this.columnName = columnName;
+      this.columnType = columnType;
       this.deserializer = null;
       this.soi = null;
       this.field = null;
       this.fieldInspector = null;
     }
 
-    public SourceInfo(TableDesc table, ExprNodeDesc partKey, String columnName, JobConf jobConf)
+    public SourceInfo(TableDesc table, ExprNodeDesc partKey, String columnName, String columnType, JobConf jobConf)
         throws SerDeException {
 
       this.skipPruning.set(false);
@@ -342,6 +348,7 @@ public class DynamicPartitionPruner {
       this.partKey = partKey;
 
       this.columnName = columnName;
+      this.columnType = columnType;
 
       deserializer = ReflectionUtils.newInstance(table.getDeserializerClass(), null);
       deserializer.initialize(jobConf, table.getProperties());
@@ -474,7 +481,9 @@ public class DynamicPartitionPruner {
       if (sourcesWaitingForEvents.contains(event.getSourceVertexName())) {
         ++totalEventCount;
         numEventsSeenPerSource.get(event.getSourceVertexName()).increment();
-        queue.offer(event);
+        if(!queue.offer(event)) {
+          throw new IllegalStateException("Queue full");
+        }
         checkForSourceCompletion(event.getSourceVertexName());
       }
     }
@@ -504,7 +513,9 @@ public class DynamicPartitionPruner {
         sourcesWaitingForEvents.remove(name);
         if (sourcesWaitingForEvents.isEmpty()) {
           // we've got what we need; mark the queue
-          queue.offer(endOfEvents);
+          if(!queue.offer(endOfEvents)) {
+            throw new IllegalStateException("Queue full");
+          }
         } else {
           LOG.info("Waiting for " + sourcesWaitingForEvents.size() + " sources.");
         }

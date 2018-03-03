@@ -18,10 +18,12 @@
 
 package org.apache.hadoop.hive.ql.optimizer.physical;
 
-import com.google.common.base.Preconditions;
+import java.io.Serializable;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.ql.exec.ColumnInfo;
@@ -32,6 +34,7 @@ import org.apache.hadoop.hive.ql.exec.MapJoinOperator;
 import org.apache.hadoop.hive.ql.exec.Operator;
 import org.apache.hadoop.hive.ql.exec.OperatorFactory;
 import org.apache.hadoop.hive.ql.exec.RowSchema;
+import org.apache.hadoop.hive.ql.exec.SerializationUtilities;
 import org.apache.hadoop.hive.ql.exec.SparkHashTableSinkOperator;
 import org.apache.hadoop.hive.ql.exec.TableScanOperator;
 import org.apache.hadoop.hive.ql.exec.Task;
@@ -62,19 +65,17 @@ import org.apache.hadoop.hive.ql.plan.SparkWork;
 import org.apache.hadoop.hive.ql.plan.TableDesc;
 import org.apache.hadoop.hive.serde2.typeinfo.TypeInfo;
 import org.apache.hadoop.hive.serde2.typeinfo.TypeInfoFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-import java.io.Serializable;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import com.google.common.base.Preconditions;
 
 /**
  * Copied from GenMRSkewJoinProcessor. It's used for spark task
  *
  */
 public class GenSparkSkewJoinProcessor {
-  private static final Log LOG = LogFactory.getLog(GenSparkSkewJoinProcessor.class.getName());
+  private static final Logger LOG = LoggerFactory.getLogger(GenSparkSkewJoinProcessor.class.getName());
 
   private GenSparkSkewJoinProcessor() {
     // prevent instantiation
@@ -91,9 +92,6 @@ public class GenSparkSkewJoinProcessor {
     }
 
     List<Task<? extends Serializable>> children = currTask.getChildTasks();
-
-    Task<? extends Serializable> child =
-        children != null && children.size() == 1 ? children.get(0) : null;
 
     Path baseTmpDir = parseCtx.getContext().getMRTmpPath();
 
@@ -231,8 +229,8 @@ public class GenSparkSkewJoinProcessor {
       // create N TableScans
       Operator<? extends OperatorDesc>[] parentOps = new TableScanOperator[tags.length];
       for (int k = 0; k < tags.length; k++) {
-        Operator<? extends OperatorDesc> ts =
-            GenMapRedUtils.createTemporaryTableScanOperator(rowSchemaList.get((byte) k));
+        Operator<? extends OperatorDesc> ts = GenMapRedUtils.createTemporaryTableScanOperator(
+            joinOp.getCompilationOpContext(), rowSchemaList.get((byte) k));
         ((TableScanOperator) ts).setTableDesc(tableDescList.get((byte) k));
         parentOps[k] = ts;
       }
@@ -248,14 +246,14 @@ public class GenSparkSkewJoinProcessor {
       mapJoinDescriptor.setNullSafes(joinDescriptor.getNullSafes());
       // temporarily, mark it as child of all the TS
       MapJoinOperator mapJoinOp = (MapJoinOperator) OperatorFactory
-          .getAndMakeChild(mapJoinDescriptor, null, parentOps);
+          .getAndMakeChild(joinOp.getCompilationOpContext(), mapJoinDescriptor, null, parentOps);
 
       // clone the original join operator, and replace it with the MJ
       // this makes sure MJ has the same downstream operator plan as the original join
       List<Operator<?>> reducerList = new ArrayList<Operator<?>>();
       reducerList.add(reduceWork.getReducer());
-      Operator<? extends OperatorDesc> reducer = Utilities.cloneOperatorTree(
-          parseCtx.getConf(), reducerList).get(0);
+      Operator<? extends OperatorDesc> reducer = SerializationUtilities.cloneOperatorTree(
+          reducerList).get(0);
       Preconditions.checkArgument(reducer instanceof JoinOperator,
           "Reducer should be join operator, but actually is " + reducer.getName());
       JoinOperator cloneJoinOp = (JoinOperator) reducer;
@@ -292,10 +290,10 @@ public class GenSparkSkewJoinProcessor {
         } else {
           path = smallTblDirs.get(tags[j]);
         }
-        mapWork.getPathToAliases().put(path.toString(), aliases);
+        mapWork.addPathToAlias(path, aliases);
         mapWork.getAliasToWork().put(alias, tableScan);
         PartitionDesc partitionDesc = new PartitionDesc(tableDescList.get(tags[j]), null);
-        mapWork.getPathToPartitionInfo().put(path.toString(), partitionDesc);
+        mapWork.addPathToPartitionInfo(path, partitionDesc);
         mapWork.getAliasToPartnInfo().put(alias, partitionDesc);
         mapWork.setName("Map " + GenSparkUtils.getUtils().getNextSeqNumber());
       }
@@ -333,14 +331,17 @@ public class GenSparkSkewJoinProcessor {
           tsk.addDependentTask(oldChild);
         }
       }
-    }
-    if (child != null) {
-      currTask.removeDependentTask(child);
-      listTasks.add(child);
-      listWorks.add(child.getWork());
+      currTask.setChildTasks(new ArrayList<Task<? extends Serializable>>());
+      for (Task<? extends Serializable> oldChild : children) {
+        oldChild.getParentTasks().remove(currTask);
+      }
+      listTasks.addAll(children);
+      for (Task<? extends Serializable> oldChild : children) {
+        listWorks.add(oldChild.getWork());
+      }
     }
     ConditionalResolverSkewJoin.ConditionalResolverSkewJoinCtx context =
-        new ConditionalResolverSkewJoin.ConditionalResolverSkewJoinCtx(bigKeysDirToTaskMap, child);
+        new ConditionalResolverSkewJoin.ConditionalResolverSkewJoinCtx(bigKeysDirToTaskMap, children);
 
     ConditionalWork cndWork = new ConditionalWork(listWorks);
     ConditionalTask cndTsk = (ConditionalTask) TaskFactory.get(cndWork, parseCtx.getConf());
@@ -359,7 +360,8 @@ public class GenSparkSkewJoinProcessor {
     Preconditions.checkArgument(tableScan.getChildOperators().size() == 1
         && tableScan.getChildOperators().get(0) instanceof MapJoinOperator);
     HashTableDummyDesc desc = new HashTableDummyDesc();
-    HashTableDummyOperator dummyOp = (HashTableDummyOperator) OperatorFactory.get(desc);
+    HashTableDummyOperator dummyOp = (HashTableDummyOperator) OperatorFactory.get(
+        tableScan.getCompilationOpContext(), desc);
     dummyOp.getConf().setTbl(tableScan.getTableDesc());
     MapJoinOperator mapJoinOp = (MapJoinOperator) tableScan.getChildOperators().get(0);
     mapJoinOp.replaceParent(tableScan, dummyOp);
@@ -372,8 +374,8 @@ public class GenSparkSkewJoinProcessor {
     // mapjoin should not be affected by join reordering
     mjDesc.resetOrder();
     SparkHashTableSinkDesc hashTableSinkDesc = new SparkHashTableSinkDesc(mjDesc);
-    SparkHashTableSinkOperator hashTableSinkOp =
-        (SparkHashTableSinkOperator) OperatorFactory.get(hashTableSinkDesc);
+    SparkHashTableSinkOperator hashTableSinkOp = (SparkHashTableSinkOperator)OperatorFactory.get(
+            tableScan.getCompilationOpContext(), hashTableSinkDesc);
     int[] valueIndex = mjDesc.getValueIndex(tag);
     if (valueIndex != null) {
       List<ExprNodeDesc> newValues = new ArrayList<ExprNodeDesc>();

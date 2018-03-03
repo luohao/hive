@@ -33,19 +33,25 @@ import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.FileUtil;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hive.common.io.CachingPrintStream;
+import org.apache.hadoop.hive.common.metrics.common.Metrics;
+import org.apache.hadoop.hive.common.metrics.common.MetricsConstant;
 import org.apache.hadoop.hive.conf.HiveConf;
 import org.apache.hadoop.hive.conf.HiveConf.ConfVars;
 import org.apache.hadoop.hive.ql.Context;
 import org.apache.hadoop.hive.ql.DriverContext;
 import org.apache.hadoop.hive.ql.exec.Operator;
+import org.apache.hadoop.hive.ql.exec.SerializationUtilities;
 import org.apache.hadoop.hive.ql.exec.Utilities;
 import org.apache.hadoop.hive.ql.plan.MapWork;
 import org.apache.hadoop.hive.ql.plan.MapredWork;
 import org.apache.hadoop.hive.ql.plan.OperatorDesc;
 import org.apache.hadoop.hive.ql.plan.ReduceWork;
 import org.apache.hadoop.hive.ql.session.SessionState;
+import org.apache.hadoop.hive.ql.session.SessionState.ResourceType;
 import org.apache.hadoop.hive.shims.ShimLoader;
+import org.apache.hive.common.util.HiveStringUtils;
 import org.apache.hive.common.util.StreamPrinter;
+
 /**
  * Extension of ExecDriver:
  * - can optionally spawn a map-reduce task from a separate jvm
@@ -132,9 +138,24 @@ public class MapRedTask extends ExecDriver implements Serializable {
       runningViaChild = conf.getBoolVar(HiveConf.ConfVars.SUBMITVIACHILD);
 
       if (!runningViaChild) {
+        // since we are running the mapred task in the same jvm, we should update the job conf
+        // in ExecDriver as well to have proper local properties.
+        if (this.isLocalMode()) {
+          // save the original job tracker
+          ctx.setOriginalTracker(ShimLoader.getHadoopShims().getJobLauncherRpcAddress(job));
+          // change it to local
+          ShimLoader.getHadoopShims().setJobLauncherRpcAddress(job, "local");
+        }
         // we are not running this mapred task via child jvm
         // so directly invoke ExecDriver
-        return super.execute(driverContext);
+        int ret = super.execute(driverContext);
+
+        // restore the previous properties for framework name, RM address etc.
+        if (this.isLocalMode()) {
+          // restore the local job tracker back to original
+          ctx.restoreOriginalTracker();
+        }
+        return ret;
       }
 
       // we need to edit the configuration to setup cmdline. clone it first
@@ -147,24 +168,8 @@ public class MapRedTask extends ExecDriver implements Serializable {
       String hadoopExec = conf.getVar(HiveConf.ConfVars.HADOOPBIN);
       String hiveJar = conf.getJar();
 
-      String libJarsOption;
-      String addedJars = Utilities.getResourceFiles(conf, SessionState.ResourceType.JAR);
-      conf.setVar(ConfVars.HIVEADDEDJARS, addedJars);
-      String auxJars = conf.getAuxJars();
-      // Put auxjars and addedjars together into libjars
-      if (StringUtils.isEmpty(addedJars)) {
-        if (StringUtils.isEmpty(auxJars)) {
-          libJarsOption = " ";
-        } else {
-          libJarsOption = " -libjars " + auxJars + " ";
-        }
-      } else {
-        if (StringUtils.isEmpty(auxJars)) {
-          libJarsOption = " -libjars " + addedJars + " ";
-        } else {
-          libJarsOption = " -libjars " + addedJars + "," + auxJars + " ";
-        }
-      }
+      String libJars = super.getResource(conf, ResourceType.JAR);
+      String libJarsOption = StringUtils.isEmpty(libJars) ? " " : " -libjars " + libJars + " ";
 
       // Generate the hiveConfArgs after potentially adding the jars
       String hiveConfArgs = generateCmdLine(conf, ctx);
@@ -177,7 +182,7 @@ public class MapRedTask extends ExecDriver implements Serializable {
       OutputStream out = null;
       try {
         out = FileSystem.getLocal(conf).create(planPath);
-        Utilities.serializePlan(plan, out, conf);
+        SerializationUtilities.serializePlan(plan, out);
         out.close();
         out = null;
       } finally {
@@ -193,7 +198,8 @@ public class MapRedTask extends ExecDriver implements Serializable {
           + planPath.toString() + " " + isSilent + " " + hiveConfArgs;
 
       String workDir = (new File(".")).getCanonicalPath();
-      String files = Utilities.getResourceFiles(conf, SessionState.ResourceType.FILE);
+
+      String files = super.getResource(conf, ResourceType.FILE);
       if (!files.isEmpty()) {
         cmdLine = cmdLine + " -files " + files;
 
@@ -227,7 +233,7 @@ public class MapRedTask extends ExecDriver implements Serializable {
       hadoopOpts = sb.toString();
       // Inherit the environment variables
       String[] env;
-      Map<String, String> variables = new HashMap(System.getenv());
+      Map<String, String> variables = new HashMap<String, String>(System.getenv());
       // The user can specify the hadoop memory
 
       if (ShimLoader.getHadoopShims().isLocalMode(conf)) {
@@ -300,8 +306,7 @@ public class MapRedTask extends ExecDriver implements Serializable {
 
       return exitVal;
     } catch (Exception e) {
-      e.printStackTrace();
-      LOG.error("Exception: " + e.getMessage());
+      LOG.error("Got exception", e);
       return (1);
     } finally {
       try {
@@ -312,7 +317,7 @@ public class MapRedTask extends ExecDriver implements Serializable {
         }
 
       } catch (Exception e) {
-        LOG.error("Exception: " + e.getMessage());
+        LOG.error("Exception: ", e);
       }
     }
   }
@@ -337,6 +342,15 @@ public class MapRedTask extends ExecDriver implements Serializable {
         + " environment variable must be set to \"y\" or \"n\" when debugging";
 
     if (environmentVariables.get(HIVE_DEBUG_RECURSIVE).equals("y")) {
+      // HADOOP_CLIENT_OPTS is appended to HADOOP_OPTS in HADOOP.sh, so we should remove the old
+      // HADOOP_CLIENT_OPTS which might have the main debug options from current HADOOP_OPTS. A new
+      // HADOOP_CLIENT_OPTS is created with child JVM debug options, and it will be appended to
+      // HADOOP_OPTS agina when HADOOP.sh is executed for the child process.
+      assert environmentVariables.containsKey(HADOOP_OPTS_KEY)
+        && environmentVariables.get(HADOOP_OPTS_KEY) != null: HADOOP_OPTS_KEY
+        + " environment variable must have been set.";
+      environmentVariables.put(HADOOP_OPTS_KEY, environmentVariables.get(HADOOP_OPTS_KEY)
+        .replace(environmentVariables.get(HADOOP_CLIENT_OPTS), ""));
       // swap debug options in HADOOP_CLIENT_OPTS to those that the child JVM should have
       assert environmentVariables.containsKey(HIVE_CHILD_CLIENT_DEBUG_OPTS)
           && environmentVariables.get(HIVE_CHILD_CLIENT_DEBUG_OPTS) != null : HIVE_CHILD_CLIENT_DEBUG_OPTS
@@ -362,25 +376,30 @@ public class MapRedTask extends ExecDriver implements Serializable {
   @Override
   public boolean mapStarted() {
     boolean b = super.mapStarted();
-    return runningViaChild ? isdone : b;
+    return runningViaChild ? done() : b;
   }
 
   @Override
   public boolean reduceStarted() {
     boolean b = super.reduceStarted();
-    return runningViaChild ? isdone : b;
+    return runningViaChild ? done() : b;
   }
 
   @Override
   public boolean mapDone() {
     boolean b = super.mapDone();
-    return runningViaChild ? isdone : b;
+    return runningViaChild ? done() : b;
   }
 
   @Override
   public boolean reduceDone() {
     boolean b = super.reduceDone();
-    return runningViaChild ? isdone : b;
+    return runningViaChild ? done() : b;
+  }
+
+  @Override
+  public void updateTaskMetrics(Metrics metrics) {
+    metrics.incrementCounter(MetricsConstant.HIVE_MR_TASKS);
   }
 
   /**

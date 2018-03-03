@@ -69,7 +69,6 @@ public class ThriftCliServiceTestWithCookie {
     // Set the cookie max age to a very low value so that
     // the server sends 401 very frequently
     hiveConf.setTimeVar(ConfVars.HIVE_SERVER2_THRIFT_HTTP_COOKIE_MAX_AGE, 1, TimeUnit.SECONDS);
-    hiveConf.setBoolVar(ConfVars.HIVE_SERVER2_THRIFT_HTTP_COOKIE_IS_SECURE, false);
     hiveConf.setVar(ConfVars.HIVE_SERVER2_TRANSPORT_MODE, "http");
     hiveConf.setVar(ConfVars.HIVE_SERVER2_THRIFT_HTTP_PATH, "cliservice");
 
@@ -200,11 +199,10 @@ public class ThriftCliServiceTestWithCookie {
 
     // Execute another query
     queryString = "SELECT ID+1 FROM TEST_EXEC_THRIFT";
-    OperationHandle opHandle = client.executeStatement(sessHandle,
-        queryString, opConf);
+    OperationHandle opHandle = client.executeStatement(sessHandle, queryString, opConf);
     assertNotNull(opHandle);
 
-    OperationStatus opStatus = client.getOperationStatus(opHandle);
+    OperationStatus opStatus = client.getOperationStatus(opHandle, false);
     assertNotNull(opStatus);
 
     OperationState state = opStatus.getState();

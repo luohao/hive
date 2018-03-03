@@ -31,8 +31,8 @@ import junit.framework.TestCase;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hive.conf.HiveConf;
+import org.apache.hadoop.hive.ql.CompilationOpContext;
 import org.apache.hadoop.hive.ql.Driver;
-import org.apache.hadoop.hive.ql.io.IOContext;
 import org.apache.hadoop.hive.ql.io.IOContextMap;
 import org.apache.hadoop.hive.ql.parse.TypeCheckProcFactory;
 import org.apache.hadoop.hive.ql.plan.CollectDesc;
@@ -58,6 +58,7 @@ import org.apache.hadoop.io.Text;
 import org.apache.hadoop.mapred.InputSplit;
 import org.apache.hadoop.mapred.JobConf;
 import org.apache.hadoop.mapred.TextInputFormat;
+import org.apache.hadoop.mapreduce.MRJobConfig;
 import org.junit.Assert;
 import org.junit.Test;
 
@@ -155,7 +156,7 @@ public class TestOperators extends TestCase {
    */
   public void testScriptOperatorEnvVarsProcessing() throws Throwable {
     try {
-      ScriptOperator scriptOperator = new ScriptOperator();
+      ScriptOperator scriptOperator = new ScriptOperator(new CompilationOpContext());
 
       //Environment Variables name
       assertEquals("a_b_c", scriptOperator.safeEnvVarName("a.b.c"));
@@ -194,7 +195,7 @@ public class TestOperators extends TestCase {
   }
 
   public void testScriptOperatorBlacklistedEnvVarsProcessing() {
-    ScriptOperator scriptOperator = new ScriptOperator();
+    ScriptOperator scriptOperator = new ScriptOperator(new CompilationOpContext());
 
     Configuration hconf = new JobConf(ScriptOperator.class);
 
@@ -229,7 +230,7 @@ public class TestOperators extends TestCase {
         outputCols.add("_col" + i);
       }
       SelectDesc selectCtx = new SelectDesc(earr, outputCols);
-      Operator<SelectDesc> op = OperatorFactory.get(SelectDesc.class);
+      Operator<SelectDesc> op = OperatorFactory.get(new CompilationOpContext(), SelectDesc.class);
       op.setConf(selectCtx);
 
       // scriptOperator to echo the output of the select
@@ -245,8 +246,7 @@ public class TestOperators extends TestCase {
 
       // Collect operator to observe the output of the script
       CollectDesc cd = new CollectDesc(Integer.valueOf(10));
-      CollectOperator cdop = (CollectOperator) OperatorFactory.getAndMakeChild(
-          cd, sop);
+      CollectOperator cdop = (CollectOperator) OperatorFactory.getAndMakeChild(cd, sop);
 
       op.initialize(new JobConf(TestOperators.class),
           new ObjectInspector[]{r[0].oi});
@@ -287,8 +287,7 @@ public class TestOperators extends TestCase {
       System.out.println("Testing Map Operator");
       // initialize configuration
       JobConf hconf = new JobConf(TestOperators.class);
-      HiveConf.setVar(hconf, HiveConf.ConfVars.HADOOPMAPFILENAME,
-          "hdfs:///testDir/testFile");
+      hconf.set(MRJobConfig.MAP_INPUT_FILE, "hdfs:///testDir/testFile");
       IOContextMap.get(hconf).setInputPath(
           new Path("hdfs:///testDir/testFile"));
 
@@ -296,25 +295,25 @@ public class TestOperators extends TestCase {
       ArrayList<String> aliases = new ArrayList<String>();
       aliases.add("a");
       aliases.add("b");
-      LinkedHashMap<String, ArrayList<String>> pathToAliases =
-        new LinkedHashMap<String, ArrayList<String>>();
-      pathToAliases.put("hdfs:///testDir", aliases);
+      LinkedHashMap<Path, ArrayList<String>> pathToAliases = new LinkedHashMap<>();
+      pathToAliases.put(new Path("hdfs:///testDir"), aliases);
 
       // initialize pathToTableInfo
       // Default: treat the table as a single column "col"
       TableDesc td = Utilities.defaultTd;
       PartitionDesc pd = new PartitionDesc(td, null);
-      LinkedHashMap<String, org.apache.hadoop.hive.ql.plan.PartitionDesc> pathToPartitionInfo =
-        new LinkedHashMap<String, org.apache.hadoop.hive.ql.plan.PartitionDesc>();
-      pathToPartitionInfo.put("hdfs:///testDir", pd);
+      LinkedHashMap<Path, org.apache.hadoop.hive.ql.plan.PartitionDesc> pathToPartitionInfo =
+        new LinkedHashMap<>();
+      pathToPartitionInfo.put(new Path("hdfs:///testDir"), pd);
 
       // initialize aliasToWork
+      CompilationOpContext ctx = new CompilationOpContext();
       CollectDesc cd = new CollectDesc(Integer.valueOf(1));
       CollectOperator cdop1 = (CollectOperator) OperatorFactory
-          .get(CollectDesc.class);
+          .get(ctx, CollectDesc.class);
       cdop1.setConf(cd);
       CollectOperator cdop2 = (CollectOperator) OperatorFactory
-          .get(CollectDesc.class);
+          .get(ctx, CollectDesc.class);
       cdop2.setConf(cd);
       LinkedHashMap<String, Operator<? extends OperatorDesc>> aliasToWork =
         new LinkedHashMap<String, Operator<? extends OperatorDesc>>();
@@ -328,7 +327,7 @@ public class TestOperators extends TestCase {
       mrwork.getMapWork().setAliasToWork(aliasToWork);
 
       // get map operator and initialize it
-      MapOperator mo = new MapOperator();
+      MapOperator mo = new MapOperator(new CompilationOpContext());
       mo.initializeAsRoot(hconf, mrwork.getMapWork());
 
       Text tw = new Text();
@@ -398,6 +397,9 @@ public class TestOperators extends TestCase {
   public void testFetchOperatorContext() throws Exception {
     HiveConf conf = new HiveConf();
     conf.set("hive.support.concurrency", "false");
+    conf.setVar(HiveConf.ConfVars.HIVEMAPREDMODE, "nonstrict");
+    conf.setVar(HiveConf.ConfVars.HIVE_AUTHORIZATION_MANAGER,
+        "org.apache.hadoop.hive.ql.security.authorization.plugin.sqlstd.SQLStdHiveAuthorizerFactory");
     SessionState.start(conf);
     String cmd = "create table fetchOp (id int, name string) " +
         "partitioned by (state string) " +

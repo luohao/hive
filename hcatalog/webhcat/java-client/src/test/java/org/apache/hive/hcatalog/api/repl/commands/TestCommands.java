@@ -18,8 +18,8 @@
  */
 package org.apache.hive.hcatalog.api.repl.commands;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hive.cli.CliSessionState;
@@ -64,7 +64,7 @@ import static org.junit.Assert.assertTrue;
 
 public class TestCommands {
 
-  private static Log LOG = LogFactory.getLog(CommandTestUtils.class.getName());
+  private static Logger LOG = LoggerFactory.getLogger(CommandTestUtils.class.getName());
 
   private static HiveConf hconf;
   private static Driver driver;
@@ -77,7 +77,9 @@ public class TestCommands {
     TestHCatClient.startMetaStoreServer();
     hconf = TestHCatClient.getConf();
     hconf.set(HiveConf.ConfVars.SEMANTIC_ANALYZER_HOOK.varname,"");
-
+    hconf
+    .setVar(HiveConf.ConfVars.HIVE_AUTHORIZATION_MANAGER,
+        "org.apache.hadoop.hive.ql.security.authorization.plugin.sqlstd.SQLStdHiveAuthorizerFactory");
     TEST_PATH = System.getProperty("test.warehouse.dir","/tmp") + Path.SEPARATOR +
         TestCommands.class.getCanonicalName() + "-" + System.currentTimeMillis();
     Path testPath = new Path(TEST_PATH);

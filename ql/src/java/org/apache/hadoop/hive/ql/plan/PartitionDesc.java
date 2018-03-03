@@ -29,12 +29,15 @@ import java.util.Properties;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.hive.common.StringInternUtils;
+import org.apache.hadoop.hive.metastore.MetaStoreUtils;
 import org.apache.hadoop.hive.metastore.api.hive_metastoreConstants;
 import org.apache.hadoop.hive.ql.exec.Utilities;
 import org.apache.hadoop.hive.ql.io.HiveFileFormatUtils;
 import org.apache.hadoop.hive.ql.io.HiveOutputFormat;
 import org.apache.hadoop.hive.ql.metadata.HiveException;
 import org.apache.hadoop.hive.ql.metadata.Partition;
+import org.apache.hadoop.hive.ql.metadata.Table;
 import org.apache.hadoop.hive.serde.serdeConstants;
 import org.apache.hadoop.hive.serde2.Deserializer;
 import org.apache.hadoop.hive.serde2.SerDeUtils;
@@ -68,24 +71,33 @@ public class PartitionDesc implements Serializable, Cloneable {
 
   private String baseFileName;
 
+  private VectorPartitionDesc vectorPartitionDesc;
+
   public void setBaseFileName(String baseFileName) {
-    this.baseFileName = baseFileName;
+    this.baseFileName = baseFileName.intern();
   }
 
-  public PartitionDesc() {    
+  public PartitionDesc() {
   }
 
   public PartitionDesc(final TableDesc table, final LinkedHashMap<String, String> partSpec) {
     this.tableDesc = table;
-    this.partSpec = partSpec;
+    setPartSpec(partSpec);
   }
 
   public PartitionDesc(final Partition part) throws HiveException {
-    PartitionDescConstructorHelper(part, Utilities.getTableDesc(part.getTable()), true);
-    setProperties(part.getMetadataFromPartitionSchema());
+    PartitionDescConstructorHelper(part, getTableDesc(part.getTable()), true);
+    if (Utilities.isInputFileFormatSelfDescribing(this)) {
+      // if IF is self describing no need to send column info per partition, since its not used anyway.
+      Table tbl = part.getTable();
+      setProperties(MetaStoreUtils.getSchemaWithoutCols(part.getTPartition().getSd(), part.getTPartition().getSd(),
+          part.getParameters(), tbl.getDbName(), tbl.getTableName(), tbl.getPartitionKeys()));
+    } else {
+      setProperties(part.getMetadataFromPartitionSchema());
+    }
   }
 
-  /** 
+  /**
    * @param part Partition
    * @param tblDesc Table Descriptor
    * @param usePartSchemaProperties Use Partition Schema Properties to set the
@@ -96,7 +108,7 @@ public class PartitionDesc implements Serializable, Cloneable {
   public PartitionDesc(final Partition part,final TableDesc tblDesc,
     boolean usePartSchemaProperties)
     throws HiveException {
-    PartitionDescConstructorHelper(part,tblDesc, usePartSchemaProperties);
+    PartitionDescConstructorHelper(part, tblDesc, usePartSchemaProperties);
     //We use partition schema properties to set the partition descriptor properties
     // if usePartSchemaProperties is set to true.
     if (usePartSchemaProperties) {
@@ -110,7 +122,7 @@ public class PartitionDesc implements Serializable, Cloneable {
   private void PartitionDescConstructorHelper(final Partition part,final TableDesc tblDesc, boolean setInputFileFormat)
     throws HiveException {
     this.tableDesc = tblDesc;
-    this.partSpec = part.getSpec();
+    setPartSpec(part.getSpec());
     if (setInputFileFormat) {
       setInputFileFormatClass(part.getInputFormatClass());
     } else {
@@ -134,10 +146,11 @@ public class PartitionDesc implements Serializable, Cloneable {
   }
 
   public void setPartSpec(final LinkedHashMap<String, String> partSpec) {
+    StringInternUtils.internValuesInMap(partSpec);
     this.partSpec = partSpec;
   }
 
-    public Class<? extends InputFormat> getInputFileFormatClass() {
+  public Class<? extends InputFormat> getInputFileFormatClass() {
     if (inputFileFormatClass == null && tableDesc != null) {
       setInputFileFormatClass(tableDesc.getInputFileFormatClass());
     }
@@ -187,7 +200,7 @@ public class PartitionDesc implements Serializable, Cloneable {
     Class<? extends OutputFormat> outputClass = outputFileFormatClass == null ? null :
       HiveFileFormatUtils.getOutputFormatSubstitute(outputFileFormatClass);
     if (outputClass != null) {
-      this.outputFileFormatClass = (Class<? extends HiveOutputFormat>) 
+      this.outputFileFormatClass = (Class<? extends HiveOutputFormat>)
         CLASS_INTERNER.intern(outputClass);
     } else {
       this.outputFileFormatClass = outputClass;
@@ -207,7 +220,17 @@ public class PartitionDesc implements Serializable, Cloneable {
   }
 
   public void setProperties(final Properties properties) {
+    internProperties(properties);
     this.properties = properties;
+  }
+
+  private static TableDesc getTableDesc(Table table) {
+    TableDesc tableDesc = Utilities.getTableDesc(table);
+    internProperties(tableDesc.getProperties());
+    return tableDesc;
+  }
+
+  private static void internProperties(Properties properties) {
     for (Enumeration<?> keys =  properties.propertyNames(); keys.hasMoreElements();) {
       String key = (String) keys.nextElement();
       String oldValue = properties.getProperty(key);
@@ -268,10 +291,80 @@ public class PartitionDesc implements Serializable, Cloneable {
     ret.tableDesc = (TableDesc) tableDesc.clone();
     // The partition spec is not present
     if (partSpec != null) {
-      ret.partSpec = new java.util.LinkedHashMap<String, String>();
-      ret.partSpec.putAll(partSpec);
+      ret.partSpec = new LinkedHashMap<>(partSpec);
+    }
+    if (vectorPartitionDesc != null) {
+      ret.vectorPartitionDesc = vectorPartitionDesc.clone();
     }
     return ret;
+  }
+
+  @Override
+  public boolean equals(Object o) {
+    boolean cond = o instanceof PartitionDesc;
+    if (!cond) {
+      return false;
+    }
+
+    PartitionDesc other = (PartitionDesc) o;
+    Class<? extends InputFormat> input1 = getInputFileFormatClass();
+    Class<? extends InputFormat> input2 = other.getInputFileFormatClass();
+    cond = (input1 == null && input2 == null) || (input1 != null && input1.equals(input2));
+    if (!cond) {
+      return false;
+    }
+
+    Class<? extends OutputFormat> output1 = getOutputFileFormatClass();
+    Class<? extends OutputFormat> output2 = other.getOutputFileFormatClass();
+    cond = (output1 == null && output2 == null) || (output1 != null && output1.equals(output2));
+    if (!cond) {
+      return false;
+    }
+
+    Properties properties1 = getProperties();
+    Properties properties2 = other.getProperties();
+    cond = (properties1 == null && properties2 == null) ||
+        (properties1 != null && properties1.equals(properties2));
+    if (!cond) {
+      return false;
+    }
+
+    TableDesc tableDesc1 = getTableDesc();
+    TableDesc tableDesc2 = other.getTableDesc();
+    cond = (tableDesc1 == null && tableDesc2 == null) ||
+        (tableDesc1 != null && tableDesc1.equals(tableDesc2));
+    if (!cond) {
+      return false;
+    }
+
+    Map<String, String> partSpec1 = getPartSpec();
+    Map<String, String> partSpec2 = other.getPartSpec();
+    cond = (partSpec1 == null && partSpec2 == null) ||
+        (partSpec1 != null && partSpec1.equals(partSpec2));
+    if (!cond) {
+      return false;
+    }
+
+    VectorPartitionDesc vecPartDesc1 = getVectorPartitionDesc();
+    VectorPartitionDesc vecPartDesc2 = other.getVectorPartitionDesc();
+    return (vecPartDesc1 == null && vecPartDesc2 == null) ||
+        (vecPartDesc1 != null && vecPartDesc1.equals(vecPartDesc2));
+  }
+
+  @Override
+  public int hashCode() {
+    final int prime = 31;
+    int result = 1;
+    result = result * prime +
+        (getInputFileFormatClass() == null ? 0 : getInputFileFormatClass().hashCode());
+    result = result * prime +
+        (getOutputFileFormatClass() == null ? 0 : getOutputFileFormatClass().hashCode());
+    result = result * prime + (getProperties() == null ? 0 : getProperties().hashCode());
+    result = result * prime + (getTableDesc() == null ? 0 : getTableDesc().hashCode());
+    result = result * prime + (getPartSpec() == null ? 0 : getPartSpec().hashCode());
+    result = result * prime +
+        (getVectorPartitionDesc() == null ? 0 : getVectorPartitionDesc().hashCode());
+    return result;
   }
 
   /**
@@ -281,23 +374,24 @@ public class PartitionDesc implements Serializable, Cloneable {
    * @param path
    *          URI to the partition file
    */
-  public void deriveBaseFileName(String path) {
+  public void deriveBaseFileName(Path path) {
     PlanUtils.configureInputJobPropertiesForStorageHandler(tableDesc);
 
     if (path == null) {
       return;
     }
-    try {
-      Path p = new Path(path);
-      baseFileName = p.getName();
-    } catch (Exception ex) {
-      // don't really care about the exception. the goal is to capture the
-      // the last component at the minimum - so set to the complete path
-      baseFileName = path;
-    }
+    baseFileName = path.getName().intern();
   }
 
   public void intern(Interner<TableDesc> interner) {
     this.tableDesc = interner.intern(tableDesc);
+  }
+
+  public void setVectorPartitionDesc(VectorPartitionDesc vectorPartitionDesc) {
+    this.vectorPartitionDesc = vectorPartitionDesc;
+  }
+
+  public VectorPartitionDesc getVectorPartitionDesc() {
+    return vectorPartitionDesc;
   }
 }

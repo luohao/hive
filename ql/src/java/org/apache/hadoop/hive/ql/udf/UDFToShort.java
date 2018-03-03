@@ -22,14 +22,16 @@ import org.apache.hadoop.hive.ql.exec.UDF;
 import org.apache.hadoop.hive.ql.exec.vector.VectorizedExpressions;
 import org.apache.hadoop.hive.ql.exec.vector.expressions.CastDecimalToDouble;
 import org.apache.hadoop.hive.ql.exec.vector.expressions.CastDecimalToLong;
+import org.apache.hadoop.hive.ql.exec.vector.expressions.CastStringToLong;
 import org.apache.hadoop.hive.ql.exec.vector.expressions.gen.CastDoubleToLong;
-import org.apache.hadoop.hive.ql.exec.vector.expressions.gen.CastTimestampToLongViaLongToLong;
+import org.apache.hadoop.hive.ql.exec.vector.expressions.CastTimestampToLong;
 import org.apache.hadoop.hive.serde2.io.ByteWritable;
 import org.apache.hadoop.hive.serde2.io.DoubleWritable;
 import org.apache.hadoop.hive.serde2.io.HiveDecimalWritable;
 import org.apache.hadoop.hive.serde2.io.ShortWritable;
 import org.apache.hadoop.hive.serde2.io.TimestampWritable;
 import org.apache.hadoop.hive.serde2.lazy.LazyShort;
+import org.apache.hadoop.hive.serde2.lazy.LazyUtils;
 import org.apache.hadoop.io.BooleanWritable;
 import org.apache.hadoop.io.FloatWritable;
 import org.apache.hadoop.io.IntWritable;
@@ -41,8 +43,8 @@ import org.apache.hadoop.io.Text;
  * UDFToShort.
  *
  */
-@VectorizedExpressions({CastTimestampToLongViaLongToLong.class, CastDoubleToLong.class,
-    CastDecimalToLong.class})
+@VectorizedExpressions({CastTimestampToLong.class, CastDoubleToLong.class,
+    CastDecimalToLong.class, CastStringToLong.class})
 public class UDFToShort extends UDF {
   ShortWritable shortWritable = new ShortWritable();
 
@@ -167,6 +169,9 @@ public class UDFToShort extends UDF {
     if (i == null) {
       return null;
     } else {
+      if (!LazyUtils.isNumberMaybe(i.getBytes(), 0, i.getLength())) {
+        return null;
+      }
       try {
         shortWritable.set(LazyShort.parseShort(i.getBytes(), 0, i.getLength(),
             10));
@@ -190,10 +195,10 @@ public class UDFToShort extends UDF {
   }
 
   public ShortWritable evaluate(HiveDecimalWritable i) {
-    if (i == null) {
+    if (i == null || !i.isShort() || !i.isShort()) {
       return null;
     } else {
-      shortWritable.set(i.getHiveDecimal().shortValue());
+      shortWritable.set(i.shortValue());
       return shortWritable;
     }
   }

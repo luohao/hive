@@ -18,6 +18,7 @@
 
 package org.apache.hadoop.hive.ql.exec.vector;
 
+
 /**
  * This class supports string and binary data by value reference -- i.e. each field is
  * explicitly present, as opposed to provided by a dictionary reference.
@@ -42,14 +43,26 @@ public class BytesColumnVector extends ColumnVector {
    * in vector[0] and isRepeating from the superclass is set to true.
    */
   public int[] length;
+
+  // A call to increaseBufferSpace() or ensureValPreallocated() will ensure that buffer[] points to
+  // a byte[] with sufficient space for the specified size.
   private byte[] buffer;   // optional buffer to use when actually copying in data
   private int nextFree;    // next free position in buffer
+
+  // Hang onto a byte array for holding smaller byte values
+  private byte[] smallBuffer;
+  private int smallBufferNextFree;
+
+  private int bufferAllocationCount;
 
   // Estimate that there will be 16 bytes per entry
   static final int DEFAULT_BUFFER_SIZE = 16 * VectorizedRowBatch.DEFAULT_SIZE;
 
   // Proportion of extra space to provide when allocating more buffer space.
   static final float EXTRA_SPACE_FACTOR = (float) 1.2;
+
+  // Largest size allowed in smallBuffer
+  static final int MAX_SIZE_FOR_SMALL_BUFFER = 1024 * 1024;
 
   /**
    * Use this constructor for normal operation.
@@ -102,18 +115,27 @@ public class BytesColumnVector extends ColumnVector {
    */
   public void initBuffer(int estimatedValueSize) {
     nextFree = 0;
+    smallBufferNextFree = 0;
 
     // if buffer is already allocated, keep using it, don't re-allocate
     if (buffer != null) {
-      return;
+      // Free up any previously allocated buffers that are referenced by vector
+      if (bufferAllocationCount > 0) {
+        for (int idx = 0; idx < vector.length; ++idx) {
+          vector[idx] = null;
+        }
+        buffer = smallBuffer; // In case last row was a large bytes value
+      }
+    } else {
+      // allocate a little extra space to limit need to re-allocate
+      int bufferSize = this.vector.length * (int)(estimatedValueSize * EXTRA_SPACE_FACTOR);
+      if (bufferSize < DEFAULT_BUFFER_SIZE) {
+        bufferSize = DEFAULT_BUFFER_SIZE;
+      }
+      buffer = new byte[bufferSize];
+      smallBuffer = buffer;
     }
-
-    // allocate a little extra space to limit need to re-allocate
-    int bufferSize = this.vector.length * (int)(estimatedValueSize * EXTRA_SPACE_FACTOR);
-    if (bufferSize < DEFAULT_BUFFER_SIZE) {
-      bufferSize = DEFAULT_BUFFER_SIZE;
-    }
-    buffer = new byte[bufferSize];
+    bufferAllocationCount = 0;
   }
 
   /**
@@ -149,6 +171,50 @@ public class BytesColumnVector extends ColumnVector {
       increaseBufferSpace(length);
     }
     System.arraycopy(sourceBuf, start, buffer, nextFree, length);
+    vector[elementNum] = buffer;
+    this.start[elementNum] = nextFree;
+    this.length[elementNum] = length;
+    nextFree += length;
+  }
+
+  /**
+   * Set a field by actually copying in to a local buffer.
+   * If you must actually copy data in to the array, use this method.
+   * DO NOT USE this method unless it's not practical to set data by reference with setRef().
+   * Setting data by reference tends to run a lot faster than copying data in.
+   *
+   * @param elementNum index within column vector to set
+   * @param sourceBuf container of source data
+   */
+  public void setVal(int elementNum, byte[] sourceBuf) {
+    setVal(elementNum, sourceBuf, 0, sourceBuf.length);
+  }
+
+  /**
+   * Preallocate space in the local buffer so the caller can fill in the value bytes themselves.
+   *
+   * Always use with getValPreallocatedBytes, getValPreallocatedStart, and setValPreallocated.
+   */
+  public void ensureValPreallocated(int length) {
+    if ((nextFree + length) > buffer.length) {
+      increaseBufferSpace(length);
+    }
+  }
+
+  public byte[] getValPreallocatedBytes() {
+    return buffer;
+  }
+
+  public int getValPreallocatedStart() {
+    return nextFree;
+  }
+
+  /**
+   * Set the length of the preallocated values bytes used.
+   * @param elementNum
+   * @param length
+   */
+  public void setValPreallocated(int elementNum, int length) {
     vector[elementNum] = buffer;
     this.start[elementNum] = nextFree;
     this.length[elementNum] = length;
@@ -193,17 +259,51 @@ public class BytesColumnVector extends ColumnVector {
    * @param nextElemLength size of next element to be added
    */
   public void increaseBufferSpace(int nextElemLength) {
+    // A call to increaseBufferSpace() or ensureValPreallocated() will ensure that buffer[] points to
+    // a byte[] with sufficient space for the specified size.
+    // This will either point to smallBuffer, or to a newly allocated byte array for larger values.
 
-    // Keep doubling buffer size until there will be enough space for next element.
-    int newLength = 2 * buffer.length;
-    while((nextFree + nextElemLength) > newLength) {
-      newLength *= 2;
+    if (nextElemLength > MAX_SIZE_FOR_SMALL_BUFFER) {
+      // Larger allocations will be special-cased and will not use the normal buffer.
+      // buffer/nextFree will be set to a newly allocated array just for the current row.
+      // The next row will require another call to increaseBufferSpace() since this new buffer should be used up.
+      byte[] newBuffer = new byte[nextElemLength];
+      ++bufferAllocationCount;
+      // If the buffer was pointing to smallBuffer, then nextFree keeps track of the current state
+      // of the free index for smallBuffer. We now need to save this value to smallBufferNextFree
+      // so we don't lose this. A bit of a weird dance here.
+      if (smallBuffer == buffer) {
+        smallBufferNextFree = nextFree;
+      }
+      buffer = newBuffer;
+      nextFree = 0;
+    } else {
+      // This value should go into smallBuffer.
+      if (smallBuffer != buffer) {
+        // Previous row was for a large bytes value ( > MAX_SIZE_FOR_SMALL_BUFFER).
+        // Use smallBuffer if possible.
+        buffer = smallBuffer;
+        nextFree = smallBufferNextFree;
+      }
+
+      // smallBuffer might still be out of space
+      if ((nextFree + nextElemLength) > buffer.length) {
+        int newLength = smallBuffer.length * 2;
+        while (newLength < nextElemLength) {
+          if (newLength < 0) {
+            throw new RuntimeException("Overflow of newLength. smallBuffer.length="
+                + smallBuffer.length + ", nextElemLength=" + nextElemLength);
+          }
+          newLength *= 2;
+        }
+        smallBuffer = new byte[newLength];
+        ++bufferAllocationCount;
+        smallBufferNextFree = 0;
+        // Update buffer
+        buffer = smallBuffer;
+        nextFree = 0;
+      }
     }
-
-    // Allocate new buffer, copy data to it, and set buffer to new buffer.
-    byte[] newBuffer = new byte[newLength];
-    System.arraycopy(buffer, 0, newBuffer, 0, nextFree);
-    buffer = newBuffer;
   }
 
   /** Copy the current object contents into the output. Only copy selected entries,
@@ -295,15 +395,44 @@ public class BytesColumnVector extends ColumnVector {
     setRef(0, value, 0, value.length);
   }
 
+  // Fill the column vector with nulls
+  public void fillWithNulls() {
+    noNulls = false;
+    isRepeating = true;
+    vector[0] = null;
+    isNull[0] = true;
+  }
+
   @Override
   public void setElement(int outElementNum, int inputElementNum, ColumnVector inputVector) {
-    BytesColumnVector in = (BytesColumnVector) inputVector;
-    setVal(outElementNum, in.vector[inputElementNum], in.start[inputElementNum], in.length[inputElementNum]);
+    if (inputVector.isRepeating) {
+      inputElementNum = 0;
+    }
+    if (inputVector.noNulls || !inputVector.isNull[inputElementNum]) {
+      isNull[outElementNum] = false;
+      BytesColumnVector in = (BytesColumnVector) inputVector;
+      setVal(outElementNum, in.vector[inputElementNum],
+          in.start[inputElementNum], in.length[inputElementNum]);
+    } else {
+      isNull[outElementNum] = true;
+      noNulls = false;
+    }
   }
 
   @Override
   public void init() {
     initBuffer(0);
+  }
+
+  public String toString(int row) {
+    if (isRepeating) {
+      row = 0;
+    }
+    if (noNulls || !isNull[row]) {
+      return new String(vector[row], start[row], length[row]);
+    } else {
+      return null;
+    }
   }
 
   @Override
@@ -313,10 +442,45 @@ public class BytesColumnVector extends ColumnVector {
     }
     if (noNulls || !isNull[row]) {
       buffer.append('"');
-      buffer.append(new String(this.buffer, start[row], length[row]));
+      buffer.append(new String(vector[row], start[row], length[row]));
       buffer.append('"');
     } else {
       buffer.append("null");
     }
+  }
+
+  @Override
+  public void ensureSize(int size, boolean preserveData) {
+    super.ensureSize(size, preserveData);
+    if (size > vector.length) {
+      int[] oldStart = start;
+      start = new int[size];
+      int[] oldLength = length;
+      length = new int[size];
+      byte[][] oldVector = vector;
+      vector = new byte[size][];
+      if (preserveData) {
+        if (isRepeating) {
+          vector[0] = oldVector[0];
+          start[0] = oldStart[0];
+          length[0] = oldLength[0];
+        } else {
+          System.arraycopy(oldVector, 0, vector, 0, oldVector.length);
+          System.arraycopy(oldStart, 0, start, 0 , oldStart.length);
+          System.arraycopy(oldLength, 0, length, 0, oldLength.length);
+        }
+      }
+    }
+  }
+
+  @Override
+  public void shallowCopyTo(ColumnVector otherCv) {
+    BytesColumnVector other = (BytesColumnVector)otherCv;
+    super.shallowCopyTo(other);
+    other.nextFree = nextFree;
+    other.vector = vector;
+    other.start = start;
+    other.length = length;
+    other.buffer = buffer;
   }
 }

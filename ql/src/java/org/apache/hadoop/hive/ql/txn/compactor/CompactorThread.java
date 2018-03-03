@@ -17,8 +17,6 @@
  */
 package org.apache.hadoop.hive.ql.txn.compactor;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -31,9 +29,12 @@ import org.apache.hadoop.hive.metastore.api.Partition;
 import org.apache.hadoop.hive.metastore.api.StorageDescriptor;
 import org.apache.hadoop.hive.metastore.api.Table;
 import org.apache.hadoop.hive.metastore.txn.CompactionInfo;
-import org.apache.hadoop.hive.metastore.txn.CompactionTxnHandler;
+import org.apache.hadoop.hive.metastore.txn.TxnStore;
+import org.apache.hadoop.hive.metastore.txn.TxnUtils;
 import org.apache.hadoop.security.AccessControlException;
 import org.apache.hadoop.security.UserGroupInformation;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.security.PrivilegedExceptionAction;
@@ -47,10 +48,10 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 abstract class CompactorThread extends Thread implements MetaStoreThread {
   static final private String CLASS_NAME = CompactorThread.class.getName();
-  static final private Log LOG = LogFactory.getLog(CLASS_NAME);
+  static final private Logger LOG = LoggerFactory.getLogger(CLASS_NAME);
 
   protected HiveConf conf;
-  protected CompactionTxnHandler txnHandler;
+  protected TxnStore txnHandler;
   protected RawStore rs;
   protected int threadId;
   protected AtomicBoolean stop;
@@ -75,7 +76,7 @@ abstract class CompactorThread extends Thread implements MetaStoreThread {
     setDaemon(true); // this means the process will exit without waiting for this thread
 
     // Get our own instance of the transaction handler
-    txnHandler = new CompactionTxnHandler(conf);
+    txnHandler = TxnUtils.getTxnStore(conf);
 
     // Get our own connection to the database so we can get table and partition information.
     rs = RawStoreProxy.getProxy(conf, conf,
@@ -119,8 +120,8 @@ abstract class CompactorThread extends Thread implements MetaStoreThread {
         throw e;
       }
       if (parts.size() != 1) {
-        LOG.error(ci.getFullPartitionName() + " does not refer to a single partition");
-        throw new MetaException("Too many partitions");
+        LOG.error(ci.getFullPartitionName() + " does not refer to a single partition. " + parts);
+        throw new MetaException("Too many partitions for : " + ci.getFullPartitionName());
       }
       return parts.get(0);
     } else {
@@ -173,14 +174,20 @@ abstract class CompactorThread extends Thread implements MetaStoreThread {
           return null;
         }
       });
+      try {
+        FileSystem.closeAllForUGI(ugi);
+      } catch (IOException exception) {
+        LOG.error("Could not clean up file-system handles for UGI: " + ugi, exception);
+      }
 
       if (wrapper.size() == 1) {
         LOG.debug("Running job as " + wrapper.get(0));
         return wrapper.get(0);
       }
     }
-    LOG.error("Unable to stat file as either current user or table owner, giving up");
-    throw new IOException("Unable to stat file");
+    LOG.error("Unable to stat file " + p + " as either current user(" + UserGroupInformation.getLoginUser() +
+      ") or table owner(" + t.getOwner() + "), giving up");
+    throw new IOException("Unable to stat file: " + p);
   }
 
   /**

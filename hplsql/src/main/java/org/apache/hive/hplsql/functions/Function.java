@@ -22,6 +22,7 @@ import java.sql.ResultSet;
 import java.sql.Date;
 import java.sql.SQLException;
 import java.text.SimpleDateFormat;
+import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.HashMap;
 import java.util.Map;
@@ -68,7 +69,10 @@ public class Function {
    * Execute a function
    */
   public void exec(String name, HplsqlParser.Expr_func_paramsContext ctx) {
-    if (execUser(ctx, name)) {
+    if (execUser(name, ctx)) {
+      return;
+    }
+    else if (isProc(name) && execProc(name, ctx, null)) {
       return;
     }
     if (name.indexOf(".") != -1) {               // Name can be qualified and spaces are allowed between parts
@@ -82,14 +86,15 @@ public class Function {
       }
       name = str.toString();      
     } 
-    if (trace && ctx.parent.parent instanceof HplsqlParser.Expr_stmtContext) {
+    if (trace && ctx != null && ctx.parent != null && ctx.parent.parent instanceof HplsqlParser.Expr_stmtContext) {
       trace(ctx, "FUNC " + name);      
     }
-    FuncCommand func = map.get(name);    
+    FuncCommand func = map.get(name.toUpperCase());    
     if (func != null) {
       func.run(ctx);
     }    
     else {
+      info(ctx, "Function not found: " + name);
       evalNull();
     }
   }
@@ -127,7 +132,7 @@ public class Function {
   /**
    * Execute a user-defined function
    */
-  public boolean execUser(HplsqlParser.Expr_func_paramsContext ctx, String name) {
+  public boolean execUser(String name, HplsqlParser.Expr_func_paramsContext ctx) {
     HplsqlParser.Create_function_stmtContext userCtx = userMap.get(name.toUpperCase());
     if (userCtx == null) {
       return false;
@@ -135,8 +140,9 @@ public class Function {
     if (trace) {
       trace(ctx, "EXEC FUNCTION " + name);
     }
+    ArrayList<Var> actualParams = getActualCallParameters(ctx);
     exec.enterScope(Scope.Type.ROUTINE);
-    setCallParameters(ctx, userCtx.create_routine_params(), null);
+    setCallParameters(ctx, actualParams, userCtx.create_routine_params(), null);
     visit(userCtx.single_block_stmt());
     exec.leaveScope(); 
     return true;
@@ -201,22 +207,36 @@ public class Function {
   }
   
   /**
+   * Check if the stored procedure with the specified name is defined
+   */
+  public boolean isProc(String name) {
+    if (procMap.get(name.toUpperCase()) != null) {
+      return true;
+    }
+    return false;
+  }
+  
+  /**
    * Execute a stored procedure using CALL or EXEC statement passing parameters
    */
-  public boolean execProc(HplsqlParser.Expr_func_paramsContext ctx, String name) {
+  public boolean execProc(String name, HplsqlParser.Expr_func_paramsContext ctx, ParserRuleContext callCtx) {
     if (trace) {
-      trace(ctx, "EXEC PROCEDURE " + name);
+      trace(callCtx, "EXEC PROCEDURE " + name);
     }
     HplsqlParser.Create_procedure_stmtContext procCtx = procMap.get(name.toUpperCase());    
     if (procCtx == null) {
-      trace(ctx, "Procedure not found");
+      trace(callCtx, "Procedure not found");
       return false;
     }    
+    ArrayList<Var> actualParams = getActualCallParameters(ctx);
     HashMap<String, Var> out = new HashMap<String, Var>();
     exec.enterScope(Scope.Type.ROUTINE);
     exec.callStackPush(name);
+    if (procCtx.declare_block_inplace() != null) {
+      visit(procCtx.declare_block_inplace());
+    }
     if (procCtx.create_routine_params() != null) {
-      setCallParameters(ctx, procCtx.create_routine_params(), out);
+      setCallParameters(ctx, actualParams, procCtx.create_routine_params(), out);
     }
     visit(procCtx.proc_block());
     exec.callStackPop();
@@ -230,13 +250,13 @@ public class Function {
   /**
    * Set parameters for user-defined function call
    */
-  void setCallParameters(HplsqlParser.Expr_func_paramsContext actual, 
+  public void setCallParameters(HplsqlParser.Expr_func_paramsContext actual, ArrayList<Var> actualValues, 
                          HplsqlParser.Create_routine_paramsContext formal,
                          HashMap<String, Var> out) {
-    if (actual == null || actual.func_param() == null) {
+    if (actual == null || actual.func_param() == null || actualValues == null) {
       return;
     }
-    int actualCnt = actual.func_param().size();
+    int actualCnt = actualValues.size();
     int formalCnt = formal.create_routine_param_item().size();
     for (int i = 0; i < actualCnt; i++) {
       if (i >= formalCnt) {
@@ -254,8 +274,7 @@ public class Function {
           scale = p.dtype_len().L_INT(1).getText();
         }
       }
-      Var value = evalPop(a);
-      Var var = setCallParameter(name, type, len, scale, value);
+      Var var = setCallParameter(name, type, len, scale, actualValues.get(i));
       if (trace) {
         trace(actual, "SET PARAM " + name + " = " + var.toString());      
       } 
@@ -325,6 +344,21 @@ public class Function {
   }  
   
   /**
+   * Evaluate actual call parameters
+   */
+  public ArrayList<Var> getActualCallParameters(HplsqlParser.Expr_func_paramsContext actual) {
+    if (actual == null || actual.func_param() == null) {
+      return null;
+    }
+    int cnt = actual.func_param().size();
+    ArrayList<Var> values = new ArrayList<Var>(cnt);
+    for (int i = 0; i < cnt; i++) {
+      values.add(evalPop(actual.func_param(i).expr()));
+    }
+    return values;
+  }
+  
+  /**
    * Add a user-defined function
    */
   public void addUserFunction(HplsqlParser.Create_function_stmtContext ctx) {
@@ -344,6 +378,16 @@ public class Function {
       trace(ctx, "CREATE PROCEDURE " + name);
     }
     procMap.put(name.toUpperCase(), ctx);
+  }
+  
+  /**
+   * Get the number of parameters in function call
+   */
+  public int getParamCount(HplsqlParser.Expr_func_paramsContext ctx) {
+    if (ctx == null) {
+      return 0;
+    }
+    return ctx.func_param().size();
   }
     
   /**
@@ -372,8 +416,6 @@ public class Function {
       execMinPartDate(ctx);
     } else if(ctx.T_PART_LOC() != null) {
       execPartLoc(ctx);
-    } else if(ctx.T_SYSDATE() != null) {
-      execCurrentTimestamp(ctx, 0);
     } else {
       evalNull();
     }
@@ -406,21 +448,6 @@ public class Function {
     SimpleDateFormat f = new SimpleDateFormat("yyyy-MM-dd");
     String s = f.format(Calendar.getInstance().getTime());
     exec.stackPush(new Var(Var.Type.DATE, Utils.toDate(s))); 
-  }
-  
-  /**
-   * Get the current date and time
-   */
-  public void execCurrentTimestamp(HplsqlParser.Expr_spec_funcContext ctx, int defPrecision) {
-    trace(ctx, "CURRENT_TIMESTAMP");
-    int precision = evalPop(ctx.expr(0), defPrecision).intValue();
-    String format = "yyyy-MM-dd HH:mm:ss";
-    if(precision > 0 && precision <= 3) {
-      format += "." + StringUtils.repeat("S", precision);
-    }
-    SimpleDateFormat f = new SimpleDateFormat(format);
-    String s = f.format(Calendar.getInstance(TimeZone.getDefault()).getTime());
-    exec.stackPush(new Var(Utils.toTimestamp(s), precision)); 
   }
   
   /**
@@ -680,6 +707,10 @@ public class Function {
     exec.stackPush(new Var(i)); 
   }
   
+  void evalInt(int i) {
+    evalInt(new Long(i));
+  }
+  
   /**
    * Evaluate the expression to specified Date value
    */
@@ -738,5 +769,9 @@ public class Function {
   
   public void trace(String message) {
     trace(null, message);
+  }
+  
+  public void info(ParserRuleContext ctx, String message) {
+    exec.info(ctx, message);
   }
 }

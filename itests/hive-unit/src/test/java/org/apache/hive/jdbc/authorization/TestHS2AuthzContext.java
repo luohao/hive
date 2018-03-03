@@ -36,12 +36,12 @@ import org.apache.hadoop.hive.ql.security.SessionStateUserAuthenticator;
 import org.apache.hadoop.hive.ql.security.authorization.plugin.HiveAccessControlException;
 import org.apache.hadoop.hive.ql.security.authorization.plugin.HiveAuthorizer;
 import org.apache.hadoop.hive.ql.security.authorization.plugin.HiveAuthorizerFactory;
-import org.apache.hadoop.hive.ql.security.authorization.plugin.HiveAuthzContext;
 import org.apache.hadoop.hive.ql.security.authorization.plugin.HiveAuthzPluginException;
 import org.apache.hadoop.hive.ql.security.authorization.plugin.HiveAuthzSessionContext;
 import org.apache.hadoop.hive.ql.security.authorization.plugin.HiveMetastoreClientFactory;
 import org.apache.hadoop.hive.ql.security.authorization.plugin.HiveOperationType;
 import org.apache.hadoop.hive.ql.security.authorization.plugin.HivePrivilegeObject;
+import org.apache.hadoop.hive.ql.security.authorization.plugin.HiveAuthzContext;
 import org.apache.hive.jdbc.miniHS2.MiniHS2;
 import org.junit.AfterClass;
 import org.junit.BeforeClass;
@@ -55,6 +55,7 @@ import org.mockito.Mockito;
 public class TestHS2AuthzContext {
   private static MiniHS2 miniHS2 = null;
   static HiveAuthorizer mockedAuthorizer;
+  static HiveAuthenticationProvider authenticator;
 
   /**
    * This factory creates a mocked HiveAuthorizer class.
@@ -65,6 +66,7 @@ public class TestHS2AuthzContext {
     public HiveAuthorizer createHiveAuthorizer(HiveMetastoreClientFactory metastoreClientFactory,
         HiveConf conf, HiveAuthenticationProvider authenticator, HiveAuthzSessionContext ctx) {
       TestHS2AuthzContext.mockedAuthorizer = Mockito.mock(HiveAuthorizer.class);
+      TestHS2AuthzContext.authenticator = authenticator;
       return TestHS2AuthzContext.mockedAuthorizer;
     }
   }
@@ -101,7 +103,7 @@ public class TestHS2AuthzContext {
     verifyContextContents("dfs -ls /", "-ls /");
   }
 
-  private void verifyContextContents(final String cmd, String ctxCmd) throws SQLException,
+  private void verifyContextContents(final String cmd, String ctxCmd) throws Exception,
       HiveAuthzPluginException, HiveAccessControlException {
     Connection hs2Conn = getConnection("user1");
     Statement stmt = hs2Conn.createStatement();
@@ -126,7 +128,7 @@ public class TestHS2AuthzContext {
 
   }
 
-  private Connection getConnection(String userName) throws SQLException {
+  private Connection getConnection(String userName) throws Exception {
     return DriverManager.getConnection(miniHS2.getJdbcURL(), userName, "bar");
   }
 
